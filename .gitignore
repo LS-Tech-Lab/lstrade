@@ -1,0 +1,19 @@
+# Secretos — NUNCA subir esto a GitHub
+.env
+
+# Base de datos local (estado del bot, no pertenece al código)
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

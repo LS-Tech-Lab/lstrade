@@ -1,0 +1,9 @@
+{
+  "functions": {
+    "api/cycle.py": { "maxDuration": 10 },
+    "api/telegram_webhook.py": { "maxDuration": 10 }
+  },
+  "crons": [
+    { "path": "/api/cycle", "schedule": "0 12 * * *" }
+  ]
+}
