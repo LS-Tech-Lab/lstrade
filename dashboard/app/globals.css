@@ -1,0 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=Archivo+Black&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root{
+  --bg:#F1ECDF;
+  --paper:#FBF8F1;
+  --ink:#181410;
+  --ink-soft:#5C564A;
+  --line:#D9D0B9;
+  --accent:#E15A2C;
+  --accent-dim:#F6D9C9;
+  --good:#2E6B4A;
+  --good-dim:#DCE9DF;
+  --bad:#B4392A;
+  --bad-dim:#F1DAD5;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:'JetBrains Mono', monospace;
+  min-height:100vh;
+}
+h1,h2{font-family:'Archivo Black', sans-serif; letter-spacing:-0.01em; margin:0;}
+.label{font-size:10.5px; letter-spacing:0.09em; text-transform:uppercase; color:var(--ink-soft);}
+
+.wrap{max-width:880px; margin:0 auto; padding:20px;}
+
+.header{
+  display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;
+  margin-bottom:16px;
+}
+.header h1{font-size:22px;}
+
+.status{
+  font-size:11px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase;
+  padding:7px 12px; border-radius:6px; border:1.5px solid;
+}
+.status.online{color:var(--good); border-color:var(--good); background:var(--good-dim);}
+.status.halted{color:var(--bad); border-color:var(--bad); background:var(--bad-dim);}
+
+.pending-banner{
+  background:var(--accent-dim); border:1.5px solid var(--accent); color:var(--accent);
+  border-radius:8px; padding:10px 14px; font-size:12.5px; font-weight:700; margin-bottom:16px;
+}
+
+.card{
+  background:var(--paper); border:1.5px solid var(--ink); border-radius:10px;
+  padding:16px; margin-bottom:16px;
+}
+.card h2{font-size:13px; margin-bottom:10px;}
+
+.equity-value{font-size:26px; font-weight:700; margin-bottom:6px;}
+.equity-chart{width:100%; height:120px; display:block;}
+.empty{color:var(--ink-soft); font-size:12px;}
+
+table{width:100%; border-collapse:collapse; font-size:11.5px;}
+th{
+  text-align:left; font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em;
+  color:var(--ink-soft); padding:6px 8px; border-bottom:1.5px solid var(--ink);
+}
+td{padding:7px 8px; border-bottom:1px dashed var(--line);}
+tr:last-child td{border-bottom:none;}
+
+.ok{color:var(--good); font-weight:700;}
+.fail{color:var(--bad); font-weight:700;}
+.decision-approved, .decision-auto_executed{color:var(--good); font-weight:700;}
+.decision-rejected, .decision-blocked{color:var(--bad); font-weight:700;}
+.decision-watchlist, .decision-paper_logged{color:var(--ink-soft); font-weight:700;}
+
+.error{color:var(--bad); font-size:12px;}
+
+/* login */
+.login-wrap{
+  min-height:100vh; display:flex; align-items:center; justify-content:center;
+  background:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size:26px 26px;
+}
+.login-card{
+  background:var(--paper); border:1.5px solid var(--ink); border-radius:10px;
+  padding:28px; width:280px; text-align:center;
+}
+.login-card h1{font-size:18px; margin-bottom:4px;}
+.login-card input{
+  width:100%; font-family:'JetBrains Mono', monospace; font-size:13px;
+  padding:9px 10px; border:1px solid var(--line); border-radius:6px; margin:14px 0 8px;
+}
+.login-card button{
+  width:100%; font-family:'JetBrains Mono', monospace; font-weight:700; font-size:12px;
+  letter-spacing:0.05em; text-transform:uppercase; padding:10px; border-radius:7px;
+  border:none; background:var(--ink); color:var(--paper); cursor:pointer;
+}
+.login-card button:hover{background:var(--accent);}
