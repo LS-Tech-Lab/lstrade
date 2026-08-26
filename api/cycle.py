@@ -77,7 +77,11 @@ def run_cycle():
         return {"status": "no_signal", "equity": equity, "drawdown_pct": dd_pct, "errors": errors}
 
     notifier.send_alert(f"Señal detectada: {best_symbol} · {best_signal['type']} ({best_signal['direction']})")
-    risk_report = risk_manager.check(best_symbol, best_signal, equity)
+    try:
+        ticker = exchange_client.fetch_ticker(best_symbol)
+    except Exception:
+        ticker = None  # el filtro de spread cae a "ok" de forma segura si no hay datos
+    risk_report = risk_manager.check(best_symbol, best_signal, equity, ticker=ticker)
 
     if not risk_report["pass"]:
         failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]

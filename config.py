@@ -48,6 +48,10 @@ class Config:
     LOOP_INTERVAL_SECONDS = _int("LOOP_INTERVAL_SECONDS", 300)
     DB_PATH = os.getenv("DB_PATH", "trader_ia_247.db")
 
+    # Horas mínimas antes de reavisar la misma señal de Polymarket si no cambió
+    # de dirección ni subió de score de forma relevante (evita spam en Telegram)
+    POLYMARKET_RESEND_COOLDOWN_HOURS = _float("POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
+
     NOTIFY_TELEGRAM = _bool("NOTIFY_TELEGRAM", False)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")

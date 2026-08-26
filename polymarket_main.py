@@ -9,6 +9,7 @@ import time
 from config import Config
 from polymarket_client import PolymarketClient
 from polymarket_signal_engine import generate_polymarket_signal
+from polymarket_state import PolymarketStateStore
 from telegram_notifier import TelegramNotifier
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -68,7 +69,7 @@ def build_polymarket_memo(signal, markdown=False):
     return "\n".join(lines)
 
 
-def run_polymarket_cycle(config, client, notifier, top_n=None):
+def run_polymarket_cycle(config, client, notifier, state_store, top_n=None):
     """Ejecuta un ciclo de análisis de mercados de Polymarket."""
     log.info("Escaneando mercados de Polymarket...")
     
@@ -93,8 +94,12 @@ def run_polymarket_cycle(config, client, notifier, top_n=None):
         
         if market["liquidity"] < 1000:
             continue
-        
-        price_history = client.fetch_price_history(market["condition_id"], interval="1h", fidelity=60)
+
+        if not market.get("yes_token_id"):
+            log.warning(f"Sin clobTokenId resuelto para '{market['question'][:50]}', se omite el historial de precios.")
+            price_history = []
+        else:
+            price_history = client.fetch_price_history(market["yes_token_id"], interval="1h", fidelity=60)
         time.sleep(0.2)
         
         signal = generate_polymarket_signal(market, price_history)
@@ -119,10 +124,22 @@ def run_polymarket_cycle(config, client, notifier, top_n=None):
         log.info("Sin señales de alta probabilidad en Polymarket este ciclo.")
         return []
     
-    log.info(f"🎯 {len(signals)} señales detectadas en Polymarket. Enviando a Telegram...")
-    
+    log.info(f"🎯 {len(signals)} señales detectadas en Polymarket este ciclo.")
+
+    # Filtrar las que ya se avisaron recientemente sin cambios relevantes
+    new_signals = [
+        s for s in signals
+        if state_store.should_notify(s["market"]["condition_id"], s["direction"], s["score"])
+    ]
+
+    if not new_signals:
+        log.info("Todas las señales ya fueron notificadas recientemente sin cambios — no se reenvía nada.")
+        return signals
+
+    log.info(f"Enviando {len(new_signals[:3])} señal(es) nueva(s) o actualizada(s) a Telegram...")
+
     # Enviar máximo 3 señales por ciclo para no saturar
-    for i, signal in enumerate(signals[:3], 1):
+    for i, signal in enumerate(new_signals[:3], 1):
         memo_console = build_polymarket_memo(signal, markdown=False)
         print("\n" + "=" * 70)
         print(f"SEÑAL #{i}")
@@ -131,6 +148,7 @@ def run_polymarket_cycle(config, client, notifier, top_n=None):
         
         memo_telegram = build_polymarket_memo(signal, markdown=True)
         notifier.send_message(memo_telegram)
+        state_store.record_notified(signal["market"]["condition_id"], signal["direction"], signal["score"])
         time.sleep(0.5)
     
     return signals
@@ -152,7 +170,10 @@ def main():
     
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
-    
+    state_store = PolymarketStateStore(
+        resend_cooldown_hours=getattr(config, "POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
+    )
+
     telegram_status = "activado" if notifier.enabled else "desactivado"
     log.info(f"Telegram: {telegram_status}")
     
@@ -164,12 +185,12 @@ def main():
         )
     
     if args.once:
-        run_polymarket_cycle(config, client, notifier, top_n=args.top)
+        run_polymarket_cycle(config, client, notifier, state_store, top_n=args.top)
         return
     
     while True:
         try:
-            run_polymarket_cycle(config, client, notifier, top_n=args.top)
+            run_polymarket_cycle(config, client, notifier, state_store, top_n=args.top)
         except KeyboardInterrupt:
             log.info("Detenido manualmente por el usuario.")
             if notifier.enabled:
