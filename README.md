@@ -7,7 +7,7 @@ Escanea el mercado, genera señales con indicadores técnicos reales (SMA, ATR, 
 las filtra con un módulo de riesgo que usa tu equity real, arma un plan de trading (entrada/stop/objetivo),
 te lo manda por Telegram (o consola) para tu aprobación, y ejecuta la orden real si decidís que sí.
 
-[![CI](https://github.com/TU_USUARIO/trader-ia-247/actions/workflows/ci.yml/badge.svg)](https://github.com/TU_USUARIO/trader-ia-247/actions)
+[![CI](https://github.com/LS-Tech-Lab/trader-ia-247/actions/workflows/ci.yml/badge.svg)](https://github.com/LS-Tech-Lab/trader-ia-247/actions)
 
 ## ⚠️ Antes de arrancar
 
@@ -68,7 +68,39 @@ Si configurás `NOTIFY_TELEGRAM=true`, `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID`
 Para crear el bot: hablá con `@BotFather` en Telegram (`/newbot`), y con `@userinfobot` para conseguir tu `chat_id`.
 Mandale al menos un mensaje a tu bot antes de arrancar el sistema (si no, no puede detectar tu respuesta).
 
+## Módulo Polymarket (señales, solo lectura)
+
+`polymarket_main.py` es un módulo aparte e independiente del bot de cripto — escanea los
+mercados de [Polymarket](https://polymarket.com) (predicción de eventos) vía sus APIs públicas
+Gamma y CLOB, sin necesidad de wallet ni autenticación. No ejecuta ninguna operación real
+(eso requeriría una wallet on-chain en Polygon, fuera del alcance actual): solo analiza,
+genera señales y te avisa por Telegram.
+
+```bash
+# un solo ciclo, analiza el top 20 por volumen (default) y termina
+python polymarket_main.py --once
+
+# loop continuo, cada 600s (default), analizando el top 30
+python polymarket_main.py --top 30 --loop-interval 600
+```
+
+Cada ciclo manda dos cosas por Telegram (si `NOTIFY_TELEGRAM=true`):
+
+1. **Market Watch**: resumen de los 5 mercados con más volumen 24h.
+2. **Señales**: hasta 3 mercados donde el motor (`polymarket_signal_engine.py`) detecta
+   ineficiencia de precio (YES + NO ≠ 1.00), momentum real en el historial de precios,
+   alta rotación de capital o resolución próxima — descartando mercados en probabilidad
+   extrema (< 5% o > 95%), donde no hay edge real y sí mucho riesgo de liquidez.
+
+**Deduplicación**: como el loop no tiene memoria propia entre reinicios, `polymarket_state.py`
+guarda en `polymarket_state.json` (local, no se sube a git) cuándo se avisó cada mercado por
+última vez. Una señal solo se vuelve a mandar si pasaron `POLYMARKET_RESEND_COOLDOWN_HOURS`
+(6h por defecto, configurable en `.env`) desde el último aviso, si cambió de dirección
+(YES↔NO), o si el score subió al menos 20% — así no te satura Telegram con el mismo mercado
+ciclo tras ciclo.
+
 ## ¿Se puede desplegar en Vercel?
+
 
 **Sí — con Supabase como base de datos.** Esta es la arquitectura ya incluida en el repo (`api/`, `supabase_db.py`, `vercel.json`). Dos cosas cambian respecto al modo VPS:
 
@@ -163,6 +195,10 @@ de raíz sin depender de VPN en tu propia conexión.
 | `trade_planner.py` | Entrada, stop, objetivo, tamaño de posición |
 | `executor.py` | Coloca la orden real (o la simula en modo papel) |
 | `telegram_notifier.py` | Alertas y aprobación humana — bloqueante (VPS) o por webhook (serverless) |
+| `polymarket_client.py` | Cliente de las APIs públicas de Polymarket (Gamma + CLOB), sin autenticación |
+| `polymarket_signal_engine.py` | Detecta ineficiencia de precio y momentum en mercados de Polymarket |
+| `polymarket_main.py` | Orquesta el loop de análisis de Polymarket (solo lectura, ver sección arriba) |
+| `polymarket_state.py` | Deduplicación de señales de Polymarket entre ciclos (`polymarket_state.json`) |
 | `main.py` | Orquesta el loop 24/7 (modo VPS) |
 | `db.py` | Persistencia SQLite (modo VPS) |
 | `supabase_db.py` | Persistencia Postgres vía Supabase (modo serverless) |
@@ -182,3 +218,15 @@ de raíz sin depender de VPN en tu propia conexión.
 - Migración a Vercel + Supabase (ver sección de arriba) si preferís serverless a un VPS.
 - Apalancamiento vía futuros — deliberadamente fuera de este diseño por el riesgo de liquidación;
   si lo querés, es una capa adicional sobre `exchange_client.py`, no un rediseño completo.
+
+## Cambios recientes
+
+- **Corregido** (`polymarket_client.py`): el historial de precios se pedía con el `conditionId`
+  del mercado, pero la API CLOB (`/prices-history`) necesita el `clobTokenId` del outcome
+  específico (YES o NO). Con el id equivocado, el endpoint devolvía historial vacío en
+  silencio y el componente de momentum del score de Polymarket nunca se activaba.
+- **Nuevo** (`polymarket_state.py`): deduplicación de señales de Polymarket entre ciclos —
+  ver sección "Módulo Polymarket" más arriba.
+- **Corregido** (`api/cycle.py`): el filtro de spread (`MAX_SPREAD_PCT`) no se aplicaba en modo
+  serverless porque `risk_manager.check()` se llamaba sin el `ticker` del exchange. Ahora se
+  trae el ticker antes de correr el chequeo de riesgo, igual que ya hacía `main.py` en modo VPS.
