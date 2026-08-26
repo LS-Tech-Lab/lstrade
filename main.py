@@ -38,6 +38,9 @@ def build_memo_text(symbol, signal, risk_report, plan, markdown=False):
         lines.append(f"Stop loss: {plan['stop']:.6f}")
         lines.append(f"Take profit: {plan['target']:.6f}")
         lines.append(f"Ratio R:B: 1 : {plan['rr']:.2f}")
+        lines.append(f"RSI: {signal['rsi']:.1f} | Volumen: {signal.get('volume_ratio', 0):.2f}x promedio")
+    if btc_bias:
+        lines.append(f"Tendencia BTC: {btc_bias['direction']}")
         lines.append(f"Tamaño: {plan['position_size']:.6f} unidades (~${plan['risk_amount']:.2f} de riesgo)")
     lines.append("—" * 20)
     for c in risk_report["checks"]:
@@ -86,6 +89,22 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier):
     dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
     log.info(f"Equity actual: {equity:.2f} | Drawdown: {dd_pct:.2f}%")
 
+        # --- NUEVO: Calcular tendencia de BTC para filtrar altcoins ---
+    btc_bias = None
+    try:
+        btc_candles = exchange_client.fetch_ohlcv("BTC/USDT")
+        if btc_candles and len(btc_candles) >= 6:
+            btc_momentum = (btc_candles[-1]["c"] - btc_candles[-6]["c"]) / btc_candles[-6]["c"]
+            if btc_momentum > 0.015:
+                btc_bias = {"direction": "LONG"}
+            elif btc_momentum < -0.015:
+                btc_bias = {"direction": "SHORT"}
+            else:
+                btc_bias = {"direction": "NEUTRAL"}
+            log.info(f"BTC bias: {btc_bias['direction']} (momentum: {btc_momentum*100:.2f}%)")
+    except Exception as e:
+        log.warning(f"No se pudo calcular BTC bias: {e}")
+    
     best_signal, best_symbol = None, None
     for symbol in config.SYMBOLS:
         try:
@@ -93,7 +112,11 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier):
         except Exception as e:
             log.warning(f"No se pudo traer OHLCV de {symbol}: {e}")
             continue
-        signal = generate_signal(candles)
+        
+        # Si es un altcoin (no es BTC/USDT), aplicar filtro de BTC
+        symbol_bias = btc_bias if symbol != "BTC/USDT" else None
+        signal = generate_signal(candles, btc_bias=symbol_bias)
+        
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol
 

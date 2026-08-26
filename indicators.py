@@ -73,3 +73,17 @@ def rolling_return_stdev(candles, window=10):
     mean = sum(returns) / len(returns)
     variance = sum((r - mean) ** 2 for r in returns) / len(returns)
     return math.sqrt(variance)
+
+def volume_ratio(candles, window=20):
+    """
+    Calcula el ratio del volumen actual vs el promedio de los últimos 'window' períodos.
+    Devuelve un número: 1.0 = volumen normal, 2.0 = doble del promedio, etc.
+    Si es > 1.5, hay fuerza institucional detrás del movimiento.
+    """
+    if len(candles) < window + 1:
+        return None
+    volumes = [c["v"] for c in candles]
+    avg_volume = sum(volumes[-(window + 1):-1]) / window
+    if avg_volume == 0:
+        return None
+    return volumes[-1] / avg_volume
