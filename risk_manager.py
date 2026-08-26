@@ -1,13 +1,9 @@
 """
-Módulo de riesgo — la parte más importante del sistema.
-Revisa exposición, drawdown y volatilidad contra el equity REAL de la cuenta
-(traído del exchange, no simulado), y actúa como circuit breaker si el
-drawdown supera el límite crítico configurado.
+Módulo de riesgo — con filtro de Spread/Liquidez añadido.
 """
 import logging
 
 log = logging.getLogger("risk_manager")
-
 
 class RiskManager:
     def __init__(self, config, db):
@@ -34,18 +30,18 @@ class RiskManager:
             self.halt(f"Drawdown {dd_pct:.2f}% superó el límite crítico de {self.config.MAX_DRAWDOWN_KILL_PCT}%")
         return dd_pct
 
-    def check(self, symbol, signal, equity):
+    def check(self, symbol, signal, equity, ticker=None):
         atr_val = signal["atr"]
         price = signal["price"]
         stop_distance = atr_val * self.config.ATR_STOP_MULT
         risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100)
         position_size = risk_amount / stop_distance if stop_distance > 0 else 0
-
+        
         peak = self.db.peak_equity() or equity
         dd_pct = ((peak - equity) / peak * 100) if peak > 0 else 0.0
         exposure_pct = self.db.current_exposure_pct(equity)
         vol_pct = signal["volatility"] * 100
-
+        
         checks = [
             {"label": "Tamaño de posición calculable", "ok": stop_distance > 0 and position_size > 0},
             {"label": f"Exposición < {self.config.MAX_EXPOSURE_PCT}%", "ok": exposure_pct < self.config.MAX_EXPOSURE_PCT},
@@ -53,8 +49,15 @@ class RiskManager:
             {"label": f"Volatilidad < {self.config.MAX_VOLATILITY_PCT}%", "ok": vol_pct < self.config.MAX_VOLATILITY_PCT},
             {"label": "Sistema no detenido por circuit breaker", "ok": not self.is_halted()},
         ]
-        overall_pass = all(c["ok"] for c in checks)
+        
+        # NUEVO: Filtro de Spread
+        if ticker and "bid" in ticker and "ask" in ticker and ticker["bid"] > 0:
+            spread_pct = ((ticker["ask"] - ticker["bid"]) / ticker["bid"]) * 100
+            checks.append({"label": f"Spread < {self.config.MAX_SPREAD_PCT}%", "ok": spread_pct < self.config.MAX_SPREAD_PCT})
+        else:
+            checks.append({"label": "Spread (datos no disponibles)", "ok": True}) # Fallo seguro si no hay datos
 
+        overall_pass = all(c["ok"] for c in checks)
         return {
             "pass": overall_pass,
             "checks": checks,

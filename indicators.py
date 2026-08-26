@@ -1,25 +1,16 @@
 """
-Indicadores técnicos calculados sobre datos OHLCV reales — Python puro, sin pandas/numpy.
-Los candles se representan como lista de dicts: [{"o":..,"h":..,"l":..,"c":..}, ...]
-en orden cronológico (el más viejo primero, el más reciente al final).
-
-Todas las funciones devuelven el ÚLTIMO valor del indicador (no la serie completa),
-que es lo único que necesita el motor de señales. Devuelven None si no hay
-suficientes datos.
+Indicadores técnicos calculados sobre datos OHLCV reales — Python puro.
 """
 import math
 
-
 def _closes(candles):
     return [c["c"] for c in candles]
-
 
 def sma(candles, window):
     closes = _closes(candles)
     if len(closes) < window:
         return None
     return sum(closes[-window:]) / window
-
 
 def ema(candles, window):
     closes = _closes(candles)
@@ -30,7 +21,6 @@ def ema(candles, window):
     for price in closes[1:]:
         value = price * k + value * (1 - k)
     return value
-
 
 def atr(candles, window=14):
     if len(candles) < window + 1:
@@ -43,7 +33,6 @@ def atr(candles, window=14):
     if len(trs) < window:
         return None
     return sum(trs[-window:]) / window
-
 
 def rsi(candles, window=14):
     closes = _closes(candles)
@@ -61,7 +50,6 @@ def rsi(candles, window=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-
 def rolling_return_stdev(candles, window=10):
     closes = _closes(candles)
     if len(closes) < window + 1:
@@ -74,12 +62,8 @@ def rolling_return_stdev(candles, window=10):
     variance = sum((r - mean) ** 2 for r in returns) / len(returns)
     return math.sqrt(variance)
 
+# NUEVO: Filtro de volumen
 def volume_ratio(candles, window=20):
-    """
-    Calcula el ratio del volumen actual vs el promedio de los últimos 'window' períodos.
-    Devuelve un número: 1.0 = volumen normal, 2.0 = doble del promedio, etc.
-    Si es > 1.5, hay fuerza institucional detrás del movimiento.
-    """
     if len(candles) < window + 1:
         return None
     volumes = [c["v"] for c in candles]
