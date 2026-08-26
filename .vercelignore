@@ -1,7 +1,10 @@
 # main.py es el orquestador del modo VPS (24/7, ver deploy/trader-ia.service).
-# No es una función serverless: no exporta app/application/handler, así que
-# Vercel lo detecta como entrypoint inválido y rompe el build si está presente.
-# Las funciones reales para Vercel viven en api/*.py.
+# No es una función serverless: no exporta una variable `app` (ASGI), así que
+# se excluye para que Vercel no dude entre este archivo y app.py al resolver
+# el entrypoint. El único entrypoint real para Vercel es app.py (raíz), que
+# consolida las 3 rutas (/api/cycle, /api/reset_halt, /api/telegram_webhook)
+# en una sola Vercel Function — desde 2026 el runtime Python de Vercel ya no
+# soporta un archivo = una función por módulo dentro de api/.
 main.py
 
 # Systemd/VPS, no aplica al despliegue serverless
