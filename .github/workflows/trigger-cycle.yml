@@ -1,0 +1,21 @@
+name: Trigger Trader IA cycle
+
+on:
+  schedule:
+    # Cada 10 minutos. GitHub Actions no garantiza precisión exacta en la
+    # ejecución programada (puede demorar unos minutos en horas de carga),
+    # y desactiva los workflows programados tras 60 días sin actividad en
+    # el repo — hacé un commit de vez en cuando o usá workflow_dispatch.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al endpoint de ciclo en Vercel
+        run: |
+          curl -sf -X POST "${{ secrets.VERCEL_CYCLE_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+          || echo "La llamada falló — revisá los logs de la función en Vercel."
