@@ -19,10 +19,10 @@ class ExchangeClient:
             params["password"] = config.API_PASSWORD
         self.exchange = exchange_class(params)
 
-    def fetch_ohlcv(self, symbol, timeframe=None, limit=None):
+    def fetch_ohlcv(self, symbol, timeframe=None, limit=None, since=None):
         timeframe = timeframe or self.config.TIMEFRAME
         limit = limit or self.config.CANDLE_LIMIT
-        raw = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        raw = self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit, since=since)
         return [
             {"ts": r[0], "o": r[1], "h": r[2], "l": r[3], "c": r[4], "v": r[5]}
             for r in raw

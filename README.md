@@ -99,6 +99,33 @@ guarda en `polymarket_state.json` (local, no se sube a git) cuándo se avisó ca
 (YES↔NO), o si el score subió al menos 20% — así no te satura Telegram con el mismo mercado
 ciclo tras ciclo.
 
+## Backtesting del motor de señales
+
+`backtest.py` responde una pregunta que el proyecto no tenía forma de contestar antes: si
+`generate_signal()`, tal como está hoy (con sus pesos de score y umbrales fijos), tiene una
+edge real contra datos históricos, o si nadie lo validó todavía.
+
+```bash
+# los símbolos de SYMBOLS en tu .env, últimos 180 días
+python backtest.py --days 180
+
+# un solo símbolo, con el detalle de cada trade en un CSV
+python backtest.py --symbol ETH/USDT --days 90 --output resultados.csv
+```
+
+Corre símbolo por símbolo: cada vez que `generate_signal()` da señal (usando exactamente las
+mismas ventanas de velas y el mismo sesgo de BTC que usa `main.py` en producción), abre una
+posición simulada con el stop y el target que definen `ATR_STOP_MULT` y `MIN_RR`, y camina
+vela a vela hasta que uno de los dos se toque. Al final te da win rate, expectancy en R,
+drawdown máximo y profit factor — por símbolo y en total.
+
+**Limitaciones a tener en cuenta al leer los resultados:**
+- No simula el trailing stop de `position_manager.py` — cada trade cierra en el stop o el
+  target fijo, sin gestión activa. El sistema real puede salir mejor o peor que esto.
+- No simula comisiones ni slippage (escenario optimista).
+- No simula exposición cruzada entre símbolos ni el circuit breaker de drawdown del sistema
+  completo — es un backtest por símbolo, no una simulación del portafolio entero.
+
 ## ¿Se puede desplegar en Vercel?
 
 
@@ -200,6 +227,7 @@ de raíz sin depender de VPN en tu propia conexión.
 | `polymarket_main.py` | Orquesta el loop de análisis de Polymarket (solo lectura, ver sección arriba) |
 | `polymarket_state.py` | Deduplicación de señales de Polymarket entre ciclos (`polymarket_state.json`) |
 | `main.py` | Orquesta el loop 24/7 (modo VPS) |
+| `backtest.py` | Backtest de `generate_signal()` sobre histórico real (ver sección arriba) |
 | `db.py` | Persistencia SQLite (modo VPS) |
 | `supabase_db.py` | Persistencia Postgres vía Supabase (modo serverless) |
 | `api/cycle.py` | Función de Vercel: un ciclo de escaneo, disparada por cron externo |
@@ -230,3 +258,6 @@ de raíz sin depender de VPN en tu propia conexión.
 - **Corregido** (`api/cycle.py`): el filtro de spread (`MAX_SPREAD_PCT`) no se aplicaba en modo
   serverless porque `risk_manager.check()` se llamaba sin el `ticker` del exchange. Ahora se
   trae el ticker antes de correr el chequeo de riesgo, igual que ya hacía `main.py` en modo VPS.
+- **Nuevo** (`backtest.py`): backtest del motor de señales sobre histórico real — ver sección
+  "Backtesting del motor de señales" más arriba. Requirió agregar el parámetro opcional
+  `since` a `ExchangeClient.fetch_ohlcv()` para poder paginar histórico completo.
