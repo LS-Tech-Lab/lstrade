@@ -52,6 +52,13 @@ class Config:
     # de dirección ni subió de score de forma relevante (evita spam en Telegram)
     POLYMARKET_RESEND_COOLDOWN_HOURS = _float("POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
 
+    # Plan de salida sugerido para señales de Polymarket: mismo principio que
+    # ATR_STOP_MULT/MIN_RR del módulo cripto, pero usando la volatilidad del
+    # historial de precios de Polymarket en vez de ATR. Sin validar todavía
+    # contra resultados reales — punto de partida, no un valor probado.
+    POLYMARKET_STOP_VOL_MULT = _float("POLYMARKET_STOP_VOL_MULT", 3.0)
+    POLYMARKET_TARGET_RR = _float("POLYMARKET_TARGET_RR", 1.5)
+
     NOTIFY_TELEGRAM = _bool("NOTIFY_TELEGRAM", False)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")

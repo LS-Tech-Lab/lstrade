@@ -55,6 +55,12 @@ def build_polymarket_memo(signal, markdown=False):
     if signal.get("inefficiency"):
         ineff = signal["inefficiency"]
         lines.append(f"⚖️ Prob. implícita total: {ineff['total_implied_prob']:.3f} (ineficiencia: {ineff['inefficiency']:.3f})")
+
+    if signal.get("trade_plan"):
+        tp = signal["trade_plan"]
+        lines.append("")
+        lines.append(f"🎯 Plan sugerido (no hace falta esperar la resolución):")
+        lines.append(f"   Entrada: ${tp['entry']:.3f} | Toma de ganancia: ${tp['target']:.3f} | Salida por pérdida: ${tp['stop']:.3f}")
     
     lines.append("")
     lines.append("🔍 Razones:")
@@ -102,7 +108,11 @@ def run_polymarket_cycle(config, client, notifier, state_store, top_n=None):
             price_history = client.fetch_price_history(market["yes_token_id"], interval="1h", fidelity=60)
         time.sleep(0.2)
         
-        signal = generate_polymarket_signal(market, price_history)
+        signal = generate_polymarket_signal(
+            market, price_history,
+            stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
+            target_rr=config.POLYMARKET_TARGET_RR,
+        )
         if signal:
             signals.append(signal)
     

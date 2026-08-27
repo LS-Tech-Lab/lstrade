@@ -99,6 +99,16 @@ guarda en `polymarket_state.json` (local, no se sube a git) cuándo se avisó ca
 (YES↔NO), o si el score subió al menos 20% — así no te satura Telegram con el mismo mercado
 ciclo tras ciclo.
 
+**Plan de salida sugerido:** en Polymarket no hace falta esperar a que el mercado resuelva
+para ganar — como cualquier libro de órdenes, se puede revender la acción antes si el precio
+se mueve a favor. Cuando hay momentum real detrás de una señal, el memo ahora incluye un
+precio de entrada, uno de toma de ganancia y uno de salida por pérdida, calculados con la
+volatilidad del historial de precios (mismo principio que `ATR_STOP_MULT`/`MIN_RR` en el
+módulo cripto, configurable con `POLYMARKET_STOP_VOL_MULT` y `POLYMARKET_TARGET_RR` en el
+`.env`). Es un punto de partida razonable, calculado igual que el stop/target de cripto, pero sin
+validar todavía contra resultados reales — vale la pena tratarlo como una referencia, no
+como una garantía, hasta tener suficiente historial de señales resueltas para ajustarlo.
+
 ## Backtesting del motor de señales
 
 `backtest.py` responde una pregunta que el proyecto no tenía forma de contestar antes: si
@@ -261,3 +271,13 @@ de raíz sin depender de VPN en tu propia conexión.
 - **Nuevo** (`backtest.py`): backtest del motor de señales sobre histórico real — ver sección
   "Backtesting del motor de señales" más arriba. Requirió agregar el parámetro opcional
   `since` a `ExchangeClient.fetch_ohlcv()` para poder paginar histórico completo.
+- **Corregido** (`polymarket_signal_engine.py`): el score podía dispararse solo con factores
+  secundarios (rotación de capital, resolución próxima) sin ineficiencia de precio ni momentum
+  real detrás — y sin momentum, la dirección se elegía apostando en contra de lo que ya fuera
+  el precio más caro, sin ningún fundamento. Ahora ineficiencia o momentum son requisito para
+  que la señal exista, rotación/resolución solo suman como bonus encima de eso, y sin momentum
+  real no se elige dirección.
+- **Nuevo** (`polymarket_signal_engine.py`, `polymarket_main.py`): plan de salida sugerido
+  (entrada/target/stop) para señales con momentum real — no hace falta esperar a la
+  resolución del mercado para tomar ganancia o cortar pérdida. Configurable con
+  `POLYMARKET_STOP_VOL_MULT` y `POLYMARKET_TARGET_RR`.
