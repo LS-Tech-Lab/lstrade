@@ -300,7 +300,7 @@ def main():
                  "los pesos del score probablemente están sobreajustados a este período.")
 
     if args.output and all_trades:
-        with open(args.output, "w", newline="") as f:
+        with open(args.output, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(all_trades[0].keys()))
             writer.writeheader()
             writer.writerows(all_trades)

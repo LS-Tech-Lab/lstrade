@@ -26,19 +26,34 @@ import math
 FEATURES = ["momentum", "trend_align", "volatility", "rsi", "volume_ratio"]
 
 
+def _read_csv_rows(path):
+    """
+    Lee un CSV probando UTF-8 primero y cayendo a cp1252 si falla — los CSV
+    generados con una versión de backtest.py/polymarket_backtest.py de antes
+    de este fix pueden haber quedado en cp1252 (la codificación por defecto
+    de Windows en inglés), y las preguntas de Polymarket suelen traer
+    caracteres (guiones largos, comillas tipográficas) que no son UTF-8
+    válido en esa codificación.
+    """
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            return list(csv.DictReader(f))
+    except UnicodeDecodeError:
+        with open(path, newline="", encoding="cp1252") as f:
+            return list(csv.DictReader(f))
+
+
 def load_trades(path):
     rows = []
-    with open(path, newline="") as f:
-        reader = csv.DictReader(f)
-        for r in reader:
-            if not r.get("outcome"):
-                continue
-            try:
-                x = [abs(float(r[feat])) if feat != "rsi" else float(r[feat]) for feat in FEATURES]
-            except (KeyError, ValueError):
-                continue
-            y = 1.0 if r["outcome"] == "target" else 0.0
-            rows.append((x, y))
+    for r in _read_csv_rows(path):
+        if not r.get("outcome"):
+            continue
+        try:
+            x = [abs(float(r[feat])) if feat != "rsi" else float(r[feat]) for feat in FEATURES]
+        except (KeyError, ValueError):
+            continue
+        y = 1.0 if r["outcome"] == "target" else 0.0
+        rows.append((x, y))
     return rows
 
 
