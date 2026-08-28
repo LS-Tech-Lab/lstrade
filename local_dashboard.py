@@ -46,6 +46,10 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .empty {{ color:#5C564A; font-size:12px; }}
   .ok {{ color:#2E6B4A; font-weight:700; }}
   .fail {{ color:#B4392A; font-weight:700; }}
+  .delta-up {{ color:#2E6B4A; }}
+  .delta-down {{ color:#B4392A; }}
+  .delta-flat {{ color:#5C564A; }}
+  .sparkline-wrap {{ overflow-x:auto; }}
 </style>
 </head>
 <body>
@@ -65,7 +69,11 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
 
   <div class="card">
     <h2>Equity</h2>
-    <div style="font-size:26px; font-weight:700;">{equity_value}</div>
+    <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:10px;">
+      <div style="font-size:26px; font-weight:700;">{equity_value}</div>
+      <div style="font-size:12.5px; font-weight:700;" class="{equity_delta_class}">{equity_delta_text}</div>
+    </div>
+    {equity_sparkline_html}
   </div>
 
   <div class="card">
@@ -101,6 +109,60 @@ def render_stats(stats, show_profit_factor=False):
     return f'<div class="stats-grid">{"".join(cards)}</div>'
 
 
+def render_equity_sparkline(rows):
+    """
+    rows: lista de (ts, equity) ordenada cronológicamente, desde equity_history.
+    Genera un SVG inline a mano (sin matplotlib ni JS) con la curva completa
+    y resalta el último punto — antes esta tabla existía en la base pero el
+    dashboard solo mostraba el pico como número suelto, sin mostrar la
+    trayectoria real de la cuenta.
+    """
+    if not rows or len(rows) < 2:
+        return '<p class="empty">Todavía no hay suficiente historial de equity para graficar.</p>'
+
+    values = [r["equity"] for r in rows]
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1.0
+
+    w, h, pad = 760, 90, 6
+    n = len(values)
+    step = (w - 2 * pad) / (n - 1)
+
+    def point(i, v):
+        x = pad + i * step
+        y = h - pad - ((v - lo) / span) * (h - 2 * pad)
+        return x, y
+
+    pts = [point(i, v) for i, v in enumerate(values)]
+    path_d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+
+    trend_up = values[-1] >= values[0]
+    line_color = "#2E6B4A" if trend_up else "#B4392A"
+    fill_d = path_d + f" L {pts[-1][0]:.1f},{h - pad} L {pts[0][0]:.1f},{h - pad} Z"
+    last_x, last_y = pts[-1]
+
+    return f"""<div class="sparkline-wrap">
+<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" preserveAspectRatio="none">
+  <path d="{fill_d}" fill="{line_color}" fill-opacity="0.08" stroke="none"/>
+  <path d="{path_d}" fill="none" stroke="{line_color}" stroke-width="2" vector-effect="non-scaling-stroke"/>
+  <circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="3.5" fill="{line_color}"/>
+</svg>
+</div>"""
+
+
+def equity_delta(rows):
+    if not rows or len(rows) < 2:
+        return "", ""
+    first, last = rows[0]["equity"], rows[-1]["equity"]
+    diff = last - first
+    pct = (diff / first * 100) if first else 0
+    if diff > 0:
+        return "delta-up", f"▲ {diff:+,.2f} ({pct:+.1f}%) en este historial"
+    if diff < 0:
+        return "delta-down", f"▼ {diff:+,.2f} ({pct:+.1f}%) en este historial"
+    return "delta-flat", "sin cambio en este historial"
+
+
 def render_decisions(rows):
     if not rows:
         return '<p class="empty">Todavía no hay decisiones registradas.</p>'
@@ -127,6 +189,10 @@ def build_page(db):
     halt_reason = db.get_state("halt_reason", "") if halted else ""
     peak = db.peak_equity()
     decisions = db.conn.execute("SELECT * FROM decisions ORDER BY ts DESC LIMIT 30").fetchall()
+    equity_rows = db.conn.execute(
+        "SELECT ts, equity FROM equity_history ORDER BY ts ASC LIMIT 200"
+    ).fetchall()
+    delta_class, delta_text = equity_delta(equity_rows)
 
     return PAGE_TEMPLATE.format(
         status_class="halted" if halted else "online",
@@ -134,6 +200,9 @@ def build_page(db):
         crypto_stats_html=render_stats(db.stats_summary(), show_profit_factor=True),
         polymarket_stats_html=render_stats(db.polymarket_stats_summary()),
         equity_value=f"${peak:,.2f}" if peak is not None else "—",
+        equity_delta_class=delta_class,
+        equity_delta_text=delta_text,
+        equity_sparkline_html=render_equity_sparkline(equity_rows),
         decisions_html=render_decisions(decisions),
     )
 

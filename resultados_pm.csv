@@ -1,0 +1,10 @@
+question,direction,outcome,r_multiple,entry_idx,exit_idx
+PFK Levski Sofia vs. AEK: O/U 2.5,NO,target,1.4761904761904763,118,145
+Will CA Guemes vs. Atletico de Rafaela end in a draw?,YES,target,1.5277777777777763,15,115
+ITF M25 Kursumlijska Banja 3 Men: Facundo Perlov vs Denis Kl,YES,target,4.9393939393939394,13,16
+Will the highest temperature in Chicago be between 68-69°F o,NO,target,0.1829268292682926,13,28
+Counter-Strike: Lavked vs megoshort (BO3) - Thunderpick Worl,NO,target,0.8018867924528302,13,14
+FC Cajamarca vs. CS Huancayo: O/U 2.5,NO,stop,-1.0,82,84
+"Bitcoin Up or Down - August 19, 12:00PM-4:00PM ET",NO,target,1.5121951219512189,23,24
+"Bitcoin Up or Down - August 19, 12:00PM-4:00PM ET",NO,target,0.38293216630196947,25,27
+Colorado Rockies vs. San Francisco Giants: O/U 7.5,YES,stop,-1.0,20,27

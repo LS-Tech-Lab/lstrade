@@ -21,7 +21,7 @@ class PolymarketClient:
             "Accept": "application/json"
         })
 
-    def fetch_active_markets(self, limit=50, offset=0, closed=False, active=None):
+    def fetch_active_markets(self, limit=50, offset=0, closed=False, active=None, extra_params=None):
         """
         `active` se ajusta automáticamente según `closed` si no se pasa
         explícito: un mercado no puede estar "activo" (abierto a trading) Y
@@ -29,6 +29,12 @@ class PolymarketClient:
         pedir closed=true con active=true (como hacía esto antes, siempre
         fijo) es una combinación contradictoria que devuelve resultados
         inconsistentes o vacíos.
+
+        `extra_params`: dict opcional para filtros adicionales de Gamma
+        (ej. end_date_min/end_date_max) — se pasan tal cual, sin validar,
+        porque no están documentados de forma confiable; ver
+        polymarket_backtest.py para el uso defensivo que valida si Gamma
+        realmente los está respetando.
         """
         if active is None:
             active = "false" if closed else "true"
@@ -45,6 +51,8 @@ class PolymarketClient:
                 "order": order_field,
                 "ascending": "false"
             }
+            if extra_params:
+                params.update(extra_params)
             resp = self.session.get(f"{GAMMA_API}/markets", params=params, timeout=15)
             resp.raise_for_status()
             return resp.json()

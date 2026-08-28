@@ -55,28 +55,94 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 log = logging.getLogger("polymarket_backtest")
 
 
-def fetch_closed_markets(client, limit, min_volume=5000, max_offset=5000):
+def fetch_closed_markets(client, limit, min_volume=5000, max_offset=1900, max_chunks=30):
     """
     Trae mercados YA RESUELTOS (closed=true), filtrados por volumen TOTAL
-    (no liquidez — ver limitaciones arriba). `max_offset` frena la
-    paginación antes de pegarle a un límite de la API de Gamma (algunas
-    consultas devuelven 422 en offsets muy altos si se pide más de lo que
-    hay disponible).
+    (no liquidez — ver limitaciones arriba).
+
+    Gamma corta con 422 pasado cierto offset (~2000-2100 en la práctica,
+    parece un techo duro de la API, no algo que dependa del filtro) — pedir
+    `--limit` más alto no alcanza más mercados si nos quedamos en una sola
+    ventana de paginación. Para superar eso, se trochea la consulta por
+    fecha de resolución: se pide la página más reciente ordenada por
+    `endDate`, se toma la fecha más vieja del lote como próximo cursor
+    (`end_date_max`), y se repite — cada "trozo" de tiempo se pagina por
+    separado, cada uno bien por debajo del techo de offset.
+
+    `end_date_max` no está en la documentación oficial que pude confirmar
+    en el momento de escribir esto (sí aparece documentado para el
+    endpoint /events de un proxy tipado de la API, que normalmente refleja
+    los mismos filtros que /markets) — así que esta función VALIDA que
+    Gamma lo esté respetando de verdad: si el primer trozo con cursor trae
+    fechas más nuevas que el cursor pedido, asume que el filtro no está
+    soportado, devuelve lo que ya juntó de la primera ventana (el mismo
+    comportamiento de antes) y no sigue troceando a ciegas.
     """
     markets = []
-    offset = 0
-    page = 100
-    while len(markets) < limit and offset < max_offset:
-        batch = client.fetch_active_markets(limit=page, offset=offset, closed=True)
-        if not batch:
+    seen_condition_ids = set()
+    end_date_cursor = None
+    date_filter_verified = None  # None = todavía no se probó
+
+    for _ in range(max_chunks):
+        if len(markets) >= limit:
             break
-        for raw in batch:
-            parsed = client.parse_market_for_analysis(raw)
-            if parsed and parsed["volume_total"] >= min_volume and parsed.get("yes_token_id"):
-                markets.append(parsed)
-        offset += page
-        if len(batch) < page:
+
+        offset = 0
+        chunk_end_dates = []
+        chunk_broke_filter = False
+        while offset < max_offset:
+            extra_params = {"order": "endDate", "ascending": "false"}
+            if end_date_cursor:
+                extra_params["end_date_max"] = end_date_cursor
+
+            batch = client.fetch_active_markets(limit=100, offset=offset, closed=True, extra_params=extra_params)
+            if not batch:
+                break
+
+            page_dates = [raw["endDate"] for raw in batch if raw.get("endDate")]
+
+            # Validar apenas llega la PRIMERA página de un trozo con cursor —
+            # si Gamma no respeta end_date_max, ya se nota acá (la página
+            # más reciente ordenada por endDate va a traer fechas más
+            # nuevas que el cursor pedido) y no hace falta pagar el costo
+            # de paginar todo el trozo entero para descubrirlo.
+            if end_date_cursor and offset == 0 and date_filter_verified is None and page_dates:
+                date_filter_verified = max(page_dates) <= end_date_cursor
+                if not date_filter_verified:
+                    log.warning(
+                        "Gamma no parece estar respetando end_date_max en /markets — el troceo por "
+                        "fecha no está confirmado para este endpoint. Se sigue con lo que ya se juntó "
+                        "de la ventana de paginación disponible (igual que antes de este intento)."
+                    )
+                    chunk_broke_filter = True
+                    break
+
+            for raw in batch:
+                cid = raw.get("conditionId")
+                if cid and cid in seen_condition_ids:
+                    continue
+                if cid:
+                    seen_condition_ids.add(cid)
+                parsed = client.parse_market_for_analysis(raw)
+                if parsed and parsed["volume_total"] >= min_volume and parsed.get("yes_token_id"):
+                    markets.append(parsed)
+
+            chunk_end_dates.extend(page_dates)
+            offset += 100
+            if len(batch) < 100:
+                break
+
+        if chunk_broke_filter:
             break
+
+        if not chunk_end_dates:
+            break
+
+        new_cursor = min(chunk_end_dates)
+        if end_date_cursor is not None and new_cursor >= end_date_cursor:
+            break  # el cursor no avanzó — evita loop sin sentido
+        end_date_cursor = new_cursor
+
     return markets[:limit]
 
 
