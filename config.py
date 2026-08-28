@@ -79,6 +79,17 @@ class Config:
     POLYMARKET_STOP_VOL_MULT = _float("POLYMARKET_STOP_VOL_MULT", 3.0)
     POLYMARKET_TARGET_RR = _float("POLYMARKET_TARGET_RR", 1.5)
 
+    # NUEVO: categorías de mercado (ver polymarket_categories.py) que no se
+    # avisan más — basado en polymarket_backtest.py + analyze_polymarket_categories.py
+    # sobre 216 trades reales: "Política / elecciones" dio profit factor 0.80
+    # con n=41 (pierde plata en promedio, muestra suficiente para no ser
+    # ruido). El resto de categorías con muestra chica (Deportes/vanity,
+    # Macro, IA/tech) todavía no tienen evidencia suficiente para excluirlas
+    # — se dejan corriendo para seguir juntando datos.
+    POLYMARKET_EXCLUDED_CATEGORIES = [
+        c.strip() for c in os.getenv("POLYMARKET_EXCLUDED_CATEGORIES", "Política / elecciones").split(",") if c.strip()
+    ]
+
     NOTIFY_TELEGRAM = _bool("NOTIFY_TELEGRAM", False)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")

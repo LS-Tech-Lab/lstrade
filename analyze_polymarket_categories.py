@@ -12,25 +12,8 @@ Uso:
 """
 import argparse
 import csv
-import re
 
-CATEGORY_RULES = [
-    # (nombre, patrón — se evalúa en orden, el primero que matchea gana)
-    ("Lanzamientos / FDV",       re.compile(r"\bFDV\b|one day after launch|launch a token", re.I)),
-    ("Valuaciones privadas",     re.compile(r"valuation hit|\(HIGH\)|\(LOW\)", re.I)),
-    ("Objetivo de precio cripto", re.compile(r"\breach \$|\bdip to \$|market cap", re.I)),
-    ("Política / elecciones",    re.compile(r"election|senat|vote|president|confirm|governor|congress|by-election", re.I)),
-    ("Deportes / vanity",        re.compile(r"\bfight\b|attend|wedding|\bwin\b.*(match|game|fight)|UFC", re.I)),
-    ("Macro / eventos",          re.compile(r"bank failure|hack over|hottest|record|open interest", re.I)),
-    ("IA / tech",                re.compile(r"Claude|OpenAI|Anthropic|GPT|Frontier Math|Opus|Gemini", re.I)),
-]
-
-
-def categorize(question):
-    for name, pattern in CATEGORY_RULES:
-        if pattern.search(question):
-            return name
-    return "Otros / sin clasificar"
+from polymarket_categories import categorize
 
 
 def load_rows(path):

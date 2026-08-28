@@ -8,6 +8,7 @@ import sys
 import time
 from config import Config
 from db import Database
+from polymarket_categories import categorize
 from polymarket_chart import build_signal_chart
 from polymarket_client import PolymarketClient
 from polymarket_signal_engine import generate_polymarket_signal
@@ -104,6 +105,18 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         market_by_condition_id[market["condition_id"]] = market
         
         if market["liquidity"] < 1000:
+            continue
+
+        # NUEVO: filtro por categoría — polymarket_backtest.py sobre 216
+        # trades reales mostró que "Política / elecciones" tiene profit
+        # factor 0.80 (pierde plata en promedio, no es ruido de muestra
+        # chica con n=41), mientras que el resto de categorías con muestra
+        # suficiente están parejas o positivas. Se saltea ANTES de pedir el
+        # historial de precios — ahorra la llamada a la API además de no
+        # mandar el aviso. Configurable por si se quiere ajustar sin tocar
+        # código a medida que se junte más muestra por categoría.
+        category = categorize(market["question"])
+        if category in config.POLYMARKET_EXCLUDED_CATEGORIES:
             continue
 
         if not market.get("yes_token_id"):
