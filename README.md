@@ -121,20 +121,113 @@ python backtest.py --days 180
 
 # un solo símbolo, con el detalle de cada trade en un CSV
 python backtest.py --symbol ETH/USDT --days 90 --output resultados.csv
+
+# simulando el trailing stop real de position_manager.py (no stop/target fijos)
+python backtest.py --days 365 --simulate-trailing --output resultados.csv
+
+# validación walk-forward: últimos 30% del período aparte, como out-of-sample
+python backtest.py --days 365 --oos-frac 0.3
 ```
 
 Corre símbolo por símbolo: cada vez que `generate_signal()` da señal (usando exactamente las
 mismas ventanas de velas y el mismo sesgo de BTC que usa `main.py` en producción), abre una
-posición simulada con el stop y el target que definen `ATR_STOP_MULT` y `MIN_RR`, y camina
-vela a vela hasta que uno de los dos se toque. Al final te da win rate, expectancy en R,
-drawdown máximo y profit factor — por símbolo y en total.
+posición simulada con el stop y el target que definen `ATR_STOP_MULT` (o el multiplicador
+adaptativo si `ADAPTIVE_ATR_STOP=true`, ver más abajo) y `MIN_RR`, y camina vela a vela hasta
+que uno de los dos se toque. Al final te da win rate, expectancy en R, drawdown máximo y
+profit factor — por símbolo y en total.
 
 **Limitaciones a tener en cuenta al leer los resultados:**
-- No simula el trailing stop de `position_manager.py` — cada trade cierra en el stop o el
-  target fijo, sin gestión activa. El sistema real puede salir mejor o peor que esto.
+- Por defecto (sin `--simulate-trailing`) cada trade cierra en el stop o el target fijo, sin
+  gestión activa. Con `--simulate-trailing` se replica la lógica exacta de breakeven a 1 ATR
+  y trailing a 1.5 ATR — usá esta variante si querés que el número se parezca a lo que corre
+  en producción de verdad.
 - No simula comisiones ni slippage (escenario optimista).
 - No simula exposición cruzada entre símbolos ni el circuit breaker de drawdown del sistema
   completo — es un backtest por símbolo, no una simulación del portafolio entero.
+
+### Calibrar los pesos del score con datos reales
+
+Los pesos del score (`momentum*1.2 + trend_align*0.8 - vol*1.5`, etc.) en `signal_engine.py`
+son constantes elegidas a mano. `calibrate_weights.py` corre una regresión logística simple
+sobre el CSV que genera el backtest para ver qué features predicen de verdad un trade ganador:
+
+```bash
+python backtest.py --days 365 --simulate-trailing --output resultados.csv
+python calibrate_weights.py resultados.csv
+```
+
+No reemplaza los pesos automáticamente — imprime los coeficientes para que decidas si aplicarlos
+(y re-backtestear después de cualquier cambio).
+
+### ATR stop adaptativo por volatilidad
+
+`ADAPTIVE_ATR_STOP=true` en `.env` hace que el múltiplo de ATR del stop escale según qué tan
+alta esté la volatilidad reciente, en vez de usar siempre `ATR_STOP_MULT` fijo. Configurable con
+`ATR_STOP_VOL_REF_PCT`, `ATR_STOP_MULT_MIN` y `ATR_STOP_MULT_MAX`. Se aplica igual en
+`risk_manager.py` (producción) y `backtest.py`, para que no diverjan.
+
+### Exposición correlacionada
+
+`MAX_CORRELATED_POSITIONS` (default 3) limita cuántas posiciones abiertas simultáneas puede
+haber en la misma dirección (LONG o SHORT), sin importar el símbolo — varias altcoins LONG a
+la vez suelen ser, en la práctica, una sola apuesta direccional concentrada.
+
+## Cierre de posiciones con resultado + estadísticas reales
+
+Antes, una posición abierta quedaba en `open_trades` indefinidamente — `position_manager.py`
+sólo movía el trailing stop, pero nunca detectaba ni registraba si el precio realmente había
+tocado el stop o el target. Ahora sí: cuando eso pasa, la posición se cierra, se guarda el
+resultado (`target`/`stop` y el R múltiplo) en `closed_trades`, y se manda un aviso a Telegram.
+
+Con eso ya hay estadísticas reales disponibles:
+
+```bash
+# Dashboard local (SQLite) — sin depender de Vercel/Supabase, corre en tu VPS/PC
+python local_dashboard.py            # http://localhost:8787
+
+# Resumen semanal (win rate, expectancy, mejor/peor símbolo) a Telegram
+python weekly_summary.py                  # últimos 7 días
+python weekly_summary.py --days 30        # últimos 30 días
+python weekly_summary.py --dry-run        # solo consola, no manda nada
+```
+
+Si usás el modo serverless (Vercel + Supabase), `schema.sql` ya trae las tablas
+`open_trades`/`closed_trades`/`polymarket_signals` — volvé a correrlo en el SQL Editor si tu
+proyecto es de antes de este cambio, y el dashboard de Next.js (`dashboard/`) ya muestra las
+mismas tarjetas de win rate/expectancy/profit factor.
+
+## Backtesting y tracking de resultados — Polymarket
+
+Hasta ahora el módulo Polymarket no tenía ninguna forma de saber si `generate_polymarket_signal()`
+tiene edge real. Dos piezas nuevas cierran ese gap:
+
+**`polymarket_backtest.py`** — equivalente de `backtest.py` pero para mercados de Polymarket ya
+resueltos: trae mercados cerrados, descarga el historial real de precios de los tokens YES/NO,
+y camina el historial punto a punto simulando entrada/target/stop.
+
+```bash
+python polymarket_backtest.py --limit 100
+python polymarket_backtest.py --limit 200 --output resultados_pm.csv
+```
+
+Ver las limitaciones documentadas al principio del archivo (liquidez/volumen usados son los
+actuales, no los históricos de cada punto en el tiempo).
+
+**Tracking de señales en vivo** — cada señal con plan de salida que `polymarket_main.py` manda
+por Telegram ahora se registra en la base (`polymarket_signals`). `polymarket_track_results.py`,
+corrido periódicamente, revisa esas señales pendientes y registra si tocaron el target o el stop:
+
+```bash
+python polymarket_track_results.py              # un chequeo y termina
+python polymarket_track_results.py --loop 1800  # cada 30 min, en loop
+```
+
+Con eso, `db.polymarket_stats_summary()` (visible en `local_dashboard.py` y en el dashboard de
+Next.js) ya refleja win rate real sobre señales resueltas, no solo señales enviadas.
+
+**Gráfico de la señal** — cada señal con plan de salida ahora también manda una imagen a
+Telegram con la curva de precio y la entrada/target/stop marcados (`polymarket_chart.py`),
+usando el mismo historial que ya se descargaba para generar la señal.
 
 ## ¿Se puede desplegar en Vercel?
 
@@ -236,8 +329,14 @@ de raíz sin depender de VPN en tu propia conexión.
 | `polymarket_signal_engine.py` | Detecta ineficiencia de precio y momentum en mercados de Polymarket |
 | `polymarket_main.py` | Orquesta el loop de análisis de Polymarket (solo lectura, ver sección arriba) |
 | `polymarket_state.py` | Deduplicación de señales de Polymarket entre ciclos (`polymarket_state.json`) |
+| `polymarket_backtest.py` | Backtest de `generate_polymarket_signal()` sobre mercados resueltos reales |
+| `polymarket_track_results.py` | Revisa señales de Polymarket pendientes y registra target/stop |
+| `polymarket_chart.py` | Gráfico de la señal de Polymarket (precio + entrada/target/stop) para Telegram |
 | `main.py` | Orquesta el loop 24/7 (modo VPS) |
 | `backtest.py` | Backtest de `generate_signal()` sobre histórico real (ver sección arriba) |
+| `calibrate_weights.py` | Calibra los pesos del score con regresión logística sobre resultados reales |
+| `local_dashboard.py` | Dashboard local (SQLite) sin depender de Next.js/Vercel/Supabase |
+| `weekly_summary.py` | Resumen semanal de performance real por Telegram |
 | `db.py` | Persistencia SQLite (modo VPS) |
 | `supabase_db.py` | Persistencia Postgres vía Supabase (modo serverless) |
 | `api/cycle.py` | Función de Vercel: un ciclo de escaneo, disparada por cron externo |
@@ -251,14 +350,42 @@ de raíz sin depender de VPN en tu propia conexión.
 
 ## Extensiones razonables (no incluidas todavía)
 
-- Backtesting sobre datos históricos antes de arriesgar capital real.
-- Trailing stop / cierre parcial de posiciones abiertas.
 - Migración a Vercel + Supabase (ver sección de arriba) si preferís serverless a un VPS.
 - Apalancamiento vía futuros — deliberadamente fuera de este diseño por el riesgo de liquidación;
   si lo querés, es una capa adicional sobre `exchange_client.py`, no un rediseño completo.
+- Recalibrar `calibrate_weights.py` con más historial y aplicar los coeficientes resultantes en
+  `signal_engine.py` — hoy el script solo imprime los coeficientes, no los aplica solo.
 
 ## Cambios recientes
 
+- **Corregido** (`indicators.py`): `ema()` sembraba con `closes[0]` sin importar `window`, y como
+  `signal_engine` pasa una ventana rolling que se recorta distinto en cada ciclo, el punto de
+  arranque cambiaba cada vez y el EMA "saltaba" en vez de evolucionar suavemente. Ahora siembra
+  con `SMA(window)`, el estándar para reducir ese sesgo de arranque.
+- **Nuevo** (`backtest.py`): `--simulate-trailing` (replica el trailing stop real de
+  `position_manager.py`) y `--oos-frac` (split walk-forward in-sample/out-of-sample) — ver
+  sección "Backtesting del motor de señales".
+- **Nuevo** (`calibrate_weights.py`): calibración de los pesos del score con regresión logística
+  sobre resultados reales del backtest.
+- **Nuevo** (`risk_manager.py`, `db.py`, `config.py`): chequeo de exposición correlacionada
+  (`MAX_CORRELATED_POSITIONS`) y ATR stop mult adaptativo por régimen de volatilidad
+  (`ADAPTIVE_ATR_STOP`).
+- **Nuevo** (`position_manager.py`, `db.py`): las posiciones abiertas ahora se cierran de verdad
+  cuando el precio toca el stop o el target — antes solo se les movía el trailing stop, nunca se
+  detectaba el cierre ni se registraba el resultado. Nueva tabla `closed_trades` con el R múltiplo
+  de cada trade.
+- **Nuevo** (`local_dashboard.py`, `weekly_summary.py`): dashboard local sin depender de
+  Vercel/Supabase, y resumen semanal de performance real por Telegram.
+- **Nuevo** (`dashboard/`, `schema.sql`, `supabase_db.py`): tarjetas de win rate/expectancy/profit
+  factor real en el dashboard de Next.js, con las tablas y métodos equivalentes agregados también
+  al modo serverless (Supabase) para que `risk_manager.check()` no rompa en `api/cycle.py`.
+- **Nuevo** (`polymarket_backtest.py`): backtest del motor de señales de Polymarket sobre mercados
+  ya resueltos — antes no había ninguna forma de medir si tenía edge real.
+- **Nuevo** (`polymarket_track_results.py`, `db.py`): tracking de resultados de señales de
+  Polymarket con plan de salida (antes solo existía deduplicación de avisos, sin registro de
+  resultado).
+- **Nuevo** (`polymarket_chart.py`, `telegram_notifier.py`): gráfico de la curva de precio con
+  entrada/target/stop marcados, enviado junto al memo de texto de cada señal de Polymarket.
 - **Corregido** (`polymarket_client.py`): el historial de precios se pedía con el `conditionId`
   del mercado, pero la API CLOB (`/prices-history`) necesita el `clobTokenId` del outcome
   específico (YES o NO). Con el id equivocado, el endpoint devolvía historial vacío en

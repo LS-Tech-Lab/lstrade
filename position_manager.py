@@ -26,6 +26,7 @@ class PositionManager:
             direction = trade["direction"]
             entry = trade["entry_price"]
             current_stop = trade["current_stop"]
+            target_price = trade["target_price"]
             position_size = trade["position_size"]
             trade_id = trade["id"]
             
@@ -74,6 +75,42 @@ class PositionManager:
                         # Actualizar el order_id en la DB (simplificado, requeriría un método update_order_id)
                     
                     self.notifier.send_message(f"🛡️ *Trailing Stop Actualizado*\n{symbol} {direction}\nNuevo Stop: `{new_stop:.6f}`")
+                    current_stop = new_stop
+
+                # NUEVO: detectar si el precio ya cruzó el stop o el target.
+                # Antes esto no se chequeaba nunca acá — una posición podía
+                # quedar en open_trades indefinidamente (o solo se enteraba
+                # si LIVE_TRADING tenía una orden de stop real en el exchange
+                # que la ejecutara del otro lado), y en modo papel nunca se
+                # cerraba ni quedaba registro de si ganó o perdió. Sin esto no
+                # había forma de calcular win rate/expectancy real.
+                hit_target = (current_price >= target_price) if direction == "LONG" else (current_price <= target_price)
+                hit_stop = (current_price <= current_stop) if direction == "LONG" else (current_price >= current_stop)
+
+                if hit_target or hit_stop:
+                    outcome = "target" if hit_target else "stop"
+                    exit_price = target_price if hit_target else current_stop
+
+                    if self.config.LIVE_TRADING and trade["order_id"] and outcome == "target":
+                        # Si ganó por target y había una orden de stop viva en el exchange, cancelarla
+                        try:
+                            self.exchange.cancel_order(symbol, trade["order_id"])
+                        except Exception:
+                            pass
+                        side = "sell" if direction == "LONG" else "buy"
+                        try:
+                            self.exchange.create_order(symbol, side, position_size, order_type="market")
+                        except Exception as e:
+                            log.warning(f"No se pudo cerrar {symbol} en el exchange al tocar target: {e}")
+
+                    r_multiple = self.db.close_trade_with_outcome(trade, exit_price, outcome)
+                    emoji = "✅" if outcome == "target" else "🛑"
+                    r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
+                    log.info(f"[CIERRE] {symbol} {direction}: {outcome} @ {exit_price:.6f}{r_text}")
+                    self.notifier.send_message(
+                        f"{emoji} *Posición cerrada* — {symbol} {direction}\n"
+                        f"Resultado: {outcome.upper()}{r_text}\nSalida: `{exit_price:.6f}`"
+                    )
 
             except Exception as e:
                 log.warning(f"Error gestionando posición {symbol}: {e}")

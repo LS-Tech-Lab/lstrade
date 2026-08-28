@@ -32,7 +32,46 @@ class Database:
             target_price REAL NOT NULL,
             position_size REAL NOT NULL,
             order_id TEXT,
-            ts_opened REAL NOT NULL)""")
+            ts_opened REAL NOT NULL,
+            stop_distance REAL)""")
+
+        # Columna nueva en bases ya existentes (SQLite no soporta
+        # "ADD COLUMN IF NOT EXISTS", así que se intenta y se ignora si ya está).
+        try:
+            c.execute("ALTER TABLE open_trades ADD COLUMN stop_distance REAL")
+        except sqlite3.OperationalError:
+            pass
+
+        # NUEVO: Trades cerrados con resultado — sin esto no había forma de
+        # calcular win rate/expectancy reales sobre lo que pasó en producción,
+        # solo sobre el backtest offline.
+        c.execute("""CREATE TABLE IF NOT EXISTS closed_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            entry_price REAL NOT NULL,
+            exit_price REAL NOT NULL,
+            outcome TEXT NOT NULL,
+            r_multiple REAL,
+            ts_opened REAL NOT NULL,
+            ts_closed REAL NOT NULL)""")
+
+        # NUEVO: Señales de Polymarket con plan de salida, para poder medir
+        # después si el target o el stop se tocaron primero — antes no había
+        # ningún registro de resultado, solo deduplicación de avisos.
+        c.execute("""CREATE TABLE IF NOT EXISTS polymarket_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            condition_id TEXT NOT NULL,
+            question TEXT,
+            direction TEXT NOT NULL,
+            token_id TEXT NOT NULL,
+            entry REAL NOT NULL,
+            target REAL NOT NULL,
+            stop REAL NOT NULL,
+            ts_signaled REAL NOT NULL,
+            outcome TEXT,
+            exit_price REAL,
+            ts_resolved REAL)""")
         self.conn.commit()
 
     def record_equity(self, equity):
@@ -74,16 +113,33 @@ class Database:
         self.conn.commit()
 
     # NUEVO: Métodos para Trailing Stop
-    def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size, order_id=None):
+    def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
+                        order_id=None, stop_distance=None):
+        if stop_distance is None:
+            stop_distance = abs(entry_price - stop_price)
         self.conn.execute(
-            """INSERT INTO open_trades (symbol, direction, entry_price, current_stop, target_price, position_size, order_id, ts_opened)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (symbol, direction, entry_price, stop_price, target_price, position_size, order_id, time.time())
+            """INSERT INTO open_trades
+            (symbol, direction, entry_price, current_stop, target_price, position_size, order_id, ts_opened, stop_distance)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (symbol, direction, entry_price, stop_price, target_price, position_size, order_id, time.time(), stop_distance)
         )
         self.conn.commit()
 
     def get_open_trades(self):
         return self.conn.execute("SELECT * FROM open_trades").fetchall()
+
+    def count_open_trades_by_direction(self, direction):
+        """
+        Cuántas posiciones abiertas ya van en la misma dirección (LONG/SHORT).
+        Se usa como proxy simple de correlación: en cripto, la mayoría de las
+        altcoins se mueven junto con BTC, así que varias posiciones LONG
+        simultáneas suelen ser, en la práctica, una sola apuesta direccional
+        concentrada — aunque estén repartidas en símbolos distintos.
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(*) as n FROM open_trades WHERE direction = ?", (direction,)
+        ).fetchone()
+        return row["n"] if row else 0
 
     def update_trade_stop(self, trade_id, new_stop_price):
         self.conn.execute("UPDATE open_trades SET current_stop = ? WHERE id = ?", (new_stop_price, trade_id))
@@ -92,3 +148,122 @@ class Database:
     def close_trade(self, trade_id):
         self.conn.execute("DELETE FROM open_trades WHERE id = ?", (trade_id,))
         self.conn.commit()
+
+    def close_trade_with_outcome(self, trade, exit_price, outcome):
+        """
+        Cierra una posición abierta Y registra el resultado en closed_trades
+        (win/loss en R). Sin esto no había ninguna tabla que guardara qué pasó
+        realmente con cada trade una vez que se abría — quedaba en open_trades
+        para siempre o se borraba sin dejar rastro del resultado.
+        """
+        entry = trade["entry_price"]
+        direction = trade["direction"]
+        stop_distance = trade["stop_distance"] if trade["stop_distance"] else None
+        r_multiple = None
+        if stop_distance:
+            sign = 1 if direction == "LONG" else -1
+            r_multiple = ((exit_price - entry) / stop_distance) * sign
+
+        self.conn.execute(
+            """INSERT INTO closed_trades (symbol, direction, entry_price, exit_price, outcome, r_multiple, ts_opened, ts_closed)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (trade["symbol"], direction, entry, exit_price, outcome, r_multiple, trade["ts_opened"], time.time())
+        )
+        self.conn.execute("DELETE FROM open_trades WHERE id = ?", (trade["id"],))
+        self.conn.commit()
+        return r_multiple
+
+    def get_closed_trades(self, limit=500):
+        return self.conn.execute(
+            "SELECT * FROM closed_trades ORDER BY ts_closed DESC LIMIT ?", (limit,)
+        ).fetchall()
+
+    def stats_by_symbol(self, since_ts=None):
+        """Win rate/expectancy por símbolo, opcionalmente desde una fecha (epoch)."""
+        query = "SELECT symbol, outcome, r_multiple FROM closed_trades WHERE r_multiple IS NOT NULL"
+        params = ()
+        if since_ts is not None:
+            query += " AND ts_closed >= ?"
+            params = (since_ts,)
+        rows = self.conn.execute(query, params).fetchall()
+        by_symbol = {}
+        for r in rows:
+            by_symbol.setdefault(r["symbol"], []).append(r)
+        result = {}
+        for symbol, trades in by_symbol.items():
+            n = len(trades)
+            wins = [t["r_multiple"] for t in trades if t["outcome"] == "target"]
+            result[symbol] = {
+                "n": n,
+                "win_rate": len(wins) / n * 100,
+                "expectancy_r": sum(t["r_multiple"] for t in trades) / n,
+                "total_r": sum(t["r_multiple"] for t in trades),
+            }
+        return result
+
+    # NUEVO: Tracking de resultados de señales de Polymarket
+    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop):
+        self.conn.execute(
+            """INSERT INTO polymarket_signals
+            (condition_id, question, direction, token_id, entry, target, stop, ts_signaled)
+            VALUES (?,?,?,?,?,?,?,?)""",
+            (condition_id, question, direction, token_id, entry, target, stop, time.time())
+        )
+        self.conn.commit()
+
+    def get_open_polymarket_signals(self):
+        return self.conn.execute(
+            "SELECT * FROM polymarket_signals WHERE outcome IS NULL"
+        ).fetchall()
+
+    def resolve_polymarket_signal(self, signal_id, exit_price, outcome):
+        self.conn.execute(
+            "UPDATE polymarket_signals SET outcome=?, exit_price=?, ts_resolved=? WHERE id=?",
+            (outcome, exit_price, time.time(), signal_id)
+        )
+        self.conn.commit()
+
+    def polymarket_stats_summary(self):
+        rows = self.conn.execute(
+            "SELECT direction, entry, target, stop, outcome, exit_price FROM polymarket_signals WHERE outcome IS NOT NULL"
+        ).fetchall()
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "win_rate": None, "expectancy_r": None}
+        r_multiples = []
+        wins = 0
+        for r in rows:
+            stop_distance = abs(r["entry"] - r["stop"])
+            if stop_distance <= 0:
+                continue
+            rm = (r["exit_price"] - r["entry"]) / stop_distance
+            r_multiples.append(rm)
+            if r["outcome"] == "target":
+                wins += 1
+        return {
+            "n": n,
+            "win_rate": wins / n * 100,
+            "expectancy_r": sum(r_multiples) / len(r_multiples) if r_multiples else None,
+        }
+
+    def stats_summary(self, since_ts=None):
+        """Win rate, expectancy y profit factor reales sobre trades ya cerrados."""
+        query = "SELECT outcome, r_multiple FROM closed_trades WHERE r_multiple IS NOT NULL"
+        params = ()
+        if since_ts is not None:
+            query += " AND ts_closed >= ?"
+            params = (since_ts,)
+        rows = self.conn.execute(query, params).fetchall()
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "win_rate": None, "expectancy_r": None, "profit_factor": None}
+        wins = [r["r_multiple"] for r in rows if r["outcome"] == "target"]
+        losses = [r["r_multiple"] for r in rows if r["outcome"] == "stop"]
+        gross_win = sum(r for r in wins if r > 0)
+        gross_loss = abs(sum(r for r in losses if r < 0))
+        return {
+            "n": n,
+            "win_rate": len(wins) / n * 100,
+            "expectancy_r": sum(r["r_multiple"] for r in rows) / n,
+            "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
+        }

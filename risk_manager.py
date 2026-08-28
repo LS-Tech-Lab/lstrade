@@ -5,6 +5,22 @@ import logging
 
 log = logging.getLogger("risk_manager")
 
+
+def adaptive_atr_stop_mult(config, volatility_pct):
+    """
+    Múltiplo de ATR para el stop, escalado por régimen de volatilidad si
+    ADAPTIVE_ATR_STOP está activo (ver config.py). Compartido entre
+    risk_manager.check() (producción) y backtest.py, para que el backtest
+    mida exactamente lo mismo que corre en vivo.
+    """
+    if not getattr(config, "ADAPTIVE_ATR_STOP", False):
+        return config.ATR_STOP_MULT
+    ref = getattr(config, "ATR_STOP_VOL_REF_PCT", 1.0) or 1.0
+    scale = volatility_pct / ref if ref > 0 else 1.0
+    mult = config.ATR_STOP_MULT * scale
+    return max(config.ATR_STOP_MULT_MIN, min(config.ATR_STOP_MULT_MAX, mult))
+
+
 class RiskManager:
     def __init__(self, config, db):
         self.config = config
@@ -33,7 +49,8 @@ class RiskManager:
     def check(self, symbol, signal, equity, ticker=None):
         atr_val = signal["atr"]
         price = signal["price"]
-        stop_distance = atr_val * self.config.ATR_STOP_MULT
+        stop_mult = adaptive_atr_stop_mult(self.config, signal["volatility"] * 100)
+        stop_distance = atr_val * stop_mult
         risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100)
         position_size = risk_amount / stop_distance if stop_distance > 0 else 0
         
@@ -57,6 +74,16 @@ class RiskManager:
         else:
             checks.append({"label": "Spread (datos no disponibles)", "ok": True}) # Fallo seguro si no hay datos
 
+        # NUEVO: Exposición correlacionada — evita que varias posiciones en la
+        # misma dirección (LONG o SHORT), aunque sean símbolos distintos,
+        # terminen siendo una sola apuesta concentrada disfrazada de cartera
+        # diversificada. Ver MAX_CORRELATED_POSITIONS en config.py.
+        correlated_count = self.db.count_open_trades_by_direction(signal["direction"])
+        checks.append({
+            "label": f"Posiciones correlacionadas ({signal['direction']}) < {self.config.MAX_CORRELATED_POSITIONS}",
+            "ok": correlated_count < self.config.MAX_CORRELATED_POSITIONS,
+        })
+
         overall_pass = all(c["ok"] for c in checks)
         return {
             "pass": overall_pass,
@@ -64,6 +91,7 @@ class RiskManager:
             "risk_amount": risk_amount,
             "position_size": position_size,
             "stop_distance": stop_distance,
+            "atr_stop_mult": stop_mult,
             "exposure_pct": exposure_pct,
             "drawdown_pct": dd_pct,
             "volatility_pct": vol_pct,

@@ -23,6 +23,42 @@ function EquitySparkline({ points }) {
   );
 }
 
+function StatCard({ label, value, suffix = "", tone }) {
+  return (
+    <div className={`stat-card ${tone || ""}`}>
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value === null || value === undefined ? "—" : `${value}${suffix}`}</div>
+    </div>
+  );
+}
+
+function StatsRow({ title, stats, showProfitFactor }) {
+  if (!stats || stats.n === 0) {
+    return (
+      <div className="card">
+        <h2>{title}</h2>
+        <p className="empty">Sin trades cerrados todavía — las métricas aparecen cuando haya resultados reales.</p>
+      </div>
+    );
+  }
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  return (
+    <div className="card">
+      <h2>{title}</h2>
+      <div className="stats-grid">
+        <StatCard label="Trades cerrados" value={stats.n} />
+        <StatCard label="Win rate" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone} />
+        {stats.expectancy_r !== undefined && (
+          <StatCard label="Expectancy" value={stats.expectancy_r >= 0 ? `+${stats.expectancy_r.toFixed(2)}` : stats.expectancy_r.toFixed(2)} suffix="R" tone={stats.expectancy_r >= 0 ? "ok" : "fail"} />
+        )}
+        {showProfitFactor && stats.profit_factor !== null && stats.profit_factor !== undefined && (
+          <StatCard label="Profit factor" value={stats.profit_factor.toFixed(2)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -76,6 +112,9 @@ export default function Dashboard() {
           Esperando tu respuesta en Telegram para: {data.pending.map((p) => p.symbol).join(", ")}
         </div>
       )}
+
+      <StatsRow title="Performance — Cripto (trades cerrados)" stats={data.stats} showProfitFactor />
+      <StatsRow title="Performance — Polymarket (señales resueltas)" stats={data.polymarket_stats} />
 
       <div className="card">
         <h2>Equity</h2>

@@ -68,6 +68,19 @@ tr:last-child td{border-bottom:none;}
 .decision-rejected, .decision-blocked{color:var(--bad); font-weight:700;}
 .decision-watchlist, .decision-paper_logged{color:var(--ink-soft); font-weight:700;}
 
+/* NUEVO: tarjetas de estadísticas (win rate / expectancy / profit factor) */
+.stats-grid{
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px;
+}
+.stat-card{
+  border:1.5px solid var(--line); border-radius:8px; padding:10px 12px;
+  background:var(--bg);
+}
+.stat-card.ok{border-color:var(--good); background:var(--good-dim);}
+.stat-card.fail{border-color:var(--bad); background:var(--bad-dim);}
+.stat-label{font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); margin-bottom:4px;}
+.stat-value{font-size:20px; font-weight:700; font-family:'Archivo Black', sans-serif;}
+
 .error{color:var(--bad); font-size:12px;}
 
 /* login */

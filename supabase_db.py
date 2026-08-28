@@ -79,6 +79,100 @@ class SupabaseDatabase:
         )
         return res.data
 
+    # --- posiciones abiertas / correlación (paridad con db.py) ---
+    def count_open_trades_by_direction(self, direction):
+        """
+        Requerido por RiskManager.check() (exposición correlacionada) — sin
+        esto, api/cycle.py rompía al llamar risk_manager.check() en modo
+        serverless, porque este método no existía acá.
+        """
+        res = (
+            self.client.table("open_trades")
+            .select("id", count="exact")
+            .eq("direction", direction)
+            .execute()
+        )
+        return res.count or 0
+
+    def get_open_trades(self):
+        res = self.client.table("open_trades").select("*").execute()
+        return res.data or []
+
+    def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
+                        order_id=None, stop_distance=None):
+        if stop_distance is None:
+            stop_distance = abs(entry_price - stop_price)
+        self.client.table("open_trades").insert({
+            "symbol": symbol, "direction": direction, "entry_price": entry_price,
+            "current_stop": stop_price, "target_price": target_price,
+            "position_size": position_size, "order_id": order_id,
+            "ts_opened": time.time(), "stop_distance": stop_distance,
+        }).execute()
+
+    def close_trade_with_outcome(self, trade, exit_price, outcome):
+        entry = trade["entry_price"]
+        direction = trade["direction"]
+        stop_distance = trade.get("stop_distance")
+        r_multiple = None
+        if stop_distance:
+            sign = 1 if direction == "LONG" else -1
+            r_multiple = ((exit_price - entry) / stop_distance) * sign
+        self.client.table("closed_trades").insert({
+            "symbol": trade["symbol"], "direction": direction, "entry_price": entry,
+            "exit_price": exit_price, "outcome": outcome, "r_multiple": r_multiple,
+            "ts_opened": trade["ts_opened"], "ts_closed": time.time(),
+        }).execute()
+        self.client.table("open_trades").delete().eq("id", trade["id"]).execute()
+        return r_multiple
+
+    def stats_summary(self, since_ts=None):
+        query = self.client.table("closed_trades").select("outcome,r_multiple")
+        if since_ts is not None:
+            query = query.gte("ts_closed", since_ts)
+        res = query.execute()
+        rows = [r for r in (res.data or []) if r.get("r_multiple") is not None]
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "win_rate": None, "expectancy_r": None, "profit_factor": None}
+        wins = [r["r_multiple"] for r in rows if r["outcome"] == "target"]
+        losses = [r["r_multiple"] for r in rows if r["outcome"] == "stop"]
+        gross_win = sum(r for r in wins if r > 0)
+        gross_loss = abs(sum(r for r in losses if r < 0))
+        return {
+            "n": n, "win_rate": len(wins) / n * 100,
+            "expectancy_r": sum(r["r_multiple"] for r in rows) / n,
+            "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
+        }
+
+    # --- señales de Polymarket (paridad con db.py) ---
+    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop):
+        self.client.table("polymarket_signals").insert({
+            "condition_id": condition_id, "question": question, "direction": direction,
+            "token_id": token_id, "entry": entry, "target": target, "stop": stop,
+            "ts_signaled": time.time(),
+        }).execute()
+
+    def polymarket_stats_summary(self):
+        res = self.client.table("polymarket_signals").select("direction,entry,target,stop,outcome,exit_price") \
+            .not_.is_("outcome", "null").execute()
+        rows = res.data or []
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "win_rate": None, "expectancy_r": None}
+        r_multiples, wins = [], 0
+        for r in rows:
+            stop_distance = abs(r["entry"] - r["stop"])
+            if stop_distance <= 0:
+                continue
+            rm = (r["exit_price"] - r["entry"]) / stop_distance
+            r_multiples.append(rm)
+            if r["outcome"] == "target":
+                wins += 1
+        return {
+            "n": n, "win_rate": wins / n * 100,
+            "expectancy_r": sum(r_multiples) / len(r_multiples) if r_multiples else None,
+        }
+
     # --- decisiones pendientes de aprobación por Telegram (solo modo serverless) ---
     def create_pending_decision(self, message_id, symbol, signal, risk_report, plan):
         self.client.table("pending_decisions").insert({

@@ -44,6 +44,31 @@ class TelegramNotifier:
     def send_alert(self, text):
         return self.send_message(f"\U0001F514 {text}")
 
+    def send_photo(self, photo_bytes, caption=None, filename="chart.png"):
+        """
+        Manda una imagen (bytes de un PNG, por ejemplo generado con
+        matplotlib) como foto de Telegram. A diferencia de send_message,
+        esto va como multipart/form-data, no JSON.
+        """
+        if not self.enabled:
+            return None
+        url = API_BASE.format(token=self.token, method="sendPhoto")
+        data = {"chat_id": self.chat_id}
+        if caption:
+            data["caption"] = caption
+            data["parse_mode"] = "Markdown"
+        try:
+            resp = requests.post(
+                url, data=data,
+                files={"photo": (filename, photo_bytes, "image/png")},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            log.warning(f"No se pudo enviar la imagen a Telegram: {e}")
+            return None
+
     def send_circuit_breaker(self, reason):
         return self.send_message(f"\U0001F6D1 *CIRCUIT BREAKER ACTIVADO*\n{reason}")
 

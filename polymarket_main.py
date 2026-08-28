@@ -7,6 +7,8 @@ import logging
 import sys
 import time
 from config import Config
+from db import Database
+from polymarket_chart import build_signal_chart
 from polymarket_client import PolymarketClient
 from polymarket_signal_engine import generate_polymarket_signal
 from polymarket_state import PolymarketStateStore
@@ -75,7 +77,7 @@ def build_polymarket_memo(signal, markdown=False):
     return "\n".join(lines)
 
 
-def run_polymarket_cycle(config, client, notifier, state_store, top_n=None):
+def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=None):
     """Ejecuta un ciclo de análisis de mercados de Polymarket."""
     log.info("Escaneando mercados de Polymarket...")
     
@@ -90,6 +92,8 @@ def run_polymarket_cycle(config, client, notifier, state_store, top_n=None):
     
     signals = []
     parsed_markets = []
+    market_by_condition_id = {}
+    price_history_by_condition_id = {}
     
     for market_raw in markets_raw:
         market = client.parse_market_for_analysis(market_raw)
@@ -97,6 +101,7 @@ def run_polymarket_cycle(config, client, notifier, state_store, top_n=None):
             continue
         
         parsed_markets.append(market)
+        market_by_condition_id[market["condition_id"]] = market
         
         if market["liquidity"] < 1000:
             continue
@@ -107,6 +112,7 @@ def run_polymarket_cycle(config, client, notifier, state_store, top_n=None):
         else:
             price_history = client.fetch_price_history(market["yes_token_id"], interval="1h", fidelity=60)
         time.sleep(0.2)
+        price_history_by_condition_id[market["condition_id"]] = price_history
         
         signal = generate_polymarket_signal(
             market, price_history,
@@ -159,6 +165,33 @@ def run_polymarket_cycle(config, client, notifier, state_store, top_n=None):
         memo_telegram = build_polymarket_memo(signal, markdown=True)
         notifier.send_message(memo_telegram)
         state_store.record_notified(signal["market"]["condition_id"], signal["direction"], signal["score"])
+
+        # NUEVO: gráfico de la curva de probabilidad con entrada/target/stop
+        # marcados — antes la señal de Polymarket era pura data en texto a
+        # pesar de tener un historial de precios ideal para visualizar.
+        if signal.get("trade_plan"):
+            history = price_history_by_condition_id.get(signal["market"]["condition_id"])
+            if history and len(history) >= 5:
+                try:
+                    chart_png = build_signal_chart(signal, history)
+                    notifier.send_photo(chart_png, caption=f"📈 {signal['market']['question'][:80]}")
+                except Exception as e:
+                    log.warning(f"No se pudo generar/enviar el gráfico de la señal: {e}")
+
+        # NUEVO: registrar la señal con plan de salida para poder medir
+        # después si ganó o perdió (ver polymarket_track_results.py).
+        if db is not None and signal.get("trade_plan"):
+            condition_id = signal["market"]["condition_id"]
+            original_market = market_by_condition_id.get(condition_id, {})
+            token_id = original_market.get("yes_token_id") if signal["direction"] == "YES" \
+                else original_market.get("no_token_id")
+            if token_id:
+                tp = signal["trade_plan"]
+                db.record_polymarket_signal(
+                    condition_id, signal["market"]["question"], signal["direction"], token_id,
+                    tp["entry"], tp["target"], tp["stop"],
+                )
+
         time.sleep(0.5)
     
     return signals
@@ -180,6 +213,7 @@ def main():
     
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
+    db = Database(config.DB_PATH)
     state_store = PolymarketStateStore(
         resend_cooldown_hours=getattr(config, "POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
     )
@@ -195,12 +229,12 @@ def main():
         )
     
     if args.once:
-        run_polymarket_cycle(config, client, notifier, state_store, top_n=args.top)
+        run_polymarket_cycle(config, client, notifier, state_store, db=db, top_n=args.top)
         return
     
     while True:
         try:
-            run_polymarket_cycle(config, client, notifier, state_store, top_n=args.top)
+            run_polymarket_cycle(config, client, notifier, state_store, db=db, top_n=args.top)
         except KeyboardInterrupt:
             log.info("Detenido manualmente por el usuario.")
             if notifier.enabled:

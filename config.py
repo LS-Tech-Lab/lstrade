@@ -37,9 +37,29 @@ class Config:
     MAX_VOLATILITY_PCT = _float("MAX_VOLATILITY_PCT", 4.0)
     ATR_STOP_MULT = _float("ATR_STOP_MULT", 1.5)
     MIN_RR = _float("MIN_RR", 1.8)
+
+    # NUEVO: ATR_STOP_MULT adaptativo por régimen de volatilidad. Antes era un
+    # número fijo sin importar si el mercado está calmo o violento — eso hace
+    # que en regímenes de alta volatilidad el stop quede relativamente
+    # "angosto" (más probabilidad de que lo saque el ruido) y en regímenes
+    # calmos quede relativamente "ancho" (peor RR real del que parece). Con
+    # ADAPTIVE_ATR_STOP=true, el múltiplo escala según qué tan alta esté la
+    # volatilidad reciente (signal["volatility"], en %) respecto a
+    # ATR_STOP_VOL_REF_PCT, entre ATR_STOP_MULT_MIN y ATR_STOP_MULT_MAX.
+    ADAPTIVE_ATR_STOP = _bool("ADAPTIVE_ATR_STOP", False)
+    ATR_STOP_VOL_REF_PCT = _float("ATR_STOP_VOL_REF_PCT", 1.0)
+    ATR_STOP_MULT_MIN = _float("ATR_STOP_MULT_MIN", 1.0)
+    ATR_STOP_MULT_MAX = _float("ATR_STOP_MULT_MAX", 2.5)
     
     # NUEVO: Filtro de Spread/Liquidez
     MAX_SPREAD_PCT = _float("MAX_SPREAD_PCT", 0.5)  # Máximo 0.5% de diferencia entre bid y ask
+
+    # NUEVO: Límite de exposición correlacionada — máximo de posiciones abiertas
+    # simultáneas en la MISMA dirección (LONG o SHORT). MAX_EXPOSURE_PCT ya
+    # limita el % de equity comprometido, pero no distingue si esas posiciones
+    # están correlacionadas (varias altcoins moviéndose junto con BTC son, en
+    # la práctica, una sola apuesta direccional concentrada).
+    MAX_CORRELATED_POSITIONS = _int("MAX_CORRELATED_POSITIONS", 3)
 
     LIVE_TRADING = _bool("LIVE_TRADING", False)
     AUTO_EXECUTE = _bool("AUTO_EXECUTE", False)

@@ -13,12 +13,25 @@ def sma(candles, window):
     return sum(closes[-window:]) / window
 
 def ema(candles, window):
+    """
+    EMA con semilla correcta: SMA(window) de las primeras `window` velas,
+    y de ahí en más se aplica el suavizado exponencial sobre el resto.
+
+    Antes se sembraba con closes[0] sin importar `window`, y como el llamador
+    pasa una ventana rolling (recortada distinto en cada ciclo), el punto de
+    arranque cambiaba cada vez y el EMA "saltaba" en vez de evolucionar
+    suavemente — afectaba directo a ema_mid/ema_trend y por lo tanto al
+    filtro MTF. Sembrar con SMA(window) es el estándar y reduce mucho ese
+    sesgo de arranque (aunque seguir recalculando desde una ventana cruda en
+    cada ciclo, en vez de mantener estado persistente entre ciclos, sigue
+    siendo una limitación menor de este enfoque "stateless").
+    """
     closes = _closes(candles)
     if len(closes) < window:
         return None
     k = 2 / (window + 1)
-    value = closes[0]
-    for price in closes[1:]:
+    value = sum(closes[:window]) / window
+    for price in closes[window:]:
         value = price * k + value * (1 - k)
     return value
 

@@ -41,3 +41,52 @@ create table if not exists pending_decisions (
 
 create index if not exists idx_decisions_ts on decisions (ts desc);
 create index if not exists idx_equity_ts on equity_history (ts desc);
+
+-- NUEVO: posiciones abiertas y trailing stop (antes solo existía en SQLite/VPS).
+-- Se agrega acá para que RiskManager.check() (que ahora chequea exposición
+-- correlacionada contando posiciones abiertas por dirección) funcione igual
+-- en modo serverless. api/cycle.py todavía no gestiona trailing stop activo
+-- (el timeout de 10s de Vercel Hobby no lo permite sin una función aparte),
+-- pero la tabla existe para que el chequeo de riesgo no rompa.
+create table if not exists open_trades (
+    id bigserial primary key,
+    symbol text not null,
+    direction text not null,
+    entry_price double precision not null,
+    current_stop double precision not null,
+    target_price double precision not null,
+    position_size double precision not null,
+    order_id text,
+    ts_opened double precision not null,
+    stop_distance double precision
+);
+
+create table if not exists closed_trades (
+    id bigserial primary key,
+    symbol text not null,
+    direction text not null,
+    entry_price double precision not null,
+    exit_price double precision not null,
+    outcome text not null,
+    r_multiple double precision,
+    ts_opened double precision not null,
+    ts_closed double precision not null
+);
+
+create table if not exists polymarket_signals (
+    id bigserial primary key,
+    condition_id text not null,
+    question text,
+    direction text not null,
+    token_id text not null,
+    entry double precision not null,
+    target double precision not null,
+    stop double precision not null,
+    ts_signaled double precision not null,
+    outcome text,
+    exit_price double precision,
+    ts_resolved double precision
+);
+
+create index if not exists idx_closed_trades_ts on closed_trades (ts_closed desc);
+create index if not exists idx_polymarket_signals_outcome on polymarket_signals (outcome);
