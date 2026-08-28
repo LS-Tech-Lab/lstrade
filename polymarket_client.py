@@ -21,14 +21,28 @@ class PolymarketClient:
             "Accept": "application/json"
         })
 
-    def fetch_active_markets(self, limit=50, offset=0, closed=False):
+    def fetch_active_markets(self, limit=50, offset=0, closed=False, active=None):
+        """
+        `active` se ajusta automáticamente según `closed` si no se pasa
+        explícito: un mercado no puede estar "activo" (abierto a trading) Y
+        "cerrado" (resuelto) a la vez en el modelo de datos de Polymarket —
+        pedir closed=true con active=true (como hacía esto antes, siempre
+        fijo) es una combinación contradictoria que devuelve resultados
+        inconsistentes o vacíos.
+        """
+        if active is None:
+            active = "false" if closed else "true"
+        # Para mercados cerrados, volume24hr suele ser 0 (ya no hay trading) —
+        # ordenar por volumen total tiene más sentido para priorizar los
+        # mercados con más historial real.
+        order_field = "volume" if closed else "volume24hr"
         try:
             params = {
                 "limit": limit,
                 "offset": offset,
                 "closed": str(closed).lower(),
-                "active": "true",
-                "order": "volume24hr",
+                "active": active if isinstance(active, str) else str(active).lower(),
+                "order": order_field,
                 "ascending": "false"
             }
             resp = self.session.get(f"{GAMMA_API}/markets", params=params, timeout=15)
@@ -95,6 +109,7 @@ class PolymarketClient:
                 "question": market.get("question", "Sin pregunta"),
                 "end_date": market.get("endDate"),
                 "volume_24h": float(market.get("volume24hr", 0) or 0),
+                "volume_total": float(market.get("volume", 0) or 0),
                 "liquidity": float(market.get("liquidity", 0) or 0),
                 "yes_price": yes_price,
                 "no_price": no_price,

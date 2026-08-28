@@ -379,6 +379,14 @@ de raíz sin depender de VPN en tu propia conexión.
 - **Nuevo** (`dashboard/`, `schema.sql`, `supabase_db.py`): tarjetas de win rate/expectancy/profit
   factor real en el dashboard de Next.js, con las tablas y métodos equivalentes agregados también
   al modo serverless (Supabase) para que `risk_manager.check()` no rompa en `api/cycle.py`.
+- **Corregido** (`polymarket_client.py`, `polymarket_backtest.py`): `fetch_active_markets()`
+  mandaba siempre `active=true`, incluso pidiendo `closed=true` — combinación contradictoria en
+  el modelo de datos de Polymarket (un mercado resuelto no puede seguir "activo"), que hacía que
+  el backtest paginara sin encontrar nada útil hasta pegarle a un 422 de la API. Ahora `active`
+  se ajusta solo según `closed` (override disponible si hace falta), y `polymarket_backtest.py`
+  filtra mercados cerrados por volumen total en vez de liquidez — la liquidez de un mercado
+  resuelto es ~0 estructuralmente (el order book se cierra), así que filtrar por ahí descartaba
+  prácticamente todo.
 - **Nuevo** (`polymarket_backtest.py`): backtest del motor de señales de Polymarket sobre mercados
   ya resueltos — antes no había ninguna forma de medir si tenía edge real.
 - **Nuevo** (`polymarket_track_results.py`, `db.py`): tracking de resultados de señales de

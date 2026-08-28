@@ -17,11 +17,17 @@ Cómo funciona:
 
 Limitaciones a tener en cuenta al leer los resultados (igual de honestas
 que las que ya documenta backtest.py para cripto):
-- Liquidez y volumen 24h son los ACTUALES del mercado (al momento de correr
-  el backtest), no los históricos de cada punto en el tiempo — Gamma no
-  expone esa serie histórica fácilmente. El componente de "rotación de
-  capital" del score puede estar usando datos algo desalineados en el
-  tiempo. La ineficiencia de precio y el momentum sí son 100% históricos.
+- Los mercados cerrados/resueltos tienen `liquidity` estructuralmente en 0
+  (el order book se cierra al resolver) — el componente de "rotación de
+  capital" del score (`volume_24h/liquidity`) nunca se activa en este
+  backtest, aunque sí se activa en producción con mercados abiertos. La
+  ineficiencia de precio y el momentum (los dos componentes que determinan
+  si hay señal y con qué dirección) sí son 100% reales e históricos, así
+  que el backtest sigue siendo representativo de la parte que más importa
+  — solo puede estar subestimando levemente el score de señales que en
+  vivo también tendrían bonus por liquidez.
+- Filtramos mercados por volumen TOTAL (no por liquidez, que sería ~0 en
+  casi todos los mercados cerrados).
 - Si un mercado nunca tuvo momentum > 2% en todo su historial, nunca genera
   señal (mismo comportamiento que producción — no hay fallback sin
   fundamento, a propósito).
@@ -49,17 +55,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 log = logging.getLogger("polymarket_backtest")
 
 
-def fetch_closed_markets(client, limit, min_liquidity=1000):
+def fetch_closed_markets(client, limit, min_volume=5000, max_offset=5000):
+    """
+    Trae mercados YA RESUELTOS (closed=true), filtrados por volumen TOTAL
+    (no liquidez — ver limitaciones arriba). `max_offset` frena la
+    paginación antes de pegarle a un límite de la API de Gamma (algunas
+    consultas devuelven 422 en offsets muy altos si se pide más de lo que
+    hay disponible).
+    """
     markets = []
     offset = 0
     page = 100
-    while len(markets) < limit:
+    while len(markets) < limit and offset < max_offset:
         batch = client.fetch_active_markets(limit=page, offset=offset, closed=True)
         if not batch:
             break
         for raw in batch:
             parsed = client.parse_market_for_analysis(raw)
-            if parsed and parsed["liquidity"] >= min_liquidity and parsed.get("yes_token_id"):
+            if parsed and parsed["volume_total"] >= min_volume and parsed.get("yes_token_id"):
                 markets.append(parsed)
         offset += page
         if len(batch) < page:
@@ -151,15 +164,15 @@ def summarize(trades):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=100, help="cuántos mercados cerrados analizar")
-    parser.add_argument("--min-liquidity", type=float, default=1000, help="liquidez mínima para considerar el mercado")
+    parser.add_argument("--min-volume", type=float, default=5000, help="volumen total mínimo para considerar el mercado")
     parser.add_argument("--output", help="CSV opcional con el detalle de cada trade simulado")
     args = parser.parse_args()
 
     config = Config
     client = PolymarketClient(config)
 
-    log.info(f"Buscando hasta {args.limit} mercados cerrados con liquidez >= {args.min_liquidity}...")
-    markets = fetch_closed_markets(client, args.limit, args.min_liquidity)
+    log.info(f"Buscando hasta {args.limit} mercados cerrados con volumen total >= {args.min_volume}...")
+    markets = fetch_closed_markets(client, args.limit, args.min_volume)
     log.info(f"{len(markets)} mercados encontrados. Descargando historial de precios...")
 
     all_trades = []
