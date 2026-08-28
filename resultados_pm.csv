@@ -1,10 +1,217 @@
 question,direction,outcome,r_multiple,entry_idx,exit_idx
-PFK Levski Sofia vs. AEK: O/U 2.5,NO,target,1.4761904761904763,118,145
-Will CA Guemes vs. Atletico de Rafaela end in a draw?,YES,target,1.5277777777777763,15,115
-ITF M25 Kursumlijska Banja 3 Men: Facundo Perlov vs Denis Kl,YES,target,4.9393939393939394,13,16
-Will the highest temperature in Chicago be between 68-69°F o,NO,target,0.1829268292682926,13,28
-Counter-Strike: Lavked vs megoshort (BO3) - Thunderpick Worl,NO,target,0.8018867924528302,13,14
-FC Cajamarca vs. CS Huancayo: O/U 2.5,NO,stop,-1.0,82,84
-"Bitcoin Up or Down - August 19, 12:00PM-4:00PM ET",NO,target,1.5121951219512189,23,24
-"Bitcoin Up or Down - August 19, 12:00PM-4:00PM ET",NO,target,0.38293216630196947,25,27
-Colorado Rockies vs. San Francisco Giants: O/U 7.5,YES,stop,-1.0,20,27
+Squid FDV above $75M one day after launch,YES,stop,-1.0,47,119
+Squid FDV above $75M one day after launch,NO,target,1.495652173913043,120,138
+Squid FDV above $75M one day after launch,NO,stop,-1.0,139,157
+Squid FDV above $75M one day after launch,YES,target,0.3571428571428567,158,173
+GRVT FDV above $600M one day after launch?,NO,target,1.228956228956229,13,59
+GRVT FDV above $250M one day after launch?,YES,stop,-1.0,22,39
+GRVT FDV above $250M one day after launch?,NO,target,1.5090909090909088,40,41
+GRVT FDV above $250M one day after launch?,NO,stop,-1.0,42,64
+GRVT FDV above $250M one day after launch?,YES,target,1.0066006600660062,65,71
+GRVT FDV above $300M one day after launch?,NO,target,1.5000000000000002,13,30
+GRVT FDV above $300M one day after launch?,NO,target,1.4999999999999998,31,33
+GRVT FDV above $300M one day after launch?,NO,stop,-1.0,34,38
+GRVT FDV above $300M one day after launch?,NO,target,0.8717105263157895,39,62
+Squid FDV above $40M one day after launch,YES,stop,-1.0,44,45
+Squid FDV above $40M one day after launch,YES,target,1.2288135593220342,46,170
+Aligned FDV above $300M one day after launch?,NO,stop,-1.0,13,84
+Aligned FDV above $300M one day after launch?,YES,stop,-1.0,86,569
+Aligned FDV above $100M one day after launch?,NO,target,1.4848484848484858,28,57
+Aligned FDV above $100M one day after launch?,YES,target,1.495238095238094,62,399
+Aligned FDV above $100M one day after launch?,YES,target,1.3276836158192087,400,535
+Squid FDV above $50M one day after launch,YES,target,1.5068493150684938,13,102
+Squid FDV above $50M one day after launch,YES,stop,-1.0,103,120
+Squid FDV above $50M one day after launch,NO,target,1.5111111111111117,121,142
+Squid FDV above $50M one day after launch,NO,stop,-1.0,143,165
+GRVT FDV above $350M one day after launch?,NO,target,1.5000000000000002,13,21
+GRVT FDV above $350M one day after launch?,YES,stop,-1.0,22,38
+GRVT FDV above $350M one day after launch?,NO,target,0.14432989690721637,39,53
+Squid FDV above $150M one day after launch,NO,target,0.28255528255528256,54,175
+Aligned FDV above $20M one day after launch?,NO,target,1.4883720930232556,13,44
+Aligned FDV above $20M one day after launch?,NO,stop,-1.0,48,99
+Aligned FDV above $20M one day after launch?,NO,target,1.4615384615384601,100,112
+Aligned FDV above $20M one day after launch?,YES,target,1.4878048780487778,113,150
+Aligned FDV above $20M one day after launch?,YES,stop,-1.0,151,299
+Aligned FDV above $20M one day after launch?,NO,stop,-1.0,300,412
+Squid FDV above $300M one day after launch,YES,stop,-1.0,68,165
+GRVT FDV above $500M one day after launch?,NO,stop,-1.0,13,38
+GRVT FDV above $500M one day after launch?,NO,target,0.13333333333333328,39,69
+GRVT FDV above $400M one day after launch?,NO,target,1.5090909090909097,13,20
+GRVT FDV above $400M one day after launch?,YES,stop,-1.0,21,26
+GRVT FDV above $400M one day after launch?,YES,stop,-1.0,29,37
+GRVT FDV above $200M one day after launch?,YES,stop,-1.0,13,23
+GRVT FDV above $800M one day after launch?,NO,target,0.40718562874251457,13,43
+Aligned FDV above $50M one day after launch?,NO,target,1.5000000000000009,13,121
+Aligned FDV above $50M one day after launch?,NO,stop,-1.0,122,169
+Aligned FDV above $50M one day after launch?,YES,target,1.495495495495496,170,415
+Aligned FDV above $50M one day after launch?,YES,target,1.3333333333333337,416,550
+Squid FDV above $30M one day after launch,NO,stop,-1.0,145,147
+Squid FDV above $100M one day after launch,YES,stop,-1.0,23,51
+Squid FDV above $100M one day after launch,NO,target,1.5087719298245594,52,127
+Squid FDV above $100M one day after launch,NO,target,1.5185185185185186,129,143
+Squid FDV above $100M one day after launch,NO,stop,-1.0,144,145
+Squid FDV above $100M one day after launch,NO,stop,-1.0,146,170
+Squid FDV above $100M one day after launch,YES,target,1.49537037037037,172,180
+Aligned FDV above $200M one day after launch?,NO,stop,-1.0,37,422
+Aligned FDV above $200M one day after launch?,YES,target,1.4959349593495934,423,473
+Aligned FDV above $200M one day after launch?,YES,stop,-1.0,474,547
+Aligned FDV above $200M one day after launch?,NO,stop,-1.0,548,552
+Aligned FDV above $200M one day after launch?,YES,stop,-1.0,553,574
+Squid FDV above $200M one day after launch,YES,stop,-1.0,13,132
+Aligned FDV above $500M one day after launch?,YES,stop,-1.0,13,571
+Will Nigel Farage win 50–60% of votes in the Clacton parliam,NO,target,1.5200000000000067,67,92
+Will Nigel Farage win 50–60% of votes in the Clacton parliam,NO,target,0.8593749999999999,93,379
+Will Nigel Farage win the 2026 Clacton by-election by less t,YES,stop,-1.0,14,151
+Will William Clouston get second place in the Clacton by-ele,NO,target,1.5199999999999956,37,98
+Will Nigel Farage win at least 80% of votes in the Clacton p,NO,stop,-1.0,22,378
+Will Nigel Farage win at least 80% of votes in the Clacton p,YES,stop,-1.0,379,391
+Will Count Binface win 20–30% of votes in the Clacton parlia,YES,target,1.50251256281407,13,370
+Will Count Binface win 20–30% of votes in the Clacton parlia,YES,target,0.3706293706293707,371,374
+Will Nigel Farage win 60–70% of votes in the Clacton parliam,NO,stop,-1.0,86,299
+Will Nigel Farage win 60–70% of votes in the Clacton parliam,YES,stop,-1.0,304,372
+Will Nigel Farage win 60–70% of votes in the Clacton parliam,NO,stop,-1.0,375,381
+Will Nigel Farage win the 2026 Clacton by-election by betwee,YES,target,1.509803921568628,99,101
+Will Nigel Farage win 40–50% of votes in the Clacton parliam,YES,stop,-1.0,80,365
+Will Count Binface win 10–20% of votes in the Clacton parlia,NO,stop,-1.0,13,264
+Will Count Binface win 10–20% of votes in the Clacton parlia,NO,stop,-1.0,265,381
+Will Nigel Farage win the 2026 Clacton by-election by 60% or,NO,target,1.0874704491725766,82,379
+Will Nigel Farage win the 2026 Clacton by-election by betwee,NO,stop,-1.0,13,113
+Will Nigel Farage win the 2026 Clacton by-election by betwee,YES,target,3.6445497630331753,114,390
+Will Nigel Farage win 70–80% of votes in the Clacton parliam,YES,stop,-1.0,103,381
+Will Yair Rodriguez fight Arnold Allen next?,NO,target,1.5064935064935072,13,386
+Will Yair Rodriguez fight Arnold Allen next?,YES,stop,-1.0,387,426
+Will Raphaël Glucksmann announce their candidacy for the 202,YES,target,1.5,182,253
+Will Raphaël Glucksmann announce their candidacy for the 202,YES,stop,-1.0,254,270
+Will Raphaël Glucksmann announce their candidacy for the 202,YES,target,1.5294117647058822,282,491
+Will Raphaël Glucksmann announce their candidacy for the 202,YES,target,1.4897959183673446,492,500
+Will Raphaël Glucksmann announce their candidacy for the 202,YES,stop,-1.0,501,610
+Will Raphaël Glucksmann announce their candidacy for the 202,NO,stop,-1.0,611,621
+Will Venezuelan crude oil production reach 1.1m barrels per ,NO,stop,-1.0,47,243
+Will Venezuelan crude oil production reach 1.1m barrels per ,YES,stop,-1.0,245,291
+Will any month of 2026 be the hottest on record?,NO,stop,-1.0,13,121
+Will any month of 2026 be the hottest on record?,NO,stop,-1.0,253,308
+Will Total Crypto Market Cap hit 2.75T in 2026?,YES,target,1.5000000000000002,13,578
+Will Databricks' valuation hit (HIGH) $190B by December 31?,NO,stop,-1.0,22,52
+Will Databricks' valuation hit (HIGH) $190B by December 31?,NO,stop,-1.0,126,253
+Will Databricks' valuation hit (HIGH) $190B by December 31?,YES,target,1.5000000000000007,260,525
+Will Lambda's valuation hit (HIGH) $10B by December 31?,YES,target,1.5094339622641542,15,22
+Will Lambda's valuation hit (HIGH) $10B by December 31?,YES,stop,-1.0,23,165
+Will Lambda's valuation hit (HIGH) $10B by December 31?,NO,target,1.4999999999999996,166,317
+Will Lambda's valuation hit (HIGH) $10B by December 31?,NO,stop,-1.0,319,373
+Will Lambda's valuation hit (HIGH) $10B by December 31?,YES,target,1.4999999999999996,374,691
+Will Lambda's valuation hit (HIGH) $10B by December 31?,NO,stop,-1.0,705,714
+Will Databricks' valuation hit (HIGH) $180B by December 31?,YES,target,1.4583333333333401,181,368
+Will Lambda's valuation hit (HIGH) $9B by December 31?,NO,stop,-1.0,13,677
+Will Anthropic's valuation hit (HIGH) $1.25T by December 31?,NO,stop,-1.0,173,336
+Will Anthropic's valuation hit (HIGH) $1.25T by December 31?,YES,target,1.2500000000000044,363,679
+Will OpenAI's valuation hit (HIGH) $900B by December 31?,NO,stop,-1.0,146,199
+Will OpenAI's valuation hit (HIGH) $900B by December 31?,YES,target,1.5135135135135136,200,240
+Will OpenAI's valuation hit (HIGH) $900B by December 31?,YES,stop,-1.0,241,321
+Will OpenAI's valuation hit (HIGH) $900B by December 31?,NO,target,2.6461538461538456,322,523
+Will OpenAI's valuation hit (HIGH) $900B by December 31?,YES,target,1.4999999999999987,524,627
+"Will Zcash reach $700 by December 31, 2026?",NO,stop,-1.0,13,162
+"Will Solana reach $100 by December 31, 2026?",NO,stop,-1.0,13,531
+"Will Solana reach $100 by December 31, 2026?",YES,target,1.5000000000000007,532,560
+"Will Solana reach $100 by December 31, 2026?",YES,target,1.4905660377358523,561,566
+"Will Bitcoin reach $80,000 by December 31, 2026?",YES,target,1.5131578947368423,13,510
+"Will Bitcoin reach $80,000 by December 31, 2026?",YES,target,1.5000000000000002,511,627
+Another crypto hack over $100m by December 31?,NO,stop,-1.0,42,133
+Another crypto hack over $100m by December 31?,YES,target,0.5429769392033543,134,416
+Another crypto hack over $100m by September 30?,NO,stop,-1.0,14,125
+Another crypto hack over $100m by September 30?,YES,target,0.7818181818181816,127,393
+"Will Bitcoin reach $70,000 by December 31, 2026?",YES,stop,-1.0,13,69
+"Will Bitcoin reach $70,000 by December 31, 2026?",NO,target,1.4999999999999973,70,116
+"Will Bitcoin reach $70,000 by December 31, 2026?",YES,stop,-1.0,121,126
+"Will Bitcoin reach $70,000 by December 31, 2026?",NO,stop,-1.0,128,180
+"Will Bitcoin reach $70,000 by December 31, 2026?",YES,stop,-1.0,190,307
+"Will Bitcoin reach $70,000 by December 31, 2026?",NO,target,1.4848484848484858,308,384
+"Will Bitcoin reach $70,000 by December 31, 2026?",YES,stop,-1.0,390,392
+"Will Bitcoin reach $70,000 by December 31, 2026?",NO,stop,-1.0,393,471
+"Will Pump.fun reach $0.0054 by December 31, 2026?",NO,stop,-1.0,13,533
+"Will Pump.fun reach $0.0054 by December 31, 2026?",YES,target,1.4642857142857149,534,546
+"Will Solana reach $90 by December 31, 2026?",NO,stop,-1.0,14,180
+"Will Solana reach $90 by December 31, 2026?",YES,stop,-1.0,181,360
+"Will Solana reach $90 by December 31, 2026?",NO,stop,-1.0,361,521
+"Will Solana reach $90 by December 31, 2026?",YES,target,1.5000000000000004,522,539
+"Will Solana reach $90 by December 31, 2026?",YES,target,1.4843749999999982,540,557
+"Will Ethereum reach $2,500 by December 31, 2026?",NO,stop,-1.0,15,521
+"Will Ethereum reach $2,500 by December 31, 2026?",YES,target,1.503875968992248,522,527
+"Will Ethereum reach $2,000 by December 31, 2026?",NO,target,1.533333333333333,20,31
+"Will Ethereum reach $2,000 by December 31, 2026?",YES,stop,-1.0,32,69
+"Will Ethereum reach $2,000 by December 31, 2026?",NO,target,1.4666666666666648,70,86
+"Will Ethereum reach $2,000 by December 31, 2026?",NO,target,1.545454545454543,87,94
+"Will Ethereum reach $2,000 by December 31, 2026?",YES,stop,-1.0,104,112
+"Will Ethereum reach $2,000 by December 31, 2026?",YES,stop,-1.0,124,164
+"Will Ethereum reach $2,000 by December 31, 2026?",NO,stop,-1.0,165,189
+"Will Ethereum reach $2,000 by December 31, 2026?",YES,stop,-1.0,190,270
+"Will Ethereum reach $2,000 by December 31, 2026?",NO,target,1.5263157894736838,296,315
+"Will Ethereum reach $2,000 by December 31, 2026?",NO,stop,-1.0,321,501
+"Will Ethereum reach $2,000 by December 31, 2026?",YES,target,1.5263157894736812,510,511
+"Will Pump.fun reach $0.0038 by December 31, 2026?",NO,stop,-1.0,24,321
+"Will Pump.fun reach $0.0038 by December 31, 2026?",YES,stop,-1.0,343,420
+"Will Pump.fun reach $0.0038 by December 31, 2026?",YES,target,1.4897959183673475,432,506
+"Will Pump.fun reach $0.0038 by December 31, 2026?",YES,target,1.4695945945945943,507,534
+Will Lighter reach $3 before 2027?,YES,target,1.5056179775280896,13,481
+Will Lighter reach $3 before 2027?,YES,target,1.5060240963855422,482,538
+Will Lighter reach $3 before 2027?,YES,target,0.4878048780487805,539,572
+"Will Bitcoin reach $75,000 by December 31, 2026?",YES,target,1.5000000000000024,13,34
+"Will Bitcoin reach $75,000 by December 31, 2026?",YES,stop,-1.0,37,59
+"Will Bitcoin reach $75,000 by December 31, 2026?",NO,target,1.4999999999999996,60,413
+"Will Bitcoin reach $75,000 by December 31, 2026?",YES,stop,-1.0,414,424
+"Will Bitcoin reach $75,000 by December 31, 2026?",NO,stop,-1.0,425,458
+"Will Bitcoin reach $75,000 by December 31, 2026?",YES,target,1.5000000000000004,459,515
+"Will Bitcoin reach $75,000 by December 31, 2026?",YES,target,1.5063291139240509,516,535
+"Will XRP dip to $1.00 by December 31, 2026?",NO,target,1.5000000000000007,13,29
+"Will XRP dip to $1.00 by December 31, 2026?",YES,target,1.5208333333333368,31,215
+"Will XRP dip to $1.00 by December 31, 2026?",YES,target,1.1467889908256883,216,320
+"Will Zcash reach $800 by December 31, 2026?",NO,stop,-1.0,55,520
+"Will Zcash reach $800 by December 31, 2026?",NO,stop,-1.0,521,560
+"Will Zcash reach $800 by December 31, 2026?",YES,target,1.4978723404255316,561,580
+"Will Hyperliquid reach $80 by December 31, 2026?",YES,stop,-1.0,27,73
+"Will Hyperliquid reach $80 by December 31, 2026?",NO,stop,-1.0,74,524
+"Will Hyperliquid reach $80 by December 31, 2026?",YES,target,1.5,525,528
+"Will Hyperliquid reach $70 by December 31, 2026?",YES,stop,-1.0,21,41
+"Will Hyperliquid reach $70 by December 31, 2026?",NO,stop,-1.0,42,313
+"Will Ethereum reach $2,250 by December 31, 2026?",NO,stop,-1.0,68,522
+"Will Ethereum reach $2,250 by December 31, 2026?",YES,target,0.79059829059829,523,528
+Will Darline Graham vote to confirm Todd Blanche as Attorney,YES,stop,-1.0,50,59
+Will Darline Graham vote to confirm Todd Blanche as Attorney,YES,target,1.4950495049504948,60,73
+Will Darline Graham vote to confirm Todd Blanche as Attorney,YES,target,0.8802816901408451,74,183
+"Will 50 senators vote ""Yea"" for Todd Blanche as Attorney Gen",YES,stop,-1.0,13,33
+"Will 50 senators vote ""Yea"" for Todd Blanche as Attorney Gen",NO,stop,-1.0,35,240
+"Will Squid launch a token by December 31, 2026?",NO,stop,-1.0,13,37
+Todd Blanche confirmed as Attorney General by August 30?,NO,stop,-1.0,13,110
+Todd Blanche confirmed as Attorney General by August 30?,NO,stop,-1.0,111,234
+Will John Cornyn vote to confirm Todd Blanche as Attorney Ge,NO,target,1.4961240310077526,13,45
+Will John Cornyn vote to confirm Todd Blanche as Attorney Ge,NO,stop,-1.0,46,126
+Will John Cornyn vote to confirm Todd Blanche as Attorney Ge,YES,target,0.3142857142857143,127,240
+"US bank failure by December 31, 2026?",NO,target,1.5000000000000009,246,538
+"US bank failure by December 31, 2026?",NO,target,1.4999999999999978,544,561
+"US bank failure by December 31, 2026?",NO,stop,-1.0,562,564
+"Trump renames Lake Ontario to ""Lake America"" in 2026?",NO,stop,-1.0,13,51
+Will no final Senate confirmation vote be held for Todd Blan,NO,stop,-1.0,13,37
+Will no final Senate confirmation vote be held for Todd Blan,YES,stop,-1.0,41,233
+Will Lisa Murkowski vote to confirm Todd Blanche as Attorney,YES,stop,-1.0,13,43
+Will Lisa Murkowski vote to confirm Todd Blanche as Attorney,NO,stop,-1.0,44,137
+Will Lisa Murkowski vote to confirm Todd Blanche as Attorney,YES,stop,-1.0,138,229
+Todd Blanche confirmed as Attorney General by October 31?,YES,stop,-1.0,13,21
+Todd Blanche confirmed as Attorney General by October 31?,NO,target,1.4925373134328355,22,42
+Todd Blanche confirmed as Attorney General by October 31?,NO,stop,-1.0,43,127
+Todd Blanche confirmed as Attorney General by October 31?,YES,target,0.3179824561403509,128,239
+Todd Blanche confirmed as Attorney General by December 31?,YES,stop,-1.0,21,24
+Todd Blanche confirmed as Attorney General by December 31?,NO,target,1.5045045045045042,25,56
+Todd Blanche confirmed as Attorney General by December 31?,YES,target,1.4968944099378885,57,109
+Todd Blanche confirmed as Attorney General by December 31?,YES,target,0.5813953488372093,110,221
+Will Hyperliquid HIP-3 open interest hit $4B in 2026?,NO,stop,-1.0,137,211
+Will the next Claude Opus model debut with a Humanity’s Last,YES,stop,-1.0,14,132
+Will the next Claude Opus model debut with a Humanity’s Last,NO,stop,-1.0,133,209
+Will the next Claude Opus model debut with a Humanity’s Last,NO,stop,-1.0,214,233
+Will Russia enter Oleksiievo-Druzhkivka by December 31?,YES,target,1.249999999999998,13,45
+"Another Frontier Math Problem Solved by December 31, 2026?",NO,stop,-1.0,13,17
+"Another Frontier Math Problem Solved by December 31, 2026?",YES,target,1.0,18,211
+Will Luka Modric attend Cristiano Ronaldo's wedding?,NO,target,0.5165289256198348,13,244
+Will Lionel Messi attend Cristiano Ronaldo's wedding?,YES,stop,-1.0,23,177
+Does Ox Alpha belong to Google?,YES,stop,-1.0,20,45
+Will the next Claude Opus model debut with a Humanity’s Last,YES,stop,-1.0,14,195
+Will the next Claude Opus model debut with a Humanity’s Last,NO,stop,-1.0,196,220
+Will Ricardo Quaresma attend Cristiano Ronaldo's wedding?,YES,stop,-1.0,13,245
