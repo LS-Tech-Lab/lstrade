@@ -88,6 +88,7 @@ def backtest_market(config, market, yes_history, no_history):
     trades = []
     warmup = 13
     in_trade = None
+    diagnostics = {"no_signal": 0, "signal_no_trade_plan": 0}
 
     n = min(len(yes_history), len(no_history)) if no_history else len(yes_history)
 
@@ -121,7 +122,15 @@ def backtest_market(config, market, yes_history, no_history):
         snapshot["no_price"] = no_price
         snapshot["closed"] = False  # se está evaluando "como si" el mercado siguiera abierto en ese punto
 
-        price_window = yes_history[max(0, i - 11):i + 1]
+        # NOTA (bug corregido): analyze_probability_momentum() usa por defecto
+        # window=12 y exige len(price_history) >= window+1 = 13 puntos, pero
+        # acá se le pasaba una ventana de 12 — un punto corto. Con eso,
+        # momentum_data quedaba SIEMPRE en None dentro de
+        # generate_polymarket_signal(), y como la dirección de la señal
+        # depende obligatoriamente de haber momentum real (línea que evita el
+        # fallback sin fundamento), nunca se generaba ninguna señal en todo
+        # el backtest — no era un problema de datos ni de umbrales.
+        price_window = yes_history[max(0, i - 12):i + 1]
 
         signal = generate_polymarket_signal(
             snapshot, price_window,
@@ -129,7 +138,11 @@ def backtest_market(config, market, yes_history, no_history):
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
             target_rr=config.POLYMARKET_TARGET_RR,
         )
-        if not signal or not signal.get("trade_plan"):
+        if not signal:
+            diagnostics["no_signal"] += 1
+            continue
+        if not signal.get("trade_plan"):
+            diagnostics["signal_no_trade_plan"] += 1
             continue
 
         tp = signal["trade_plan"]
@@ -143,7 +156,7 @@ def backtest_market(config, market, yes_history, no_history):
             "stop_distance": stop_distance, "entry_idx": i,
         }
 
-    return trades
+    return trades, diagnostics
 
 
 def summarize(trades):
@@ -176,6 +189,8 @@ def main():
     log.info(f"{len(markets)} mercados encontrados. Descargando historial de precios...")
 
     all_trades = []
+    skipped_short_history = 0
+    total_diag = {"no_signal": 0, "signal_no_trade_plan": 0}
     for i, market in enumerate(markets, 1):
         yes_history = client.fetch_price_history(market["yes_token_id"], interval="max", fidelity=60)
         no_history = client.fetch_price_history(market["no_token_id"], interval="max", fidelity=60) \
@@ -183,18 +198,27 @@ def main():
         time.sleep(0.2)
 
         if len(yes_history) < 13:
+            skipped_short_history += 1
             continue
 
-        trades = backtest_market(config, market, yes_history, no_history)
+        trades, diagnostics = backtest_market(config, market, yes_history, no_history)
         all_trades.extend(trades)
+        for k in total_diag:
+            total_diag[k] += diagnostics[k]
         if trades:
             log.info(f"[{i}/{len(markets)}] {market['question'][:50]}: {len(trades)} trade(s) simulado(s)")
 
     log.info("=== RESUMEN GENERAL — Polymarket ===")
     stats = summarize(all_trades)
     if stats["n"] == 0:
-        log.info("Sin trades simulados en el período — probá con --limit más alto o revisá "
-                  "min_score/umbrales en polymarket_signal_engine.py.")
+        log.info(
+            f"Sin trades simulados. Diagnóstico: {skipped_short_history} mercado(s) con menos de "
+            f"13 puntos de historial (se saltearon enteros), {total_diag['no_signal']} evaluaciones "
+            f"sin señal (ineficiencia/momentum por debajo del umbral), "
+            f"{total_diag['signal_no_trade_plan']} señales sin plan de salida (volatilidad nula). "
+            f"Si la mayoría cae en 'sin señal', probá con --limit más alto o revisá "
+            f"min_score/umbrales en polymarket_signal_engine.py."
+        )
     else:
         log.info(
             f"{stats['n']} trades | win rate {stats['win_rate']:.1f}% | "
