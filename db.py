@@ -246,6 +246,42 @@ class Database:
             "expectancy_r": sum(r_multiples) / len(r_multiples) if r_multiples else None,
         }
 
+    def polymarket_stats_by_category(self):
+        """
+        Mismo desglose que analyze_polymarket_categories.py (backtest offline)
+        pero sobre las señales de PRODUCCIÓN ya resueltas — usa la misma
+        categorize() de polymarket_categories.py para que ambas lecturas
+        coincidan.
+        """
+        from polymarket_categories import categorize
+
+        rows = self.conn.execute(
+            "SELECT question, entry, target, stop, outcome, exit_price FROM polymarket_signals WHERE outcome IS NOT NULL"
+        ).fetchall()
+        by_category = {}
+        for r in rows:
+            stop_distance = abs(r["entry"] - r["stop"])
+            if stop_distance <= 0:
+                continue
+            rm = (r["exit_price"] - r["entry"]) / stop_distance
+            cat = categorize(r["question"])
+            by_category.setdefault(cat, []).append((rm, r["outcome"]))
+
+        result = {}
+        for cat, entries in by_category.items():
+            n = len(entries)
+            wins = sum(1 for _, outcome in entries if outcome == "target")
+            gross_win = sum(rm for rm, _ in entries if rm > 0)
+            gross_loss = abs(sum(rm for rm, _ in entries if rm < 0))
+            result[cat] = {
+                "n": n,
+                "win_rate": wins / n * 100,
+                "expectancy_r": sum(rm for rm, _ in entries) / n,
+                "total_r": sum(rm for rm, _ in entries),
+                "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
+            }
+        return result
+
     def stats_summary(self, since_ts=None):
         """Win rate, expectancy y profit factor reales sobre trades ya cerrados."""
         query = "SELECT outcome, r_multiple FROM closed_trades WHERE r_multiple IS NOT NULL"

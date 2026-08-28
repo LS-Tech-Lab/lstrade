@@ -13,7 +13,7 @@ Uso:
 import argparse
 import json
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from config import Config
 from db import Database
@@ -46,10 +46,6 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .empty {{ color:#5C564A; font-size:12px; }}
   .ok {{ color:#2E6B4A; font-weight:700; }}
   .fail {{ color:#B4392A; font-weight:700; }}
-  .delta-up {{ color:#2E6B4A; }}
-  .delta-down {{ color:#B4392A; }}
-  .delta-flat {{ color:#5C564A; }}
-  .sparkline-wrap {{ overflow-x:auto; }}
 </style>
 </head>
 <body>
@@ -65,15 +61,12 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   <div class="card">
     <h2>Performance — Polymarket (señales resueltas)</h2>
     {polymarket_stats_html}
+    {polymarket_categories_html}
   </div>
 
   <div class="card">
     <h2>Equity</h2>
-    <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:10px;">
-      <div style="font-size:26px; font-weight:700;">{equity_value}</div>
-      <div style="font-size:12.5px; font-weight:700;" class="{equity_delta_class}">{equity_delta_text}</div>
-    </div>
-    {equity_sparkline_html}
+    <div style="font-size:26px; font-weight:700;">{equity_value}</div>
   </div>
 
   <div class="card">
@@ -109,58 +102,25 @@ def render_stats(stats, show_profit_factor=False):
     return f'<div class="stats-grid">{"".join(cards)}</div>'
 
 
-def render_equity_sparkline(rows):
-    """
-    rows: lista de (ts, equity) ordenada cronológicamente, desde equity_history.
-    Genera un SVG inline a mano (sin matplotlib ni JS) con la curva completa
-    y resalta el último punto — antes esta tabla existía en la base pero el
-    dashboard solo mostraba el pico como número suelto, sin mostrar la
-    trayectoria real de la cuenta.
-    """
-    if not rows or len(rows) < 2:
-        return '<p class="empty">Todavía no hay suficiente historial de equity para graficar.</p>'
-
-    values = [r["equity"] for r in rows]
-    lo, hi = min(values), max(values)
-    span = (hi - lo) or 1.0
-
-    w, h, pad = 760, 90, 6
-    n = len(values)
-    step = (w - 2 * pad) / (n - 1)
-
-    def point(i, v):
-        x = pad + i * step
-        y = h - pad - ((v - lo) / span) * (h - 2 * pad)
-        return x, y
-
-    pts = [point(i, v) for i, v in enumerate(values)]
-    path_d = "M " + " L ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
-
-    trend_up = values[-1] >= values[0]
-    line_color = "#2E6B4A" if trend_up else "#B4392A"
-    fill_d = path_d + f" L {pts[-1][0]:.1f},{h - pad} L {pts[0][0]:.1f},{h - pad} Z"
-    last_x, last_y = pts[-1]
-
-    return f"""<div class="sparkline-wrap">
-<svg viewBox="0 0 {w} {h}" width="100%" height="{h}" preserveAspectRatio="none">
-  <path d="{fill_d}" fill="{line_color}" fill-opacity="0.08" stroke="none"/>
-  <path d="{path_d}" fill="none" stroke="{line_color}" stroke-width="2" vector-effect="non-scaling-stroke"/>
-  <circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="3.5" fill="{line_color}"/>
-</svg>
-</div>"""
-
-
-def equity_delta(rows):
-    if not rows or len(rows) < 2:
-        return "", ""
-    first, last = rows[0]["equity"], rows[-1]["equity"]
-    diff = last - first
-    pct = (diff / first * 100) if first else 0
-    if diff > 0:
-        return "delta-up", f"▲ {diff:+,.2f} ({pct:+.1f}%) en este historial"
-    if diff < 0:
-        return "delta-down", f"▼ {diff:+,.2f} ({pct:+.1f}%) en este historial"
-    return "delta-flat", "sin cambio en este historial"
+def render_polymarket_categories(by_category):
+    if not by_category:
+        return ""
+    rows = sorted(by_category.items(), key=lambda kv: kv[1]["total_r"], reverse=True)
+    body = ""
+    for cat, s in rows:
+        tone = "ok" if s["total_r"] >= 0 else "fail"
+        pf = f"{s['profit_factor']:.2f}" if s["profit_factor"] is not None else "—"
+        small_n = " ⚠️" if s["n"] < 5 else ""
+        body += (
+            f"<tr><td>{cat}{small_n}</td><td>{s['n']}</td><td>{s['win_rate']:.0f}%</td>"
+            f"<td class='{tone}'>{s['expectancy_r']:+.2f}R</td><td>{pf}</td>"
+            f"<td class='{tone}'>{s['total_r']:+.2f}R</td></tr>"
+        )
+    return (
+        '<div style="margin-top:12px; font-size:9.5px; text-transform:uppercase; color:#5C564A;">Por categoría</div>'
+        "<table><thead><tr><th>Categoría</th><th>n</th><th>Win%</th><th>Expect.</th><th>PF</th><th>Total R</th></tr></thead>"
+        f"<tbody>{body}</tbody></table>"
+    )
 
 
 def render_decisions(rows):
@@ -189,20 +149,14 @@ def build_page(db):
     halt_reason = db.get_state("halt_reason", "") if halted else ""
     peak = db.peak_equity()
     decisions = db.conn.execute("SELECT * FROM decisions ORDER BY ts DESC LIMIT 30").fetchall()
-    equity_rows = db.conn.execute(
-        "SELECT ts, equity FROM equity_history ORDER BY ts ASC LIMIT 200"
-    ).fetchall()
-    delta_class, delta_text = equity_delta(equity_rows)
 
     return PAGE_TEMPLATE.format(
         status_class="halted" if halted else "online",
         status_text=f"Detenido — {halt_reason}" if halted else "Sistema en línea",
         crypto_stats_html=render_stats(db.stats_summary(), show_profit_factor=True),
         polymarket_stats_html=render_stats(db.polymarket_stats_summary()),
+        polymarket_categories_html=render_polymarket_categories(db.polymarket_stats_by_category()),
         equity_value=f"${peak:,.2f}" if peak is not None else "—",
-        equity_delta_class=delta_class,
-        equity_delta_text=delta_text,
-        equity_sparkline_html=render_equity_sparkline(equity_rows),
         decisions_html=render_decisions(decisions),
     )
 
@@ -217,6 +171,7 @@ def make_handler(db):
                     "equity_peak": db.peak_equity(),
                     "stats": db.stats_summary(),
                     "polymarket_stats": db.polymarket_stats_summary(),
+                    "polymarket_stats_by_category": db.polymarket_stats_by_category(),
                 }
                 body = json.dumps(payload).encode()
                 self.send_response(200)
@@ -244,7 +199,13 @@ def main():
 
     config = Config
     db = Database(config.DB_PATH)
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), make_handler(db))
+    # HTTPServer (single-threaded) a propósito, no ThreadingHTTPServer: la
+    # conexión de sqlite3 se crea en un solo thread y no es segura para
+    # compartir entre threads sin check_same_thread=False — para un
+    # dashboard de una sola persona no hace falta manejar requests en
+    # paralelo, así que evitamos ese problema directamente en vez de tocar
+    # la semántica de conexión compartida de db.py.
+    server = HTTPServer(("0.0.0.0", args.port), make_handler(db))
     print(f"Dashboard local en http://localhost:{args.port} (Ctrl+C para salir)")
     try:
         server.serve_forever()
