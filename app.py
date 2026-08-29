@@ -14,6 +14,7 @@ lógica de negocio, misma auth y mismas respuestas que antes.
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +33,46 @@ from polymarket_main import SupabaseNotifyStateAdapter, run_polymarket_cycle_ser
 from polymarket_track_results import check_open_signals
 
 app = FastAPI()
+
+# NUEVO: heartbeat — si pasan HEARTBEAT_INTERVAL_SECONDS sin que se mande
+# ningún mensaje a Telegram (señal, bloqueo, circuit breaker, etc.), se
+# manda un aviso corto de "sigo vivo" con equity/drawdown y el último
+# snapshot de indicadores. Sin esto, muchas horas seguidas de "no_signal"
+# se sienten indistinguibles de que el bot dejó de correr.
+HEARTBEAT_INTERVAL_SECONDS = 6 * 3600
+
+
+def _touch_notification(db):
+    """Reinicia el reloj del heartbeat cada vez que se manda cualquier
+    mensaje real a Telegram — el heartbeat solo tiene sentido cuando
+    hubo silencio, no hace falta duplicar aviso el mismo ciclo."""
+    db.set_state("last_notification_ts", str(time.time()))
+
+
+def _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots):
+    if not notifier.enabled:
+        return
+    now = time.time()
+    last = float(db.get_state("last_notification_ts", "0") or 0)
+    if last and (now - last) < HEARTBEAT_INTERVAL_SECONDS:
+        return
+
+    hours_quiet = (now - last) / 3600 if last else None
+    lines = ["🤖 *Trader IA sigue activo*"]
+    if hours_quiet is not None:
+        lines.append(f"Sin novedades en las últimas {hours_quiet:.1f}h — todo corriendo normal.")
+    else:
+        lines.append("Primer heartbeat — todo corriendo normal.")
+    lines.append(f"Equity: ${equity:,.2f} | Drawdown: {dd_pct:.2f}%")
+    for symbol, snap in snapshots:
+        if not snap:
+            continue
+        lines.append(
+            f"{symbol}: ${snap.get('price', 0):,.4f} · RSI {snap.get('rsi', 0):.1f} "
+            f"· sesgo {snap.get('trend_bias', '—')}"
+        )
+    notifier.send_message("\n".join(lines))
+    _touch_notification(db)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -63,6 +104,7 @@ def run_cycle():
         if db.get_state("halt_notified", "0") != "1":
             notifier.send_circuit_breaker(reason)
             db.set_state("halt_notified", "1")
+            _touch_notification(db)
         return {"status": "halted", "reason": reason}
 
     if db.has_open_pending_decision():
@@ -78,6 +120,7 @@ def run_cycle():
 
     best_signal, best_symbol = None, None
     errors = []
+    snapshots = []  # [(symbol, snapshot_dict)] — se reutiliza para el heartbeat si el ciclo queda en no_signal
     for symbol in config.SYMBOLS:
         try:
             candles = exchange_client.fetch_ohlcv(symbol)
@@ -95,6 +138,7 @@ def run_cycle():
             snapshot = compute_indicator_snapshot(candles)
             if snapshot:
                 db.record_indicator_snapshot(symbol, snapshot)
+                snapshots.append((symbol, snapshot))
         except Exception as e:
             errors.append(f"{symbol} snapshot: {e}")
 
@@ -103,14 +147,20 @@ def run_cycle():
             best_signal, best_symbol = signal, symbol
 
     if not best_signal:
+        # NUEVO: heartbeat — si hace HEARTBEAT_INTERVAL_SECONDS que no se manda
+        # nada a Telegram, este es el punto donde más falta hace (silencio
+        # largo = "¿esto sigue corriendo?"). No afecta el resultado del ciclo.
+        _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots)
         return {"status": "no_signal", "equity": equity, "drawdown_pct": dd_pct, "errors": errors}
 
     notifier.send_alert(f"Señal detectada: {best_symbol} · {best_signal['type']} ({best_signal['direction']})")
+    _touch_notification(db)
     risk_report = risk_manager.check(best_symbol, best_signal, equity)
 
     if not risk_report["pass"]:
         failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]
         notifier.send_message(f"\u26D4 {best_symbol} bloqueado por riesgo: {', '.join(failed)}")
+        _touch_notification(db)
         db.log_decision(best_symbol, best_signal, risk_report, None, "blocked")
         return {"status": "blocked", "symbol": best_symbol, "failed_checks": failed}
 
@@ -121,6 +171,7 @@ def run_cycle():
             build_memo_markdown(best_symbol, best_signal, risk_report, plan)
             + "\n\n_(modo papel — no se ejecutó nada real)_"
         )
+        _touch_notification(db)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         return {"status": "paper_logged", "symbol": best_symbol}
 
@@ -130,6 +181,7 @@ def run_cycle():
         order_detail = executor.execute(best_symbol, plan)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
         notifier.send_message(f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}")
+        _touch_notification(db)
         return {"status": "auto_executed", "symbol": best_symbol, "order": order_detail}
 
     # AUTO_EXECUTE=false → aprobación humana NO bloqueante (webhook la resuelve)
@@ -141,6 +193,7 @@ def run_cycle():
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged_no_telegram")
         return {"status": "no_telegram_configured_defaulted_to_paper", "symbol": best_symbol}
 
+    _touch_notification(db)
     db.create_pending_decision(message_id, best_symbol, best_signal, risk_report, plan)
     return {"status": "pending_approval", "symbol": best_symbol, "message_id": message_id}
 
