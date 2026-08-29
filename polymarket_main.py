@@ -11,7 +11,7 @@ from db import Database
 from polymarket_categories import categorize
 from polymarket_chart import build_signal_chart
 from polymarket_client import PolymarketClient
-from polymarket_signal_engine import generate_polymarket_signal
+from polymarket_signal_engine import detect_inefficiency, generate_polymarket_signal
 from polymarket_state import PolymarketStateStore
 from telegram_notifier import TelegramNotifier
 
@@ -208,6 +208,136 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         time.sleep(0.5)
     
     return signals
+
+
+def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
+                                     top_n=15, time_budget_seconds=7.5,
+                                     request_timeout=5):
+    """
+    Ciclo de Polymarket para correr como función serverless (Vercel Hobby:
+    10s de presupuesto total). A diferencia de run_polymarket_cycle (loop
+    local, sin límite de tiempo), acá:
+
+      - Se arranca un reloj (time.monotonic) y se corta el análisis antes
+        de acercarse al límite, devolviendo lo que se haya alcanzado a
+        procesar — mejor una respuesta parcial que una función matada a
+        mitad de camino por Vercel sin haber guardado nada.
+      - La ineficiencia de precio (suma YES+NO != 1.00) es gratis: no
+        necesita historial de precios, solo el snapshot que ya vino en
+        fetch_active_markets. Se usa para priorizar QUÉ mercados merecen
+        la llamada cara (fetch_price_history) en vez de pedirla para los
+        primeros N por volumen como hace el loop local, donde el tiempo no
+        es la restricción.
+      - Sin sleep() entre requests: el loop local lo usa para no golpear
+        la API muy seguido en un while True de larga duración; acá es una
+        invocación puntual cada ~10 min, no hace falta.
+      - Sin envío de gráficos (matplotlib): consume presupuesto de tiempo
+        que en este modo es escaso. El memo de texto por Telegram alcanza;
+        los gráficos siguen disponibles corriendo polymarket_main.py local.
+    """
+    started = time.monotonic()
+
+    def time_left():
+        return time_budget_seconds - (time.monotonic() - started)
+
+    log.info("Escaneando mercados de Polymarket (modo serverless)...")
+    markets_raw = client.fetch_active_markets(limit=50, timeout=request_timeout)
+    if not markets_raw:
+        return {"status": "no_markets"}
+
+    parsed_markets = []
+    candidates = []  # (inefficiency, market) — se ordena y se corta antes de gastar red
+    for market_raw in markets_raw:
+        market = client.parse_market_for_analysis(market_raw)
+        if not market:
+            continue
+        parsed_markets.append(market)
+
+        if market["liquidity"] < 1000:
+            continue
+        if market["yes_price"] <= 0 or market["no_price"] <= 0:
+            continue
+        category = categorize(market["question"])
+        if category in config.POLYMARKET_EXCLUDED_CATEGORIES:
+            continue
+
+        ineff = detect_inefficiency(market)
+        if ineff["is_extreme_trap"]:
+            continue
+        candidates.append((ineff["inefficiency"], market))
+
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    candidates = candidates[:top_n]
+
+    signals = []
+    market_by_condition_id = {}
+    analyzed = 0
+    for _, market in candidates:
+        if time_left() < 1.0:
+            log.warning(
+                f"Presupuesto de tiempo agotado — analizados {analyzed}/{len(candidates)} candidatos."
+            )
+            break
+        market_by_condition_id[market["condition_id"]] = market
+        if not market.get("yes_token_id"):
+            price_history = []
+        else:
+            price_history = client.fetch_price_history(
+                market["yes_token_id"], interval="1h", fidelity=60, timeout=request_timeout
+            )
+        analyzed += 1
+
+        signal = generate_polymarket_signal(
+            market, price_history,
+            stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
+            target_rr=config.POLYMARKET_TARGET_RR,
+        )
+        if signal:
+            signals.append(signal)
+
+    signals.sort(key=lambda s: s["score"], reverse=True)
+    if not signals:
+        return {
+            "status": "no_signal",
+            "markets_scanned": len(parsed_markets),
+            "candidates_analyzed": analyzed,
+        }
+
+    new_signals = [
+        s for s in signals
+        if state_store.should_notify(s["market"]["condition_id"], s["direction"], s["score"])
+    ]
+
+    sent = 0
+    for signal in new_signals[:3]:
+        if time_left() < 0.5:
+            log.warning("Presupuesto de tiempo agotado antes de enviar todas las señales nuevas.")
+            break
+
+        memo_telegram = build_polymarket_memo(signal, markdown=True)
+        notifier.send_message(memo_telegram)
+        state_store.record_notified(signal["market"]["condition_id"], signal["direction"], signal["score"])
+
+        if db is not None and signal.get("trade_plan"):
+            condition_id = signal["market"]["condition_id"]
+            original_market = market_by_condition_id.get(condition_id, {})
+            token_id = original_market.get("yes_token_id") if signal["direction"] == "YES" \
+                else original_market.get("no_token_id")
+            if token_id:
+                tp = signal["trade_plan"]
+                db.record_polymarket_signal(
+                    condition_id, signal["market"]["question"], signal["direction"], token_id,
+                    tp["entry"], tp["target"], tp["stop"],
+                )
+        sent += 1
+
+    return {
+        "status": "ok",
+        "markets_scanned": len(parsed_markets),
+        "candidates_analyzed": analyzed,
+        "signals_found": len(signals),
+        "signals_sent": sent,
+    }
 
 
 def main():

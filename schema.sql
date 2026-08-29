@@ -90,3 +90,36 @@ create table if not exists polymarket_signals (
 
 create index if not exists idx_closed_trades_ts on closed_trades (ts_closed desc);
 create index if not exists idx_polymarket_signals_outcome on polymarket_signals (outcome);
+
+-- NUEVO: dedup de avisos de Polymarket para el modo serverless. Reemplaza a
+-- polymarket_state.json (PolymarketStateStore) — un archivo en disco no
+-- sirve acá porque cada invocación de la función en Vercel arranca con un
+-- filesystem limpio, así que sin esta tabla se reenviaría la misma señal
+-- en cada ciclo mientras el mercado siga cumpliendo el umbral.
+create table if not exists polymarket_notify_state (
+    condition_id text primary key,
+    direction text not null,
+    score double precision not null,
+    ts double precision not null
+);
+
+-- NUEVO: snapshot de indicadores por símbolo en cada ciclo, independiente
+-- de si hubo señal de trading — generate_signal() solo devuelve datos
+-- cuando pasa TODOS sus filtros (la mayoría de los ciclos no), así que sin
+-- esta tabla el dashboard no tenía forma de mostrar "cómo está el mercado
+-- ahora" (RSI, tendencia, volatilidad) fuera de esos momentos puntuales.
+create table if not exists indicator_snapshots (
+    id bigserial primary key,
+    symbol text not null,
+    ts double precision not null,
+    price double precision,
+    rsi double precision,
+    atr_pct double precision,
+    volume_ratio double precision,
+    volatility double precision,
+    momentum double precision,
+    trend_align double precision,
+    trend_bias text
+);
+
+create index if not exists idx_indicator_snapshots_symbol_ts on indicator_snapshots (symbol, ts desc);

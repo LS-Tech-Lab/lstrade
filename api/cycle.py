@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from supabase_db import SupabaseDatabase
 from exchange_client import ExchangeClient
-from signal_engine import generate_signal
+from signal_engine import compute_indicator_snapshot, generate_signal
 from risk_manager import RiskManager
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
@@ -69,6 +69,20 @@ def run_cycle():
         except Exception as e:
             errors.append(f"{symbol}: {e}")
             continue
+
+        # NUEVO: guardar el estado del mercado independiente de si hay señal
+        # de trading — generate_signal() solo devuelve algo cuando pasa
+        # TODOS sus filtros (la mayoría de los ciclos no), así que antes el
+        # dashboard no tenía forma de mostrar "cómo está el RSI/tendencia
+        # ahora mismo" fuera de esos momentos puntuales. No afecta ninguna
+        # decisión de trading — es puramente para visualización.
+        try:
+            snapshot = compute_indicator_snapshot(candles)
+            if snapshot:
+                db.record_indicator_snapshot(symbol, snapshot)
+        except Exception as e:
+            errors.append(f"{symbol} snapshot: {e}")
+
         signal = generate_signal(candles)
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol

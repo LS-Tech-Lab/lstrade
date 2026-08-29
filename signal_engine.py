@@ -3,6 +3,50 @@ Motor de señales MEJORADO con filtros de Volumen, RSI y MTF.
 """
 import indicators as ind
 
+
+def compute_indicator_snapshot(candles):
+    """
+    Calcula los mismos indicadores que generate_signal(), pero sin aplicar
+    ninguno de sus filtros — generate_signal() devuelve None la mayoría de
+    las veces (es su trabajo: solo pasar setups que valen la pena), así que
+    no sirve para mostrar "el estado actual del mercado" en un dashboard.
+    Esto es puramente informativo/visual, nunca se usa para decidir si
+    operar — esa lógica sigue siendo 100% la de generate_signal().
+    """
+    if len(candles) < 30:
+        return None
+
+    closes = [c["c"] for c in candles]
+    sma_short = ind.sma(candles, 10)
+    sma_long = ind.sma(candles, 30)
+    ema_mid = ind.ema(candles, 20)
+    ema_trend = ind.ema(candles, 50)
+    rsi_val = ind.rsi(candles, 14)
+    atr_val = ind.atr(candles, 14)
+    vol_ratio = ind.volume_ratio(candles, 20)
+    vol = ind.rolling_return_stdev(candles, 10)
+
+    if sma_short is None or sma_long is None:
+        return None
+
+    momentum = (closes[-1] - closes[-6]) / closes[-6] if len(closes) > 6 else None
+    trend_align = (sma_short - sma_long) / sma_long if sma_long else None
+
+    return {
+        "price": float(closes[-1]),
+        "rsi": float(rsi_val) if rsi_val is not None else None,
+        "atr": float(atr_val) if atr_val is not None else None,
+        "atr_pct": float(atr_val / closes[-1] * 100) if atr_val is not None and closes[-1] else None,
+        "volume_ratio": float(vol_ratio) if vol_ratio is not None else None,
+        "volatility": float(vol) if vol is not None else None,
+        "momentum": float(momentum) if momentum is not None else None,
+        "trend_align": float(trend_align) if trend_align is not None else None,
+        "ema_mid": float(ema_mid) if ema_mid is not None else None,
+        "ema_trend": float(ema_trend) if ema_trend is not None else None,
+        "trend_bias": "LONG" if (ema_mid and ema_trend and ema_mid > ema_trend) else "SHORT",
+    }
+
+
 def generate_signal(candles, higher_tf_candles=None, btc_bias=None, min_score=0.03):
     if len(candles) < 30:
         return None

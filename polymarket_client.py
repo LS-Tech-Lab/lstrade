@@ -21,7 +21,7 @@ class PolymarketClient:
             "Accept": "application/json"
         })
 
-    def fetch_active_markets(self, limit=50, offset=0, closed=False, active=None, extra_params=None):
+    def fetch_active_markets(self, limit=50, offset=0, closed=False, active=None, extra_params=None, timeout=15):
         """
         `active` se ajusta automáticamente según `closed` si no se pasa
         explícito: un mercado no puede estar "activo" (abierto a trading) Y
@@ -53,19 +53,19 @@ class PolymarketClient:
             }
             if extra_params:
                 params.update(extra_params)
-            resp = self.session.get(f"{GAMMA_API}/markets", params=params, timeout=15)
+            resp = self.session.get(f"{GAMMA_API}/markets", params=params, timeout=timeout)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
             log.warning(f"Error fetching markets: {e}")
             return []
 
-    def fetch_price_history(self, token_id, interval="1h", fidelity=60):
+    def fetch_price_history(self, token_id, interval="1h", fidelity=60, timeout=15):
         try:
             resp = self.session.get(
                 f"{CLOB_API}/prices-history",
                 params={"market": token_id, "interval": interval, "fidelity": fidelity},
-                timeout=15
+                timeout=timeout
             )
             resp.raise_for_status()
             data = resp.json()

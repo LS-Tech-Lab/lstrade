@@ -72,6 +72,21 @@ class Database:
             outcome TEXT,
             exit_price REAL,
             ts_resolved REAL)""")
+
+        # NUEVO: snapshot de indicadores por símbolo en cada ciclo — ver
+        # schema.sql (modo Supabase) para el razonamiento completo.
+        c.execute("""CREATE TABLE IF NOT EXISTS indicator_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            ts REAL NOT NULL,
+            price REAL,
+            rsi REAL,
+            atr_pct REAL,
+            volume_ratio REAL,
+            volatility REAL,
+            momentum REAL,
+            trend_align REAL,
+            trend_bias TEXT)""")
         self.conn.commit()
 
     def record_equity(self, equity):
@@ -200,6 +215,27 @@ class Database:
                 "total_r": sum(t["r_multiple"] for t in trades),
             }
         return result
+
+    # NUEVO: snapshot de indicadores por símbolo, independiente de si hubo
+    # señal de trading — ver compute_indicator_snapshot() en signal_engine.py.
+    def record_indicator_snapshot(self, symbol, snapshot):
+        self.conn.execute(
+            """INSERT INTO indicator_snapshots
+            (symbol, ts, price, rsi, atr_pct, volume_ratio, volatility, momentum, trend_align, trend_bias)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (symbol, time.time(), snapshot.get("price"), snapshot.get("rsi"), snapshot.get("atr_pct"),
+             snapshot.get("volume_ratio"), snapshot.get("volatility"), snapshot.get("momentum"),
+             snapshot.get("trend_align"), snapshot.get("trend_bias"))
+        )
+        self.conn.commit()
+
+    def latest_indicator_snapshots(self):
+        rows = self.conn.execute(
+            """SELECT s1.* FROM indicator_snapshots s1
+            INNER JOIN (SELECT symbol, MAX(ts) as max_ts FROM indicator_snapshots GROUP BY symbol) s2
+            ON s1.symbol = s2.symbol AND s1.ts = s2.max_ts"""
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # NUEVO: Tracking de resultados de señales de Polymarket
     def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop):
