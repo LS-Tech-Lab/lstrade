@@ -18,6 +18,14 @@ from telegram_notifier import TelegramNotifier
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("polymarket_main")
 
+# NUEVO: en el loop local el Market Watch (top 5 por volumen) se mandaba en
+# CADA ciclo porque no había límite de tiempo real entre corridas. En
+# serverless el cron externo dispara cada ~10-15 min, así que mandarlo cada
+# vez serían decenas de mensajes por día solo de este aviso — se limita a
+# un máximo de una vez por MARKET_WATCH_INTERVAL_SECONDS, usando el mismo
+# patrón de reloj en bot_state que el heartbeat de cripto (ver app.py).
+MARKET_WATCH_INTERVAL_SECONDS = 3600  # 1 hora
+
 
 def build_market_watch_text(parsed_markets, markdown=False):
     """Construye el resumen de los top 5 mercados por volumen."""
@@ -293,6 +301,22 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
 
     candidates.sort(key=lambda c: c[0], reverse=True)
     candidates = candidates[:top_n]
+
+    # NUEVO: Market Watch — restaura el aviso que existía en el loop local
+    # (build_market_watch_text) y que se había quedado afuera de la versión
+    # serverless. Se manda ANTES de gastar presupuesto de tiempo en el
+    # historial de precios de los candidatos, para que no dependa de que
+    # sobre tiempo al final del ciclo — es la parte más importante para
+    # saber "el bot sigue vivo", así que tiene prioridad sobre el análisis.
+    if parsed_markets and notifier.enabled and db is not None:
+        now = time.time()
+        last_watch = float(db.get_state("last_market_watch_ts", "0") or 0)
+        if not last_watch or (now - last_watch) >= MARKET_WATCH_INTERVAL_SECONDS:
+            try:
+                notifier.send_message(build_market_watch_text(parsed_markets, markdown=True))
+                db.set_state("last_market_watch_ts", str(now))
+            except Exception as e:
+                log.warning(f"No se pudo enviar el Market Watch: {e}")
 
     signals = []
     market_by_condition_id = {}
