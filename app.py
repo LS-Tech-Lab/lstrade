@@ -23,10 +23,13 @@ from fastapi.responses import JSONResponse
 from config import Config
 from supabase_db import SupabaseDatabase
 from exchange_client import ExchangeClient
-from signal_engine import generate_signal
+from signal_engine import compute_indicator_snapshot, generate_signal
 from risk_manager import RiskManager
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
+from polymarket_client import PolymarketClient
+from polymarket_main import SupabaseNotifyStateAdapter, run_polymarket_cycle_serverless
+from polymarket_track_results import check_open_signals
 
 app = FastAPI()
 
@@ -81,6 +84,20 @@ def run_cycle():
         except Exception as e:
             errors.append(f"{symbol}: {e}")
             continue
+
+        # NUEVO: guardar el estado del mercado independiente de si hay señal
+        # de trading — generate_signal() solo devuelve algo cuando pasa
+        # TODOS sus filtros (la mayoría de los ciclos no), así que antes el
+        # dashboard no tenía forma de mostrar "cómo está el RSI/tendencia
+        # ahora mismo" fuera de esos momentos puntuales. No afecta ninguna
+        # decisión de trading — es puramente para visualización.
+        try:
+            snapshot = compute_indicator_snapshot(candles)
+            if snapshot:
+                db.record_indicator_snapshot(symbol, snapshot)
+        except Exception as e:
+            errors.append(f"{symbol} snapshot: {e}")
+
         signal = generate_signal(candles)
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol
@@ -148,6 +165,92 @@ async def cycle_get(request: Request):
 @app.post("/api/cycle")
 async def cycle_post(request: Request):
     return await _cycle_endpoint(request)
+
+
+# ────────────────────────────────────────────────────────────────────
+# /api/polymarket_cycle y /api/polymarket_resolve — mismo patrón que
+# /api/cycle de arriba, consolidados acá por la misma razón: Vercel solo
+# construye UNA función a partir de este archivo. api/polymarket_cycle.py
+# y api/polymarket_resolve.py en el repo son referencia legible de la
+# misma lógica, pero NO se despliegan — ver el aviso al inicio de esos
+# archivos.
+# ────────────────────────────────────────────────────────────────────
+
+def run_polymarket_cycle():
+    config = Config
+    db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    client = PolymarketClient(config)
+    notifier = TelegramNotifier(config)
+    state_store = SupabaseNotifyStateAdapter(
+        db, resend_cooldown_hours=getattr(config, "POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
+    )
+    top_n = int(os.environ.get("POLYMARKET_SERVERLESS_TOP_N", "15"))
+    time_budget = float(os.environ.get("POLYMARKET_TIME_BUDGET_SECONDS", "7.5"))
+    request_timeout = float(os.environ.get("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "5"))
+    return run_polymarket_cycle_serverless(
+        config, client, notifier, db, state_store,
+        top_n=top_n, time_budget_seconds=time_budget, request_timeout=request_timeout,
+    )
+
+
+async def _polymarket_cycle_endpoint(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = run_polymarket_cycle()
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
+@app.get("/api/polymarket_cycle")
+async def polymarket_cycle_get(request: Request):
+    return await _polymarket_cycle_endpoint(request)
+
+
+@app.post("/api/polymarket_cycle")
+async def polymarket_cycle_post(request: Request):
+    return await _polymarket_cycle_endpoint(request)
+
+
+def run_polymarket_resolve():
+    config = Config
+    db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    client = PolymarketClient(config)
+    notifier = TelegramNotifier(config)
+    open_before = db.get_open_polymarket_signals()
+    check_open_signals(db, client, notifier)
+    open_after = db.get_open_polymarket_signals()
+    return {
+        "status": "ok",
+        "open_before": len(open_before),
+        "resolved": len(open_before) - len(open_after),
+        "open_after": len(open_after),
+    }
+
+
+async def _polymarket_resolve_endpoint(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = run_polymarket_resolve()
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
+@app.get("/api/polymarket_resolve")
+async def polymarket_resolve_get(request: Request):
+    return await _polymarket_resolve_endpoint(request)
+
+
+@app.post("/api/polymarket_resolve")
+async def polymarket_resolve_post(request: Request):
+    return await _polymarket_resolve_endpoint(request)
 
 
 # ────────────────────────────────────────────────────────────────────

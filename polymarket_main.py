@@ -210,6 +210,31 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
     return signals
 
 
+class SupabaseNotifyStateAdapter:
+    """
+    Mismo interfaz que PolymarketStateStore (should_notify/record_notified),
+    pero respaldado en la tabla polymarket_notify_state de Supabase en vez
+    de un JSON en disco — necesario en serverless porque el filesystem no
+    persiste entre invocaciones. Vive acá (no en app.py ni en api/) porque
+    es la pieza de pegamento entre run_polymarket_cycle_serverless (de este
+    mismo módulo) y el backend de turno (Supabase); cualquier entrypoint
+    que quiera correr el ciclo serverless la importa desde acá.
+    """
+    def __init__(self, db, resend_cooldown_hours=6.0, min_score_increase_pct=0.20):
+        self.db = db
+        self.resend_cooldown_hours = resend_cooldown_hours
+        self.min_score_increase_pct = min_score_increase_pct
+
+    def should_notify(self, condition_id, direction, score):
+        return self.db.should_notify_polymarket(
+            condition_id, direction, score,
+            self.resend_cooldown_hours, self.min_score_increase_pct,
+        )
+
+    def record_notified(self, condition_id, direction, score):
+        self.db.record_notified_polymarket(condition_id, direction, score)
+
+
 def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
                                      top_n=15, time_budget_seconds=7.5,
                                      request_timeout=5):

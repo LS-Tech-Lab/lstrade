@@ -1,7 +1,15 @@
 """
+⚠️ ESTE ARCHIVO NO SE DESPLIEGA EN VERCEL — ver app.py.
+
+La ruta real en producción es /api/polymarket_cycle definido en app.py
+(función polymarket_cycle_get/polymarket_cycle_post ahí). Ver el aviso en
+api/cycle.py para el porqué. Este archivo queda como referencia legible
+de la misma lógica en aislamiento — pegar solo esto en GitHub NO alcanza,
+los cambios van en app.py.
+
 Función serverless — un ciclo de escaneo de Polymarket, pensada para ser
-disparada por un cron externo cada ~10 min (ver .github/workflows/trigger-cycle.yml),
-igual que api/cycle.py hace con el bot de cripto.
+disparada por un cron externo (ver .github/workflows/trigger-cycle.yml)
+cada ~10 min, igual que api/cycle.py hace con el bot de cripto.
 
 Separado de api/cycle.py a propósito: son dos mercados con lógica de riesgo
 independiente, y mezclarlos en una sola función haría que un error de uno
@@ -22,29 +30,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from supabase_db import SupabaseDatabase
 from polymarket_client import PolymarketClient
-from polymarket_main import run_polymarket_cycle_serverless
+from polymarket_main import SupabaseNotifyStateAdapter, run_polymarket_cycle_serverless
 from telegram_notifier import TelegramNotifier
-
-
-class _SupabaseNotifyStateAdapter:
-    """
-    Mismo interfaz que PolymarketStateStore (should_notify/record_notified),
-    para que run_polymarket_cycle_serverless no tenga que saber si corre
-    local (JSON) o serverless (Supabase).
-    """
-    def __init__(self, db, resend_cooldown_hours=6.0, min_score_increase_pct=0.20):
-        self.db = db
-        self.resend_cooldown_hours = resend_cooldown_hours
-        self.min_score_increase_pct = min_score_increase_pct
-
-    def should_notify(self, condition_id, direction, score):
-        return self.db.should_notify_polymarket(
-            condition_id, direction, score,
-            self.resend_cooldown_hours, self.min_score_increase_pct,
-        )
-
-    def record_notified(self, condition_id, direction, score):
-        self.db.record_notified_polymarket(condition_id, direction, score)
 
 
 def run_cycle():
@@ -52,7 +39,7 @@ def run_cycle():
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
-    state_store = _SupabaseNotifyStateAdapter(
+    state_store = SupabaseNotifyStateAdapter(
         db, resend_cooldown_hours=getattr(config, "POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
     )
 

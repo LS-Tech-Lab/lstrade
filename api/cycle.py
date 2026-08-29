@@ -1,4 +1,14 @@
 """
+⚠️ ESTE ARCHIVO NO SE DESPLIEGA EN VERCEL — ver app.py.
+
+Desde 2026 el runtime Python de Vercel construye UNA sola función a partir
+de un único entrypoint en la raíz (app.py) que exponga `app` (ASGI); ya no
+soporta un archivo = una función por módulo dentro de api/. La ruta real
+que sí está en producción es /api/cycle definido en app.py (función
+cycle_get/cycle_post ahí). Este archivo queda como referencia legible de
+la lógica en aislamiento, pero pegar solo esto en GitHub NO alcanza — los
+cambios van en app.py.
+
 Función serverless de Vercel — un solo ciclo de escaneo, pensado para ser
 disparado por un cron externo (ver .github/workflows/trigger-cycle.yml)
 cada pocos minutos, ya que el cron nativo de Vercel en el plan Hobby

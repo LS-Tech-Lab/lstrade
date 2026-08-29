@@ -1,4 +1,12 @@
 """
+⚠️ ESTE ARCHIVO NO SE DESPLIEGA EN VERCEL — ver app.py.
+
+La ruta real en producción es /api/polymarket_resolve definido en app.py
+(función polymarket_resolve_get/polymarket_resolve_post ahí). Ver el aviso
+en api/cycle.py para el porqué. Este archivo queda como referencia legible
+de la misma lógica en aislamiento — pegar solo esto en GitHub NO alcanza,
+los cambios van en app.py.
+
 Función serverless — revisa señales de Polymarket ya enviadas (con plan de
 entrada/target/stop) y resuelve las que ya tocaron alguno de los dos. Esto
 es lo que permite calcular win rate real del módulo (antes solo existía en

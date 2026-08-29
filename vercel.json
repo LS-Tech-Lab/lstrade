@@ -1,9 +1,6 @@
 {
   "functions": {
-    "app.py": { "maxDuration": 10 },
-    "api/cycle.py": { "maxDuration": 10 },
-    "api/polymarket_cycle.py": { "maxDuration": 10 },
-    "api/polymarket_resolve.py": { "maxDuration": 10 }
+    "app.py": { "maxDuration": 10 }
   },
   "crons": [
     { "path": "/api/cycle", "schedule": "0 12 * * *" },
