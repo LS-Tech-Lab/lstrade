@@ -32,12 +32,12 @@ function StatCard({ label, value, suffix = "", tone }) {
   );
 }
 
-function StatsRow({ title, stats, showProfitFactor }) {
+function StatsRow({ title, stats, showProfitFactor, emptyMessage }) {
   if (!stats || stats.n === 0) {
     return (
       <div className="card">
         <h2>{title}</h2>
-        <p className="empty">Sin trades cerrados todavía — las métricas aparecen cuando haya resultados reales.</p>
+        <p className="empty">{emptyMessage || "Sin trades cerrados todavía — las métricas aparecen cuando haya resultados reales."}</p>
       </div>
     );
   }
@@ -249,16 +249,20 @@ function CriptoTab({ data }) {
 
   return (
     <>
-      {symbols.length > 0 && (
-        <div className="card">
-          <h2>Indicadores en vivo</h2>
+      <div className="card">
+        <h2>Indicadores en vivo</h2>
+        {symbols.length > 0 ? (
           <div className="indicator-grid">
             {symbols.map((symbol) => (
               <IndicatorCard key={symbol} symbol={symbol} snapshot={indicatorsBySymbol[symbol]} />
             ))}
           </div>
-        </div>
-      )}
+        ) : (
+          <p className="empty">
+            Esperando el primer ciclo exitoso — las tarjetas aparecen solas apenas se guarde el primer snapshot.
+          </p>
+        )}
+      </div>
 
       <StatsRow title="Performance — Cripto (trades cerrados)" stats={data.stats} showProfitFactor />
 
@@ -308,7 +312,8 @@ function CriptoTab({ data }) {
 function PolymarketTab({ data }) {
   return (
     <>
-      <StatsRow title="Performance — Polymarket (señales resueltas)" stats={data.polymarket_stats} />
+      <StatsRow title="Performance — Polymarket (señales resueltas)" stats={data.polymarket_stats}
+        emptyMessage="Sin señales resueltas todavía — las métricas aparecen cuando el motor encuentre y cierre alguna." />
 
       <div className="card">
         <h2>Performance por categoría</h2>
