@@ -14,6 +14,17 @@ class ExchangeClient:
             "apiKey": config.API_KEY,
             "secret": config.API_SECRET,
             "enableRateLimit": True,
+            # NUEVO: ccxt llama automáticamente a fetch_currencies() dentro
+            # de load_markets() (que a su vez dispara fetch_ohlcv() en el
+            # primer uso) CUANDO hay API keys configuradas — sin importar
+            # que no las necesitemos para leer velas públicas. En Binance
+            # eso pega contra el endpoint privado sapi/v1/capital/config/getall,
+            # que Binance bloquea con 451 "restricted location" según la
+            # región del servidor (confirmado en logs reales: pasa desde
+            # Vercel aunque las velas públicas sí son accesibles). Esto
+            # apaga esa llamada puntual sin tocar fetch_ohlcv/fetch_ticker,
+            # que usan endpoints públicos y no se ven afectados.
+            "options": {"fetchCurrencies": False},
         }
         if config.API_PASSWORD:
             params["password"] = config.API_PASSWORD
