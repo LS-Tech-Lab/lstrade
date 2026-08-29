@@ -1,12 +1,14 @@
 name: Trigger Trader IA cycle
 
 on:
-  schedule:
-    # Cada 10 minutos. GitHub Actions no garantiza precisión exacta en la
-    # ejecución programada (puede demorar unos minutos en horas de carga),
-    # y desactiva los workflows programados tras 60 días sin actividad en
-    # el repo — hacé un commit de vez en cuando o usá workflow_dispatch.
-    - cron: "*/10 * * * *"
+  # NUEVO: se saca el `schedule` de acá — GitHub Actions no garantiza
+  # horario en triggers de cron (documentado por GitHub: "puede demorarse
+  # o saltearse en períodos de carga alta"), y medido en producción esto
+  # corría cada 1-12.5 horas en vez de cada 10 minutos. El disparo real
+  # ahora es un cron externo (cron-job.org) pegándole directo a las URLs
+  # de Vercel. Este workflow queda solo para forzar una corrida manual
+  # puntual (botón "Run workflow" en la pestaña Actions) cuando haga falta
+  # debuggear, sin competir con el cron externo.
   workflow_dispatch: {}
 
 jobs:
