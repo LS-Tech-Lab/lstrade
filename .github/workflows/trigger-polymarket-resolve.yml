@@ -1,0 +1,21 @@
+name: Trigger Polymarket resolve
+
+on:
+  schedule:
+    # Cada 30 minutos — las señales de Polymarket no se resuelven en
+    # minutos, no hace falta revisarlas tan seguido como el escaneo.
+    # Mismo aviso que trigger-cycle.yml sobre la precisión del cron y la
+    # desactivación tras 60 días sin actividad en el repo.
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al endpoint de resolución de Polymarket en Vercel
+        run: |
+          curl -sf -X POST "${{ secrets.VERCEL_POLYMARKET_RESOLVE_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+          || echo "La llamada falló — revisá los logs de la función en Vercel."

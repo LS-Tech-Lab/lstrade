@@ -13,9 +13,16 @@ jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Llamar al endpoint de ciclo en Vercel
+      - name: Llamar al endpoint de ciclo de cripto en Vercel
         run: |
           curl -sf -X POST "${{ secrets.VERCEL_CYCLE_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+          || echo "La llamada falló — revisá los logs de la función en Vercel."
+
+      - name: Llamar al endpoint de ciclo de Polymarket en Vercel
+        run: |
+          curl -sf -X POST "${{ secrets.VERCEL_POLYMARKET_CYCLE_URL }}" \
             -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
             -H "Content-Type: application/json" \
           || echo "La llamada falló — revisá los logs de la función en Vercel."
