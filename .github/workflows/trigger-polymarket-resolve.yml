@@ -1,12 +1,11 @@
 name: Trigger Polymarket resolve
 
 on:
-  schedule:
-    # Cada 30 minutos — las señales de Polymarket no se resuelven en
-    # minutos, no hace falta revisarlas tan seguido como el escaneo.
-    # Mismo aviso que trigger-cycle.yml sobre la precisión del cron y la
-    # desactivación tras 60 días sin actividad en el repo.
-    - cron: "*/30 * * * *"
+  # NUEVO: mismo motivo que trigger-cycle.yml — el `schedule` de GitHub
+  # Actions no es confiable para intervalos cortos (medido: corría cada
+  # varias horas en vez de cada 30 min). El disparo real es ahora un cron
+  # externo (cron-job.org). Este workflow queda solo para forzar una
+  # corrida manual puntual desde la pestaña Actions.
   workflow_dispatch: {}
 
 jobs:
