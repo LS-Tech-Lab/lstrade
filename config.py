@@ -90,6 +90,51 @@ class Config:
         c.strip() for c in os.getenv("POLYMARKET_EXCLUDED_CATEGORIES", "Política / elecciones").split(",") if c.strip()
     ]
 
+    # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
+    # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
+    # estimar la distribución de probabilidad de la máxima del día y
+    # compararla contra los precios de los buckets de Polymarket. Corre
+    # separado del ciclo de precio/momentum (api/weather_cycle.py, propio
+    # cron externo) porque las llamadas de red que necesita (NWS points +
+    # forecast + METAR + TAF por evento) no entran cómodas en el
+    # presupuesto de 10s del ciclo principal.
+    WEATHER_ANALYSIS_ENABLED = _bool("WEATHER_ANALYSIS_ENABLED", True)
+
+    # api.weather.gov exige un User-Agent identificable (no un navegador
+    # genérico) — poné acá un contacto real (app + email/repo), si no NWS
+    # puede empezar a bloquear las requests. Ver
+    # https://www.weather.gov/documentation/services-web-api
+    WEATHER_USER_AGENT = os.getenv(
+        "WEATHER_USER_AGENT", "lstrade-weather-bot/1.0 (contacto no configurado)"
+    )
+
+    # Umbral de EV mínimo para avisar un bucket de clima. Más alto que el
+    # umbral de precio/momentum a propósito: acá el "edge" depende de un
+    # pronóstico meteorológico con error real (±1-2°F típico en el día),
+    # no de un patrón de precio — conviene exigir más margen antes de
+    # operar. Sin validar todavía contra resultados reales, igual que
+    # POLYMARKET_STOP_VOL_MULT en su momento — punto de partida.
+    WEATHER_MIN_EV = _float("WEATHER_MIN_EV", 0.15)
+
+    # Desvío estándar base (°F) para repartir la masa de probabilidad entre
+    # buckets adyacentes — punto de partida de la skill wu-airport-weather
+    # ("normalmente ±1-2°F"). Ajustable sin tocar código a medida que se
+    # calibre contra resultados reales.
+    WEATHER_BASE_SIGMA_F = _float("WEATHER_BASE_SIGMA_F", 1.6)
+
+    # Forzar una estación ICAO específica en vez de resolverla por el texto
+    # del evento (STATION_MAP en weather_signal_engine.py) — útil para
+    # debug o para cubrir una ciudad que el mapeo automático todavía no
+    # tiene. Cuando se usa, el ajuste por trayectoria matutina asume UTC
+    # (no se puede geocodificar sin lat/lon).
+    WEATHER_STATION_OVERRIDE = os.getenv("WEATHER_STATION_OVERRIDE", "") or None
+
+    # Horas mínimas antes de reavisar el mismo bucket de clima si el EV no
+    # subió lo suficiente — mismo mecanismo que POLYMARKET_RESEND_COOLDOWN_HOURS
+    # pero con ventana más corta porque el pronóstico se actualiza más rápido
+    # que un patrón de precio.
+    WEATHER_RESEND_COOLDOWN_HOURS = _float("WEATHER_RESEND_COOLDOWN_HOURS", 3.0)
+
     NOTIFY_TELEGRAM = _bool("NOTIFY_TELEGRAM", False)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
