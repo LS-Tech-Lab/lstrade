@@ -231,11 +231,30 @@ usando el mismo historial que ya se descargaba para generar la señal.
 
 ## ¿Se puede desplegar en Vercel?
 
+**Sí — con Supabase como base de datos, y así corre hoy en producción** (`lstrade.vercel.app`). Esta es la arquitectura ya incluida en el repo (`app.py`, `supabase_db.py`, `vercel.json`). Cosas a tener en cuenta respecto al modo VPS:
 
-**Sí — con Supabase como base de datos.** Esta es la arquitectura ya incluida en el repo (`api/`, `supabase_db.py`, `vercel.json`). Dos cosas cambian respecto al modo VPS:
-
-1. **El cron nativo de Vercel en el plan Hobby (gratis) solo corre 1 vez por día.** `vercel.json` trae ese cron diario como red de seguridad, pero el disparo real cada pocos minutos lo hace **GitHub Actions** (`.github/workflows/trigger-cycle.yml`), gratis, golpeando el endpoint con un secreto compartido. No hace falta pagar Pro.
-2. **La aprobación humana ya no puede bloquear la función** (10s de timeout en Hobby). Por eso `api/cycle.py` solo manda el memo por Telegram con botones y corta — `api/telegram_webhook.py` es un endpoint aparte que recibe tu click y ahí sí ejecuta la orden real.
+1. **Desde 2026, el runtime Python de Vercel ya no soporta "un archivo = una función" dentro de `api/`.** Construye una sola Vercel Function a partir de un único entrypoint en la raíz que exponga una variable `app` (ASGI) — acá es **`app.py`** (FastAPI), que registra las 8 rutas reales:
+   `/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_track_results`
+   (alias de `polymarket_resolve`, ver tabla de Estructura), `/api/manage_positions`, `/api/weather_cycle`,
+   `/api/reset_halt` y `/api/telegram_webhook`.
+   Los archivos en `api/*.py` **no se despliegan** — son referencia legible de la misma lógica, mantenida
+   ahí para que cada endpoint se pueda leer aislado sin scrollear todo `app.py`. Toda ruta nueva tiene que
+   agregarse como endpoint dentro de `app.py` o queda inalcanzable: Vercel la sirve, pero FastAPI le
+   devuelve un 404 real (`{"detail":"Not Found"}`) porque nunca la registró — no un 401 de `CRON_SECRET`.
+   Un 401 confirma que la ruta existe y pide auth; un 404 significa que falta agregarla a `app.py`.
+2. **El cron nativo de Vercel en el plan Hobby (gratis) solo corre 1 vez por día.** `vercel.json` trae
+   ese cron diario sobre `/api/cycle` como red de seguridad, pero el disparo real cada pocos minutos lo
+   hace un cron externo (hoy, **cron-job.org**) golpeando cada endpoint directo con
+   `Authorization: Bearer CRON_SECRET`. Los workflows de GitHub Actions (`trigger-*.yml`) quedaron solo
+   con `workflow_dispatch` para forzar una corrida manual puntual — el `schedule` de GitHub Actions se
+   sacó porque en la práctica corría cada 1-12h en vez de cada 10 min en intervalos cortos (limitación
+   documentada de GitHub Actions, no un bug del código).
+3. **La aprobación humana ya no puede bloquear la función** (10s de timeout en Hobby). Por eso el ciclo
+   de cripto solo manda el memo por Telegram con botones y corta — `/api/telegram_webhook` es la ruta
+   aparte que recibe tu click y ahí sí ejecuta la orden real.
+4. **Heartbeat**: si pasan `HEARTBEAT_INTERVAL_SECONDS` (6h por defecto) sin que se mande ningún mensaje
+   a Telegram, `app.py` manda un aviso corto de "sigo vivo" con equity/drawdown y el último snapshot de
+   indicadores — para no confundir horas seguidas de "no_signal" con que el bot dejó de correr.
 
 ### Pasos para desplegarlo
 
@@ -269,12 +288,22 @@ curl -X POST "https://api.telegram.org/bot<TU_TOKEN>/setWebhook" \
   -d "secret_token=<EL_MISMO_VALOR_DE_TELEGRAM_WEBHOOK_SECRET>"
 ```
 
-**4. GitHub Actions — disparar el ciclo cada N minutos**
-En tu repo de GitHub: *Settings → Secrets and variables → Actions* y agregá:
-- `VERCEL_CYCLE_URL` = `https://tu-proyecto.vercel.app/api/cycle`
-- `VERCEL_CRON_SECRET` = el valor de `CRON_SECRET` que copiaste en el paso 2
+**4. cron-job.org (o similar) — disparar cada endpoint periódicamente**
+Creá un cron job por endpoint que necesite correr seguido, apuntando directo a la URL de Vercel con el
+header `Authorization: Bearer <CRON_SECRET>` (el valor que copiaste en el paso 2):
 
-El workflow ya viene configurado a `*/10 * * * *` (cada 10 min) — ajustalo a tu gusto en `.github/workflows/trigger-cycle.yml`. GitHub puede demorar la ejecución real unos minutos en horas de carga, y apaga los workflows programados si el repo pasa 60 días sin ningún commit — hacele caso a ese detalle si lo dejás mucho tiempo sin tocar.
+| Endpoint | Frecuencia sugerida |
+|---|---|
+| `/api/cycle` | cada 10 min |
+| `/api/polymarket_cycle` | cada 10 min |
+| `/api/polymarket_resolve` (= `/api/polymarket_track_results`) | cada 30 min |
+| `/api/manage_positions` | cada 10-15 min |
+| `/api/weather_cycle` | cada 30 min (el pronóstico no cambia tan rápido como el precio) |
+
+Los workflows `.github/workflows/trigger-*.yml` quedaron como respaldo manual (`workflow_dispatch`
+desde la pestaña Actions) — no como el disparador real, ver nota en la sección anterior. Antes de dar
+por buena cualquier URL nueva en el cron externo, probala una vez a mano (paso 5) y confirmá que
+responde 200 (o 401 si te olvidaste el header) — un 404 significa que la ruta no está en `app.py`.
 
 **5. Probar**
 ```bash
@@ -339,14 +368,16 @@ de raíz sin depender de VPN en tu propia conexión.
 | `weekly_summary.py` | Resumen semanal de performance real por Telegram |
 | `db.py` | Persistencia SQLite (modo VPS) |
 | `supabase_db.py` | Persistencia Postgres vía Supabase (modo serverless) |
-| `api/cycle.py` | Función de Vercel: un ciclo de escaneo, disparada por cron externo |
-| `api/telegram_webhook.py` | Función de Vercel: resuelve tu click de Telegram y ejecuta la orden |
-| `api/reset_halt.py` | Función de Vercel: reinicia el circuit breaker en modo serverless |
+| `weather_signal_engine.py` | Motor de análisis de clima para mercados de Polymarket (NWS + METAR/TAF, solo fuentes con API oficial) |
+| `weather_report.py` | Modo manual del análisis de clima — reporte completo para correr vos mismo, sin tocar el ciclo automático |
+| `polymarket_categories.py` | Categorización compartida de mercados de Polymarket por keywords (usada en producción y en el backtest offline) |
+| `app.py` | **Único entrypoint real de Vercel** (FastAPI) — registra las 8 rutas serverless (`/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_track_results`, `/api/manage_positions`, `/api/weather_cycle`, `/api/reset_halt`, `/api/telegram_webhook`) y el heartbeat |
+| `api/*.py` | Referencia legible de cada endpoint — **no se despliegan**; la lógica real vive en `app.py` (ver sección "¿Se puede desplegar en Vercel?") |
 | `dashboard/` | Panel Next.js — bitácora, equity y estado del sistema (ver `GUIA_IMPLEMENTACION.md`) |
 | `schema.sql` | Tablas de Supabase — correr una vez en el SQL Editor |
 | `deploy/trader-ia.service` | Unidad systemd para correrlo 24/7 en un VPS |
-| `.github/workflows/ci.yml` | Chequeo automático de que el código compila y la lógica funciona |
-| `.github/workflows/trigger-cycle.yml` | Dispara `api/cycle` cada N minutos (modo serverless) |
+| `.github/workflows/ci.yml` | Compila el código, corre la prueba sintética del motor de señales, y verifica que `app.py` registre todas las rutas que usan los crons externos |
+| `.github/workflows/trigger-*.yml` | Respaldo manual (`workflow_dispatch`) por endpoint — el disparo periódico real lo hace cron-job.org, no GitHub Actions (ver sección de despliegue) |
 
 ## Extensiones razonables (no incluidas todavía)
 
@@ -358,6 +389,15 @@ de raíz sin depender de VPN en tu propia conexión.
 
 ## Cambios recientes
 
+- **Corregido** (`app.py`, `vercel.json`, `.github/workflows/ci.yml`): `/api/weather_cycle` y
+  `/api/polymarket_track_results` estaban en `api/*.py`, en los workflows y en `vercel.json`, pero
+  nunca se habían registrado como endpoint dentro de `app.py` — Vercel construye una sola función
+  desde ahí, así que cualquier cron externo apuntando a esas rutas recibía 404 real de FastAPI en
+  silencio. Agregadas ambas rutas a `app.py`. De paso: `api/polymarket_track_results.py` resultó ser
+  lógica duplicada de `/api/polymarket_resolve` (mismo `check_open_signals`) — quedó como alias en vez
+  de reimplementarla, para no tener que tocar la URL ya cargada en el cron externo. `vercel.json`
+  limpiado de entradas de `api/*.py` que la arquitectura real ignora. `ci.yml` ahora importa `app.py`
+  y falla si falta alguna de las 8 rutas que usan los cron externos.
 - **Corregido** (`indicators.py`): `ema()` sembraba con `closes[0]` sin importar `window`, y como
   `signal_engine` pasa una ventana rolling que se recorta distinto en cada ciclo, el punto de
   arranque cambiaba cada vez y el EMA "saltaba" en vez de evolucionar suavemente. Ahora siembra
