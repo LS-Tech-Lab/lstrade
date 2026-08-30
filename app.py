@@ -173,6 +173,13 @@ def run_cycle():
         )
         _touch_notification(db)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
+        # Sin esto la señal quedaba en el memo de Telegram y en `decisions`,
+        # pero nunca en `open_trades`, así que run_manage_positions() no
+        # tenía nada que cerrar ni medir (ver api/cycle.py, mismo fix).
+        db.add_open_trade(
+            best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
+            plan["target"], plan["position_size"],
+        )
         return {"status": "paper_logged", "symbol": best_symbol}
 
     if config.AUTO_EXECUTE:
@@ -180,6 +187,11 @@ def run_cycle():
         executor = Executor(exchange_client, config)
         order_detail = executor.execute(best_symbol, plan)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
+        order_id = order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+        db.add_open_trade(
+            best_symbol, best_signal["direction"], plan["entry"], plan["stop"], plan["target"],
+            plan["position_size"], order_id,
+        )
         notifier.send_message(f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}")
         _touch_notification(db)
         return {"status": "auto_executed", "symbol": best_symbol, "order": order_detail}
@@ -191,6 +203,10 @@ def run_cycle():
         # Sin Telegram configurado no hay forma de pedir aprobación en serverless.
         # Por seguridad, se registra en modo papel en vez de ejecutar a ciegas.
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged_no_telegram")
+        db.add_open_trade(
+            best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
+            plan["target"], plan["position_size"],
+        )
         return {"status": "no_telegram_configured_defaulted_to_paper", "symbol": best_symbol}
 
     _touch_notification(db)
@@ -304,6 +320,84 @@ async def polymarket_resolve_get(request: Request):
 @app.post("/api/polymarket_resolve")
 async def polymarket_resolve_post(request: Request):
     return await _polymarket_resolve_endpoint(request)
+
+
+# ────────────────────────────────────────────────────────────────────
+# /api/manage_positions — mismo patrón que polymarket_resolve arriba:
+# api/manage_positions.py en el repo es referencia legible de la misma
+# lógica, pero NO se despliega (Vercel solo construye la función a partir
+# de este archivo). Revisa las posiciones cripto abiertas en modo papel y,
+# si el precio actual ya tocó el target o el stop, las cierra y calcula el
+# resultado en R — sin este endpoint corriendo, run_cycle() puede seguir
+# llamando a add_open_trade() pero esas posiciones nunca se cierran ni se
+# reflejan en stats_summary() (win rate, expectancy).
+# ────────────────────────────────────────────────────────────────────
+
+def run_manage_positions():
+    db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    exchange_client = ExchangeClient(Config)
+    notifier = TelegramNotifier(Config)
+
+    open_trades = db.get_open_trades()
+    if not open_trades:
+        return {"status": "no_open_trades"}
+
+    closed = []
+    errors = []
+    for trade in open_trades:
+        symbol = trade["symbol"]
+        try:
+            ticker = exchange_client.fetch_ticker(symbol)
+            current_price = ticker["last"]
+        except Exception as e:
+            errors.append(f"{symbol}: {e}")
+            continue
+
+        direction = trade["direction"]
+        target_price = trade["target_price"]
+        current_stop = trade["current_stop"]
+
+        hit_target = (current_price >= target_price) if direction == "LONG" else (current_price <= target_price)
+        hit_stop = (current_price <= current_stop) if direction == "LONG" else (current_price >= current_stop)
+
+        if not (hit_target or hit_stop):
+            continue
+
+        outcome = "target" if hit_target else "stop"
+        exit_price = target_price if hit_target else current_stop
+        r_multiple = db.close_trade_with_outcome(trade, exit_price, outcome)
+
+        emoji = "\u2705" if outcome == "target" else "\U0001F6D1"
+        r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
+        notifier.send_message(
+            f"{emoji} *Posición cerrada* — {symbol} {direction}\n"
+            f"Resultado: {outcome.upper()}{r_text}\nSalida: `{exit_price:.6f}`"
+        )
+        closed.append({"symbol": symbol, "outcome": outcome, "r_multiple": r_multiple})
+
+    return {"status": "ok", "closed": closed, "still_open": len(open_trades) - len(closed), "errors": errors}
+
+
+async def _manage_positions_endpoint(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = run_manage_positions()
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
+@app.get("/api/manage_positions")
+async def manage_positions_get(request: Request):
+    return await _manage_positions_endpoint(request)
+
+
+@app.post("/api/manage_positions")
+async def manage_positions_post(request: Request):
+    return await _manage_positions_endpoint(request)
 
 
 # ────────────────────────────────────────────────────────────────────
