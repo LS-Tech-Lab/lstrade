@@ -1,24 +1,18 @@
 """
-⚠️ ESTE ARCHIVO NO SE DESPLIEGA EN VERCEL — ver app.py.
+Versión serverless de polymarket_main.py. Recortada a propósito para caber
+en el timeout de 10s del plan Hobby de Vercel:
+  - Escanea muchos menos mercados (POLYMARKET_TOP_N, default 5 acá vs. 20
+    por default en el modo local).
+  - Manda como máximo 1 señal por invocación, no 3.
+  - No genera ni envía el gráfico (matplotlib + la llamada a Telegram con
+    la imagen agregan latencia que no vale la pena arriesgar acá) — el
+    memo en texto sigue teniendo todos los datos. El modo local sigue
+    mandando el gráfico sin problema porque no tiene ese límite de tiempo.
 
-La ruta real en producción es /api/polymarket_cycle definido en app.py
-(función polymarket_cycle_get/polymarket_cycle_post ahí). Ver el aviso en
-api/cycle.py para el porqué. Este archivo queda como referencia legible
-de la misma lógica en aislamiento — pegar solo esto en GitHub NO alcanza,
-los cambios van en app.py.
-
-Función serverless — un ciclo de escaneo de Polymarket, pensada para ser
-disparada por un cron externo (ver .github/workflows/trigger-cycle.yml)
-cada ~10 min, igual que api/cycle.py hace con el bot de cripto.
-
-Separado de api/cycle.py a propósito: son dos mercados con lógica de riesgo
-independiente, y mezclarlos en una sola función haría que un error de uno
-tumbe al otro y que compitan por el mismo presupuesto de 10s del plan
-Hobby de Vercel.
-
-El estado de dedup de avisos (antes un JSON en disco, polymarket_state.json)
-vive en la tabla polymarket_notify_state de Supabase — un archivo local no
-sirve acá porque cada invocación arranca con filesystem limpio.
+Antes este módulo no existía en el modo serverless: Polymarket solo corría
+si tenías polymarket_main.py prendido en una terminal/VPS aparte. Esto lo
+integra al mismo esquema de GitHub Actions + Vercel que ya usa el ciclo de
+cripto (ver .github/workflows/trigger-polymarket-cycle.yml).
 """
 from http.server import BaseHTTPRequestHandler
 import json
@@ -30,29 +24,73 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from supabase_db import SupabaseDatabase
 from polymarket_client import PolymarketClient
-from polymarket_main import SupabaseNotifyStateAdapter, run_polymarket_cycle_serverless
+from polymarket_signal_engine import generate_polymarket_signal
 from telegram_notifier import TelegramNotifier
 
 
-def run_cycle():
+def build_memo_markdown(signal):
+    m = signal["market"]
+    lines = [f"🎯 *SEÑAL POLYMARKET* — {m['question'][:70]}"]
+    lines.append(f"📊 Dirección: {signal['direction']} (confianza {signal['confidence']}/5)")
+    lines.append(f"💰 Precio YES: ${m['yes_price']:.3f} | NO: ${m['no_price']:.3f}")
+    lines.append(f"💧 Liquidez: ${m['liquidity']:,.2f}")
+    tp = signal.get("trade_plan")
+    if tp:
+        lines.append(f"🎯 Entrada: ${tp['entry']:.3f} | Target: ${tp['target']:.3f} | Stop: ${tp['stop']:.3f}")
+    lines.append("")
+    lines.append("_⚠️ MODO LECTURA — No se ejecutó ninguna operación real._")
+    return "\n".join(lines)
+
+
+def run_polymarket_cycle():
     config = Config
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
-    state_store = SupabaseNotifyStateAdapter(
-        db, resend_cooldown_hours=getattr(config, "POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
-    )
 
-    # Configurables sin tocar código — bajalos si la función sigue dando
-    # timeout en tu plan, subilos si tenés más presupuesto (Pro/Fluid).
-    top_n = int(os.environ.get("POLYMARKET_SERVERLESS_TOP_N", "15"))
-    time_budget = float(os.environ.get("POLYMARKET_TIME_BUDGET_SECONDS", "7.5"))
-    request_timeout = float(os.environ.get("POLYMARKET_REQUEST_TIMEOUT_SECONDS", "5"))
+    top_n = int(os.environ.get("POLYMARKET_TOP_N", "5"))
+    markets_raw = client.fetch_active_markets(limit=top_n)
+    if not markets_raw:
+        return {"status": "no_markets"}
 
-    return run_polymarket_cycle_serverless(
-        config, client, notifier, db, state_store,
-        top_n=top_n, time_budget_seconds=time_budget, request_timeout=request_timeout,
-    )
+    market_by_condition_id = {}
+    signals = []
+    for market_raw in markets_raw:
+        market = client.parse_market_for_analysis(market_raw)
+        if not market or market["liquidity"] < 1000 or not market.get("yes_token_id"):
+            continue
+        market_by_condition_id[market["condition_id"]] = market
+
+        price_history = client.fetch_price_history(market["yes_token_id"], interval="1h", fidelity=60)
+        signal = generate_polymarket_signal(
+            market, price_history,
+            stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
+            target_rr=config.POLYMARKET_TARGET_RR,
+        )
+        if signal:
+            signals.append(signal)
+
+    if not signals:
+        return {"status": "no_signal", "markets_scanned": len(markets_raw)}
+
+    signals.sort(key=lambda s: s["score"], reverse=True)
+    best = signals[0]
+
+    notifier.send_message(build_memo_markdown(best))
+
+    if best.get("trade_plan"):
+        condition_id = best["market"]["condition_id"]
+        original_market = market_by_condition_id.get(condition_id, {})
+        token_id = original_market.get("yes_token_id") if best["direction"] == "YES" \
+            else original_market.get("no_token_id")
+        if token_id:
+            tp = best["trade_plan"]
+            db.record_polymarket_signal(
+                condition_id, best["market"]["question"], best["direction"], token_id,
+                tp["entry"], tp["target"], tp["stop"],
+            )
+
+    return {"status": "signal_sent", "condition_id": best["market"]["condition_id"], "direction": best["direction"]}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -72,7 +110,7 @@ class handler(BaseHTTPRequestHandler):
             self._respond(401, {"error": "unauthorized"})
             return
         try:
-            result = run_cycle()
+            result = run_polymarket_cycle()
             self._respond(200, result)
         except Exception as e:
             self._respond(500, {"status": "error", "detail": str(e)})
