@@ -1,14 +1,4 @@
 """
-⚠️ ESTE ARCHIVO NO SE DESPLIEGA EN VERCEL — ver app.py.
-
-Desde 2026 el runtime Python de Vercel construye UNA sola función a partir
-de un único entrypoint en la raíz (app.py) que exponga `app` (ASGI); ya no
-soporta un archivo = una función por módulo dentro de api/. La ruta real
-que sí está en producción es /api/cycle definido en app.py (función
-cycle_get/cycle_post ahí). Este archivo queda como referencia legible de
-la lógica en aislamiento, pero pegar solo esto en GitHub NO alcanza — los
-cambios van en app.py.
-
 Función serverless de Vercel — un solo ciclo de escaneo, pensado para ser
 disparado por un cron externo (ver .github/workflows/trigger-cycle.yml)
 cada pocos minutos, ya que el cron nativo de Vercel en el plan Hobby
@@ -28,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from supabase_db import SupabaseDatabase
 from exchange_client import ExchangeClient
-from signal_engine import compute_indicator_snapshot, generate_signal
+from signal_engine import generate_signal
 from risk_manager import RiskManager
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
@@ -79,20 +69,6 @@ def run_cycle():
         except Exception as e:
             errors.append(f"{symbol}: {e}")
             continue
-
-        # NUEVO: guardar el estado del mercado independiente de si hay señal
-        # de trading — generate_signal() solo devuelve algo cuando pasa
-        # TODOS sus filtros (la mayoría de los ciclos no), así que antes el
-        # dashboard no tenía forma de mostrar "cómo está el RSI/tendencia
-        # ahora mismo" fuera de esos momentos puntuales. No afecta ninguna
-        # decisión de trading — es puramente para visualización.
-        try:
-            snapshot = compute_indicator_snapshot(candles)
-            if snapshot:
-                db.record_indicator_snapshot(symbol, snapshot)
-        except Exception as e:
-            errors.append(f"{symbol} snapshot: {e}")
-
         signal = generate_signal(candles)
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol
@@ -121,6 +97,13 @@ def run_cycle():
             + "\n\n_(modo papel — no se ejecutó nada real)_"
         )
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
+        # Antes no se llamaba acá — la señal quedaba en el memo de Telegram
+        # y en `decisions`, pero nunca en `open_trades`, así que
+        # api/manage_positions.py no tenía nada que cerrar ni medir después.
+        db.add_open_trade(
+            best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
+            plan["target"], plan["position_size"],
+        )
         return {"status": "paper_logged", "symbol": best_symbol}
 
     if config.AUTO_EXECUTE:
