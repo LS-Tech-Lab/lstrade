@@ -76,10 +76,13 @@ def generate_signal(candles, higher_tf_candles=None, btc_bias=None, min_score=0.
         return None
     
     # FILTRO 2: RSI (evita sobrecompra/sobreventa extrema)
+    # Umbral relajado de 72/28 a 78/22: 72/28 llegaba a bloquear tendencias
+    # fuertes pero sanas (ver test de CI con datos sintéticos), no solo los
+    # extremos de sobrecompra/sobreventa que el filtro busca evitar.
     direction = "LONG" if momentum >= 0 else "SHORT"
-    if direction == "LONG" and rsi_val > 72:
+    if direction == "LONG" and rsi_val > 78:
         return None
-    if direction == "SHORT" and rsi_val < 28:
+    if direction == "SHORT" and rsi_val < 22:
         return None
     
     # FILTRO 3: Análisis Multi-Timeframe (MTF)
