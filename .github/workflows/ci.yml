@@ -67,4 +67,7 @@ jobs:
           "
 
       - name: Compile check de las funciones serverless (api/)
-        run: python -m py_compile api/cycle.py api/manage_positions.py api/polymarket_cycle.py api/polymarket_track_results.py api/telegram_webhook.py supabase_db.py
+        run: python -m py_compile api/cycle.py api/manage_positions.py api/polymarket_cycle.py api/polymarket_track_results.py api/telegram_webhook.py api/weather_cycle.py supabase_db.py
+
+      - name: Compile check del módulo de clima
+        run: python -m py_compile weather_signal_engine.py weather_report.py polymarket_client.py polymarket_categories.py
