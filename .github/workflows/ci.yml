@@ -41,8 +41,17 @@ jobs:
           n=60; price=30000.0; candles=[]
           for i in range(n):
               o=price
-              drift = 0.006 if i>20 else 0.0005
-              c=price*(1+gauss(drift,0.003))
+              # Tendencia alcista con pullbacks periódicos (cada 4 velas) en vez
+              # de un drift monótono: una subida sin ningún retroceso es
+              # irreal y antes empujaba el RSI a ~99, chocando con el filtro
+              # de sobrecompra de generate_signal() aunque la tendencia fuera
+              # sana. Con pullbacks el RSI queda ~75, más representativo de
+              # un mercado real en tendencia fuerte.
+              if i>20:
+                  drift = -0.006 if i % 4 == 0 else 0.006
+              else:
+                  drift = 0.0005
+              c=price*(1+gauss(drift,0.004))
               h=max(o,c)*(1+abs(gauss(0,0.0008)))
               l=min(o,c)*(1-abs(gauss(0,0.0008)))
               candles.append({'ts':i,'o':o,'h':h,'l':l,'c':c,'v':100}); price=c
