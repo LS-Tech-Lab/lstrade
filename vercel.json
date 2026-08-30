@@ -4,7 +4,8 @@
     "api/cycle.py": { "maxDuration": 10 },
     "api/manage_positions.py": { "maxDuration": 10 },
     "api/polymarket_cycle.py": { "maxDuration": 10 },
-    "api/polymarket_track_results.py": { "maxDuration": 10 }
+    "api/polymarket_track_results.py": { "maxDuration": 10 },
+    "api/weather_cycle.py": { "maxDuration": 10 }
   },
   "crons": [
     { "path": "/api/cycle", "schedule": "0 12 * * *" }
