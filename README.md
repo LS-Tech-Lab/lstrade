@@ -312,7 +312,7 @@ curl -X POST https://tu-proyecto.vercel.app/api/cycle \
 ```
 Con `LIVE_TRADING=false` esto debería registrar el ciclo en Supabase (tabla `decisions`) sin ejecutar nada real. Revisalo desde el *Table Editor* de Supabase antes de pasar a `LIVE_TRADING=true`.
 
-**Guía paso a paso completa** (con cada comando, en orden, incluyendo el dashboard): ver `GUIA_IMPLEMENTACION.md` en la raíz del repo.
+Los pasos 1-5 de arriba son la guía completa — no hay un documento aparte con más detalle todavía.
 
 ### Qué NO cambia entre VPS y serverless
 
@@ -373,7 +373,7 @@ de raíz sin depender de VPN en tu propia conexión.
 | `polymarket_categories.py` | Categorización compartida de mercados de Polymarket por keywords (usada en producción y en el backtest offline) |
 | `app.py` | **Único entrypoint real de Vercel** (FastAPI) — registra las 8 rutas serverless (`/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_track_results`, `/api/manage_positions`, `/api/weather_cycle`, `/api/reset_halt`, `/api/telegram_webhook`) y el heartbeat |
 | `api/*.py` | Referencia legible de cada endpoint — **no se despliegan**; la lógica real vive en `app.py` (ver sección "¿Se puede desplegar en Vercel?") |
-| `dashboard/` | Panel Next.js — bitácora, equity y estado del sistema (ver `GUIA_IMPLEMENTACION.md`) |
+| `dashboard/` | Panel Next.js — bitácora, equity y estado del sistema |
 | `schema.sql` | Tablas de Supabase — correr una vez en el SQL Editor |
 | `deploy/trader-ia.service` | Unidad systemd para correrlo 24/7 en un VPS |
 | `.github/workflows/ci.yml` | Compila el código, corre la prueba sintética del motor de señales, y verifica que `app.py` registre todas las rutas que usan los crons externos |

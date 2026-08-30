@@ -1,0 +1,21 @@
+name: Trigger position management (cripto)
+
+on:
+  # Mismo motivo que trigger-cycle.yml/trigger-polymarket-resolve.yml: el
+  # `schedule` de GitHub Actions no es confiable para intervalos cortos
+  # (corría cada 1-12h en la práctica en vez de cada 10 min). El disparo
+  # real es cron-job.org pegándole directo a la URL de Vercel. Este
+  # workflow queda solo para forzar una corrida manual puntual desde la
+  # pestaña Actions.
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al endpoint de gestión de posiciones en Vercel
+        run: |
+          curl -sf -X POST "${{ secrets.VERCEL_MANAGE_POSITIONS_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+          || echo "La llamada falló — revisá los logs de la función en Vercel."

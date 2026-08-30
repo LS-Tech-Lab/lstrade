@@ -1,0 +1,21 @@
+name: Trigger Polymarket track results
+
+on:
+  # Mismo motivo que trigger-cycle.yml/trigger-polymarket-resolve.yml: el
+  # `schedule` de GitHub Actions no es confiable para intervalos cortos. El
+  # disparo real es cron-job.org pegándole directo a la URL de Vercel (que
+  # a su vez es un alias de /api/polymarket_resolve — ver app.py). Este
+  # workflow queda solo para forzar una corrida manual puntual desde la
+  # pestaña Actions.
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al endpoint de resultados de Polymarket en Vercel
+        run: |
+          curl -sf -X POST "${{ secrets.VERCEL_POLYMARKET_TRACK_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+          || echo "La llamada falló — revisá los logs de la función en Vercel."

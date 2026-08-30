@@ -1,0 +1,23 @@
+name: Trigger Trader IA cycle
+
+on:
+  # NUEVO: se saca el `schedule` de acá — GitHub Actions no garantiza
+  # horario en triggers de cron (documentado por GitHub: "puede demorarse
+  # o saltearse en períodos de carga alta"), y medido en producción esto
+  # corría cada 1-12.5 horas en vez de cada 10 minutos. El disparo real
+  # ahora es un cron externo (cron-job.org) pegándole directo a las URLs
+  # de Vercel. Este workflow queda solo para forzar una corrida manual
+  # puntual (botón "Run workflow" en la pestaña Actions) cuando haga falta
+  # debuggear, sin competir con el cron externo.
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al endpoint de ciclo de cripto en Vercel
+        run: |
+          curl -sf -X POST "${{ secrets.VERCEL_CYCLE_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+          || echo "La llamada falló — revisá los logs de la función en Vercel."
