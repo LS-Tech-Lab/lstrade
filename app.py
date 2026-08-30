@@ -31,6 +31,11 @@ from telegram_notifier import TelegramNotifier
 from polymarket_client import PolymarketClient
 from polymarket_main import SupabaseNotifyStateAdapter, run_polymarket_cycle_serverless
 from polymarket_track_results import check_open_signals
+from weather_signal_engine import (
+    generate_weather_signal,
+    build_weather_memo,
+    WeatherNotifyStateStore,
+)
 
 app = FastAPI()
 
@@ -320,6 +325,134 @@ async def polymarket_resolve_get(request: Request):
 @app.post("/api/polymarket_resolve")
 async def polymarket_resolve_post(request: Request):
     return await _polymarket_resolve_endpoint(request)
+
+
+# ────────────────────────────────────────────────────────────────────
+# /api/polymarket_track_results — alias de /api/polymarket_resolve.
+#
+# api/polymarket_track_results.py (standalone, no desplegado) implementa
+# EXACTAMENTE la misma lógica que ya vive acá arriba bajo /api/polymarket_resolve
+# (mismo check_open_signals, mismo criterio de target/stop). No son dos
+# pasos distintos del pipeline: son el mismo paso con dos nombres, porque
+# el módulo se escribió dos veces en momentos distintos. Se deja este alias
+# — en vez de una implementación duplicada — para que la URL que ya tiene
+# cargada cron-job.org (VERCEL_POLYMARKET_TRACK_URL) siga funcionando sin
+# tener que tocar la config del cron externo. Si en algún momento se
+# confirma que ningún cron externo apunta ya a esta ruta, se puede borrar
+# este bloque + api/polymarket_track_results.py + trigger-polymarket-track.yml
+# y dejar solo /api/polymarket_resolve.
+# ────────────────────────────────────────────────────────────────────
+
+@app.get("/api/polymarket_track_results")
+async def polymarket_track_results_get(request: Request):
+    return await _polymarket_resolve_endpoint(request)
+
+
+@app.post("/api/polymarket_track_results")
+async def polymarket_track_results_post(request: Request):
+    return await _polymarket_resolve_endpoint(request)
+
+
+# ────────────────────────────────────────────────────────────────────
+# /api/weather_cycle — mismo patrón que polymarket_cycle/polymarket_resolve
+# arriba: api/weather_cycle.py en el repo es referencia legible de la misma
+# lógica, pero NO se despliega (Vercel solo construye la función a partir
+# de este archivo). Corre el análisis de clima (weather_signal_engine.py)
+# separado del ciclo de precio/momentum porque un evento de clima necesita
+# varias llamadas de red secuenciales (NWS points + forecast + METAR/TAF)
+# que no entran cómodas en el presupuesto de 10s del ciclo principal.
+# ────────────────────────────────────────────────────────────────────
+
+def run_weather_cycle():
+    config = Config
+    if not config.WEATHER_ANALYSIS_ENABLED:
+        return {"status": "disabled"}
+
+    db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    client = PolymarketClient(config)
+    notifier = TelegramNotifier(config)
+    state_store = WeatherNotifyStateStore(
+        db, resend_cooldown_hours=config.WEATHER_RESEND_COOLDOWN_HOURS
+    )
+
+    started = time.monotonic()
+    time_budget = float(os.environ.get("WEATHER_TIME_BUDGET_SECONDS", "8.0"))
+
+    def time_left():
+        return time_budget - (time.monotonic() - started)
+
+    events = client.fetch_weather_events(limit=20)
+    if not events:
+        return {"status": "no_events"}
+
+    top_n = int(os.environ.get("WEATHER_TOP_N", "3"))
+    events = sorted(
+        events,
+        key=lambda e: sum(m.get("liquidity", 0) for m in e["markets"]),
+        reverse=True,
+    )[:top_n]
+
+    sent = 0
+    scanned = 0
+    detail = []
+    for event in events:
+        if time_left() < 1.0:
+            detail.append({"title": event["title"], "status": "sin_tiempo"})
+            break
+        scanned += 1
+        try:
+            signal = generate_weather_signal(event, config, min_ev=config.WEATHER_MIN_EV)
+        except Exception as e:
+            detail.append({"title": event["title"], "status": "error", "error": str(e)})
+            continue
+
+        detail.append({"title": event["title"], "status": signal.get("status")})
+        if signal.get("status") != "ok" or not signal.get("best_trade"):
+            continue
+
+        best = signal["best_trade"]
+        if not state_store.should_notify(best["condition_id"], best["ev"]):
+            continue
+
+        memo = build_weather_memo(signal, markdown=True)
+        if not memo:
+            continue
+        try:
+            notifier.send_message(memo)
+            state_store.record_notified(best["condition_id"], best["ev"])
+            sent += 1
+        except Exception as e:
+            detail.append({"title": event["title"], "status": "error_envio", "error": str(e)})
+
+    return {
+        "status": "ok",
+        "events_found": len(events),
+        "events_scanned": scanned,
+        "signals_sent": sent,
+        "detail": detail,
+    }
+
+
+async def _weather_cycle_endpoint(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = run_weather_cycle()
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
+@app.get("/api/weather_cycle")
+async def weather_cycle_get(request: Request):
+    return await _weather_cycle_endpoint(request)
+
+
+@app.post("/api/weather_cycle")
+async def weather_cycle_post(request: Request):
+    return await _weather_cycle_endpoint(request)
 
 
 # ────────────────────────────────────────────────────────────────────
