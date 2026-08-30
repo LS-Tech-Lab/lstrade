@@ -87,6 +87,7 @@ export async function GET() {
       decisionsRes,
       stateRes,
       pendingRes,
+      openTradesRes,
       closedTradesRes,
       polymarketOpenRes,
       polymarketResolvedRes,
@@ -96,6 +97,9 @@ export async function GET() {
       supabase.from("decisions").select("*").order("ts", { ascending: false }).limit(30),
       supabase.from("bot_state").select("*"),
       supabase.from("pending_decisions").select("*").eq("resolved", false),
+      // NUEVO: posiciones cripto abiertas (modo papel) — antes run_cycle()
+      // nunca las registraba, así que esta tabla estaba siempre vacía.
+      supabase.from("open_trades").select("*").order("ts_opened", { ascending: false }),
       supabase.from("closed_trades").select("outcome,r_multiple").order("ts_closed", { ascending: false }).limit(500),
       // Señales de Polymarket todavía sin resolver — "posiciones abiertas" de ese módulo.
       supabase.from("polymarket_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }),
@@ -131,6 +135,7 @@ export async function GET() {
       pending: pendingRes.data || [],
       // Si las tablas todavía no existen (schema.sql viejo sin correr de
       // nuevo), no rompemos el dashboard — se muestran vacías.
+      crypto_open: openTradesRes.error ? [] : (openTradesRes.data || []),
       stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null }
         : computeStats(closedTradesRes.data),
       polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null }

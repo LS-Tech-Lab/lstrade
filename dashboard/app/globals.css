@@ -31,6 +31,7 @@ h1,h2{font-family:'Archivo Black', sans-serif; letter-spacing:-0.01em; margin:0;
   margin-bottom:16px;
 }
 .header h1{font-size:22px;}
+.header-subtitle{font-size:11.5px; color:var(--ink-soft); margin:4px 0 0;}
 
 .status{
   font-size:11px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase;
@@ -49,6 +50,41 @@ h1,h2{font-family:'Archivo Black', sans-serif; letter-spacing:-0.01em; margin:0;
   padding:16px; margin-bottom:16px;
 }
 .card h2{font-size:13px; margin-bottom:10px;}
+.card-subtitle{font-size:11.5px; color:var(--ink-soft); margin:-6px 0 12px; line-height:1.4;}
+
+/* NUEVO: resumen en una frase, en español simple, arriba de cada pestaña */
+.plain-summary{
+  background:var(--paper); border:1.5px dashed var(--line); border-radius:10px;
+  padding:12px 14px; margin-bottom:16px; font-size:12.5px; line-height:1.5;
+}
+.plain-summary.ok{border-color:var(--good); color:var(--good);}
+.plain-summary.fail{border-color:var(--bad); color:var(--bad);}
+
+/* NUEVO: insignia "(?)" con explicación al pasar el mouse o al enfocarla
+   (tabIndex+focus para que también funcione con teclado o al tocarla en
+   pantallas táctiles). */
+.info-badge{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:14px; height:14px; margin-left:4px; border-radius:50%;
+  border:1px solid var(--ink-soft); color:var(--ink-soft);
+  font-size:9px; font-weight:700; cursor:help; position:relative;
+  vertical-align:middle;
+}
+.info-tooltip{
+  display:none; position:absolute; z-index:5; bottom:calc(100% + 6px); left:50%;
+  transform:translateX(-50%); width:200px; max-width:60vw;
+  background:var(--ink); color:var(--paper); font-weight:400; font-size:11px;
+  line-height:1.4; text-transform:none; letter-spacing:normal;
+  padding:8px 10px; border-radius:6px;
+}
+.info-badge:hover .info-tooltip, .info-badge:focus .info-tooltip{display:block;}
+
+/* NUEVO: glosario colapsable al final de cada pestaña */
+.glossary summary{cursor:pointer; font-size:13px; font-weight:700; font-family:'Archivo Black', sans-serif;}
+.glossary-list{margin:14px 0 0;}
+.glossary-item{margin-bottom:10px;}
+.glossary-item dt{font-size:12px; font-weight:700; margin-bottom:2px;}
+.glossary-item dd{margin:0; font-size:11.5px; color:var(--ink-soft); line-height:1.4;}
 
 .equity-value{font-size:26px; font-weight:700; margin-bottom:6px;}
 .equity-chart{width:100%; height:120px; display:block;}
@@ -66,7 +102,7 @@ tr:last-child td{border-bottom:none;}
 .fail{color:var(--bad); font-weight:700;}
 .decision-approved, .decision-auto_executed{color:var(--good); font-weight:700;}
 .decision-rejected, .decision-blocked{color:var(--bad); font-weight:700;}
-.decision-watchlist, .decision-paper_logged{color:var(--ink-soft); font-weight:700;}
+.decision-watchlist, .decision-paper_logged, .decision-paper_logged_no_telegram, .decision-pending_approval{color:var(--ink-soft); font-weight:700;}
 
 /* NUEVO: tarjetas de estadísticas (win rate / expectancy / profit factor) */
 .stats-grid{
@@ -114,6 +150,7 @@ tr:last-child td{border-bottom:none;}
 .indicator-row{margin-bottom:10px;}
 .indicator-row .label{display:block; margin-bottom:4px;}
 
+.rsi-block{display:flex; flex-direction:column; gap:4px;}
 .rsi-bar-wrap{display:flex; align-items:center; gap:8px;}
 .rsi-bar-track{
   position:relative; flex:1; height:8px; border-radius:5px; background:var(--line); overflow:visible;
@@ -127,6 +164,10 @@ tr:last-child td{border-bottom:none;}
 .rsi-bar-value{font-size:11px; font-weight:700; min-width:34px; text-align:right;}
 .rsi-bar-value.warn{color:#C99A2E;}
 .rsi-bar-value.fail{color:var(--bad);}
+.rsi-state{font-size:10.5px; color:var(--ink-soft);}
+.rsi-state.warn{color:#C99A2E;}
+.rsi-state.fail{color:var(--bad);}
+.rsi-state.ok{color:var(--good);}
 
 .indicator-mini-grid{
   display:grid; grid-template-columns:repeat(2, 1fr); gap:8px 12px; font-size:12px; margin-bottom:8px;
