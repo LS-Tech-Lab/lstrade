@@ -71,3 +71,26 @@ jobs:
 
       - name: Compile check del módulo de clima
         run: python -m py_compile weather_signal_engine.py weather_report.py polymarket_client.py polymarket_categories.py
+
+      - name: app.py expone todas las rutas que apuntan los cron externos
+        env:
+          SUPABASE_URL: http://ci-placeholder
+          SUPABASE_KEY: ci-placeholder
+        run: |
+          python -c "
+          import app
+          expected = {
+              '/api/cycle', '/api/reset_halt', '/api/telegram_webhook',
+              '/api/polymarket_cycle', '/api/polymarket_resolve',
+              '/api/polymarket_track_results', '/api/manage_positions',
+              '/api/weather_cycle',
+          }
+          registered = {r.path for r in app.app.routes if hasattr(r, 'path')}
+          missing = expected - registered
+          assert not missing, (
+              f'Rutas usadas por cron-job.org/GitHub Actions pero NO registradas '
+              f'en app.py (van a devolver 404 real de FastAPI aunque el archivo '
+              f'exista en api/): {missing}'
+          )
+          print('OK — todas las rutas esperadas están registradas en app.py:', sorted(registered & expected))
+          "
