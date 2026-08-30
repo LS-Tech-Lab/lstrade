@@ -5,12 +5,21 @@ Polymarket usa la red Polygon. Los precios son probabilidades (0.00 a 1.00).
 import requests
 import logging
 import json
+import re
 import time
 
 log = logging.getLogger("polymarket_client")
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
+
+# Mismo criterio pragmático que polymarket_categories.categorize(): Gamma no
+# expone una taxonomía de tags 100% confiable para "clima" en todos los
+# eventos, así que se filtra por keyword en el título del evento.
+_WEATHER_EVENT_PATTERN = re.compile(
+    r"temperature|hottest|coldest|rain|snow|hurricane|heat wave|weather|degrees?\b|Fahrenheit|Celsius",
+    re.I,
+)
 
 class PolymarketClient:
     def __init__(self, config):
@@ -73,6 +82,48 @@ class PolymarketClient:
         except Exception as e:
             log.warning(f"Error fetching price history: {e}")
             return []
+
+    def fetch_weather_events(self, limit=20, timeout=15):
+        """
+        Trae eventos de clima AGRUPADOS con sus mercados (buckets de
+        temperatura) — a diferencia de fetch_active_markets, que devuelve
+        mercados sueltos sin agrupar por evento. weather_signal_engine
+        necesita todos los buckets de un mismo día/ciudad juntos para
+        construir la distribución de probabilidad (STEP 2 de la skill
+        wu-airport-weather), así que esto pega contra /events en vez de
+        /markets.
+        """
+        try:
+            resp = self.session.get(
+                f"{GAMMA_API}/events",
+                params={
+                    "limit": limit,
+                    "active": "true",
+                    "closed": "false",
+                    "order": "volume24hr",
+                    "ascending": "false",
+                },
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            events = resp.json()
+        except Exception as e:
+            log.warning(f"Error fetching events: {e}")
+            return []
+
+        weather_events = []
+        for ev in events:
+            title = ev.get("title") or ev.get("ticker") or ""
+            if not _WEATHER_EVENT_PATTERN.search(title):
+                continue
+            markets = []
+            for mk in ev.get("markets", []) or []:
+                parsed = self.parse_market_for_analysis(mk)
+                if parsed:
+                    markets.append(parsed)
+            if markets:
+                weather_events.append({"title": title, "id": ev.get("id"), "markets": markets})
+        return weather_events
 
     def parse_market_for_analysis(self, market):
         try:
