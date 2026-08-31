@@ -188,6 +188,57 @@ class SupabaseDatabase:
             "expectancy_r": sum(r_multiples) / len(r_multiples) if r_multiples else None,
         }
 
+    # --- señales de clima (calibración) ---
+    def record_weather_signal(self, condition_id, question, event_title, station_icao,
+                               my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id):
+        self.client.table("weather_signals").insert({
+            "condition_id": condition_id, "question": question, "event_title": event_title,
+            "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price,
+            "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma,
+            "yes_token_id": yes_token_id, "ts_signaled": time.time(),
+        }).execute()
+
+    def get_open_weather_signals(self):
+        res = self.client.table("weather_signals").select("*").is_("outcome", "null").execute()
+        return res.data or []
+
+    def resolve_weather_signal(self, signal_id, outcome):
+        self.client.table("weather_signals").update({
+            "outcome": outcome, "ts_resolved": time.time(),
+        }).eq("id", signal_id).execute()
+
+    def weather_calibration_summary(self, bucket_size=0.1):
+        """Ver docstring de Database.weather_calibration_summary (db.py) —
+        misma lógica, contra Supabase en vez de SQLite."""
+        res = self.client.table("weather_signals").select("my_prob,outcome") \
+            .not_.is_("outcome", "null").execute()
+        rows = res.data or []
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "brier_score": None, "buckets": []}
+
+        buckets = {}
+        brier_sum = 0.0
+        for r in rows:
+            actual = 1.0 if r["outcome"] == "yes" else 0.0
+            brier_sum += (r["my_prob"] - actual) ** 2
+            key = min(int(r["my_prob"] / bucket_size), int(1 / bucket_size) - 1)
+            b = buckets.setdefault(key, {"predicted": [], "actual": []})
+            b["predicted"].append(r["my_prob"])
+            b["actual"].append(actual)
+
+        bucket_rows = []
+        for key in sorted(buckets):
+            b = buckets[key]
+            bucket_rows.append({
+                "range": f"{key*bucket_size*100:.0f}-{(key+1)*bucket_size*100:.0f}%",
+                "n": len(b["predicted"]),
+                "avg_predicted": sum(b["predicted"]) / len(b["predicted"]),
+                "actual_freq": sum(b["actual"]) / len(b["actual"]),
+            })
+
+        return {"n": n, "brier_score": brier_sum / n, "buckets": bucket_rows}
+
     # --- decisiones pendientes de aprobación por Telegram (solo modo serverless) ---
     def create_pending_decision(self, message_id, symbol, signal, risk_report, plan):
         self.client.table("pending_decisions").insert({
