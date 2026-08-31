@@ -83,7 +83,8 @@ class PolymarketClient:
             log.warning(f"Error fetching price history: {e}")
             return []
 
-    def fetch_weather_events(self, limit=20, timeout=15):
+    def fetch_weather_events(self, limit=20, timeout=15, max_pages=6, page_size=100,
+                              time_budget_seconds=None):
         """
         Trae eventos de clima AGRUPADOS con sus mercados (buckets de
         temperatura) — a diferencia de fetch_active_markets, que devuelve
@@ -92,7 +93,66 @@ class PolymarketClient:
         construir la distribución de probabilidad (STEP 2 de la skill
         wu-airport-weather), así que esto pega contra /events en vez de
         /markets.
+
+        Antes esto pedía solo los 20 eventos con MÁS volumen de TODO
+        Polymarket (política, cripto, deportes...) y de ahí filtraba por
+        palabra clave — el clima casi nunca gana ese ranking global, así
+        que la función devolvía "sin eventos" casi siempre aunque hubiera
+        cientos de mercados de clima activos. Ahora pagina por `created_at`
+        descendente (más estable que volumen para no perderse eventos
+        recién creados con poco volumen todavía) hasta juntar suficientes
+        candidatos de clima o agotar max_pages/time_budget_seconds.
         """
+        started = time.monotonic()
+        weather_events = []
+        offset = 0
+        for _ in range(max_pages):
+            if time_budget_seconds is not None and (time.monotonic() - started) > time_budget_seconds:
+                break
+            try:
+                resp = self.session.get(
+                    f"{GAMMA_API}/events",
+                    params={
+                        "limit": page_size,
+                        "offset": offset,
+                        "active": "true",
+                        "closed": "false",
+                        "order": "createdAt",
+                        "ascending": "false",
+                    },
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
+                page = resp.json()
+            except Exception as e:
+                log.warning(f"Error fetching events (offset={offset}): {e}")
+                break
+
+            if not page:
+                break
+
+            for ev in page:
+                title = ev.get("title") or ev.get("ticker") or ""
+                if not _WEATHER_EVENT_PATTERN.search(title):
+                    continue
+                markets = []
+                for mk in ev.get("markets", []) or []:
+                    parsed = self.parse_market_for_analysis(mk)
+                    if parsed:
+                        markets.append(parsed)
+                if markets:
+                    weather_events.append({"title": title, "id": ev.get("id"), "markets": markets})
+
+            if len(weather_events) >= limit or len(page) < page_size:
+                break
+            offset += page_size
+
+        return weather_events[:limit]
+
+    def _fetch_weather_events_by_volume_LEGACY(self, limit=20, timeout=15):
+        """Implementación anterior — se deja documentada, no se usa. Solo
+        miraba el top N por volumen24h en vez de paginar; ver docstring de
+        fetch_weather_events de arriba para el porqué del cambio."""
         try:
             resp = self.session.get(
                 f"{GAMMA_API}/events",
