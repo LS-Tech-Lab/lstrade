@@ -541,7 +541,8 @@ def run_weather_track_results():
         else:
             continue  # todavía no convergió — sigue abierta
 
-        db.resolve_weather_signal(sig["id"], outcome)
+        if not db.resolve_weather_signal(sig["id"], outcome):
+            continue  # otra invocación ya la había resuelto
         resolved.append({"condition_id": sig["condition_id"], "outcome": outcome})
 
     return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
@@ -613,6 +614,11 @@ def run_manage_positions():
         outcome = "target" if hit_target else "stop"
         exit_price = target_price if hit_target else current_stop
         r_multiple = db.close_trade_with_outcome(trade, exit_price, outcome)
+        if r_multiple is False:
+            # Otra invocación (cron solapado, reintento) ya cerró este
+            # trade primero — no duplicar el aviso de Telegram ni el
+            # conteo de "closed".
+            continue
 
         emoji = "\u2705" if outcome == "target" else "\U0001F6D1"
         r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
@@ -694,7 +700,7 @@ def handle_update(update):
         notifier.answer_callback(cq["id"], "Acción no reconocida")
         return {"status": "ignored"}
 
-    pending = db.get_pending_decision(message_id)
+    pending = db.claim_pending_decision(message_id)
     if not pending:
         notifier.answer_callback(cq["id"], "Esta decisión ya fue resuelta o expiró")
         return {"status": "not_found"}
@@ -718,7 +724,6 @@ def handle_update(update):
         notifier.answer_callback(cq["id"], "Rechazado")
 
     db.log_decision(symbol, signal, risk_report, plan, decision, order_detail)
-    db.resolve_pending_decision(message_id)
     return {"status": "resolved", "decision": decision, "symbol": symbol}
 
 
