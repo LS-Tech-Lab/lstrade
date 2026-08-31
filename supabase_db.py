@@ -110,6 +110,24 @@ class SupabaseDatabase:
         }).execute()
 
     def close_trade_with_outcome(self, trade, exit_price, outcome):
+        """
+        Devuelve el r_multiple (float o None) si este llamado cerró el
+        trade de verdad, o False si otra invocación ya se lo había llevado.
+
+        El DELETE va primero, a propósito: es la operación atómica que
+        decide quién "gana" si dos invocaciones de /api/manage_positions
+        se solapan (cron atrasado + el siguiente disparo, o un reintento) —
+        Postgres solo deja que una transacción borre esa fila. Antes se
+        insertaba en closed_trades primero y se borraba después; si dos
+        invocaciones pasaban ambas el chequeo antes de que cualquiera
+        borrara, el mismo trade quedaba duplicado en closed_trades para
+        siempre, ensuciando stats_summary() (win rate, expectancy) sin
+        forma de detectarlo después.
+        """
+        deleted = self.client.table("open_trades").delete().eq("id", trade["id"]).execute()
+        if not deleted.data:
+            return False
+
         entry = trade["entry_price"]
         direction = trade["direction"]
         stop_distance = trade.get("stop_distance")
@@ -122,7 +140,6 @@ class SupabaseDatabase:
             "exit_price": exit_price, "outcome": outcome, "r_multiple": r_multiple,
             "ts_opened": trade["ts_opened"], "ts_closed": time.time(),
         }).execute()
-        self.client.table("open_trades").delete().eq("id", trade["id"]).execute()
         return r_multiple
 
     def stats_summary(self, since_ts=None):
@@ -163,9 +180,18 @@ class SupabaseDatabase:
         return res.data or []
 
     def resolve_polymarket_signal(self, signal_id, exit_price, outcome):
-        self.client.table("polymarket_signals").update({
+        """
+        Devuelve True si esta llamada resolvió la señal, False si otra
+        invocación (cron solapado) ya lo había hecho — mismo patrón que
+        close_trade_with_outcome: el WHERE outcome IS NULL hace que la
+        operación sea atómica, así el caller sabe si mandar el aviso de
+        Telegram o no. Antes esto no devolvía nada, así que dos
+        invocaciones concurrentes podían mandar el mismo aviso dos veces.
+        """
+        res = self.client.table("polymarket_signals").update({
             "outcome": outcome, "exit_price": exit_price, "ts_resolved": time.time(),
-        }).eq("id", signal_id).execute()
+        }).eq("id", signal_id).is_("outcome", "null").execute()
+        return bool(res.data)
 
     def polymarket_stats_summary(self):
         res = self.client.table("polymarket_signals").select("direction,entry,target,stop,outcome,exit_price") \
@@ -203,9 +229,11 @@ class SupabaseDatabase:
         return res.data or []
 
     def resolve_weather_signal(self, signal_id, outcome):
-        self.client.table("weather_signals").update({
+        """Ver docstring de resolve_polymarket_signal — mismo patrón atómico."""
+        res = self.client.table("weather_signals").update({
             "outcome": outcome, "ts_resolved": time.time(),
-        }).eq("id", signal_id).execute()
+        }).eq("id", signal_id).is_("outcome", "null").execute()
+        return bool(res.data)
 
     def weather_calibration_summary(self, bucket_size=0.1):
         """Ver docstring de Database.weather_calibration_summary (db.py) —
@@ -255,6 +283,28 @@ class SupabaseDatabase:
         res = (
             self.client.table("pending_decisions")
             .select("*")
+            .eq("message_id", message_id)
+            .eq("resolved", False)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+
+    def claim_pending_decision(self, message_id):
+        """
+        Lee Y marca como resuelta la decisión en una sola operación atómica
+        (UPDATE ... WHERE resolved=false, Postgres solo deja que una sola
+        transacción concurrente gane esa fila). Reemplaza al patrón
+        get_pending_decision() + ejecutar orden + resolve_pending_decision()
+        de 3 pasos separados: si Telegram reentrega el webhook (pasa si la
+        respuesta tarda) o el usuario toca "Aprobar" dos veces, dos
+        invocaciones concurrentes podían leer la misma decisión como
+        pendiente antes de que ninguna la marcara resuelta, y las dos
+        ejecutaban la orden — con LIVE_TRADING=true eso es plata real
+        duplicada, no solo un dato mal contado.
+        """
+        res = (
+            self.client.table("pending_decisions")
+            .update({"resolved": True})
             .eq("message_id", message_id)
             .eq("resolved", False)
             .execute()
