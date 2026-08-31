@@ -34,6 +34,7 @@ from polymarket_track_results import check_open_signals
 from weather_signal_engine import (
     generate_weather_signal,
     build_weather_memo,
+    resolve_station,
     WeatherNotifyStateStore,
 )
 
@@ -385,11 +386,22 @@ def run_weather_cycle():
     if not events:
         return {"status": "no_events"}
 
+    # NUEVO: antes se ordenaba solo por liquidez, así que en días donde los
+    # eventos de clima con más volumen son de ciudades sin estación cubierta
+    # (ej. Shanghai/Guangzhou/Beijing — el motor solo tiene NWS/METAR/TAF de
+    # EE.UU.), el top_n se llenaba entero con eventos "no_station" y Miami o
+    # Chicago (que sí están cubiertos y sí tienen mercados activos) quedaban
+    # afuera del corte aunque estuvieran ahí. Se prioriza primero lo que el
+    # motor puede resolver de verdad, y recién dentro de eso se ordena por
+    # liquidez — así no se desperdicia el presupuesto de tiempo analizando
+    # ciudades que van a terminar en no_station de todos modos.
     top_n = int(os.environ.get("WEATHER_TOP_N", "3"))
     events = sorted(
         events,
-        key=lambda e: sum(m.get("liquidity", 0) for m in e["markets"]),
-        reverse=True,
+        key=lambda e: (
+            0 if resolve_station(e.get("title") or "", override_icao=getattr(config, "WEATHER_STATION_OVERRIDE", None)) else 1,
+            -sum(m.get("liquidity", 0) for m in e["markets"]),
+        ),
     )[:top_n]
 
     sent = 0
