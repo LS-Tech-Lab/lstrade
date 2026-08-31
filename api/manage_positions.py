@@ -63,6 +63,26 @@ def run_manage_positions():
         if r_multiple is False:
             continue  # otra invocación ya cerró este trade primero
 
+        # Ver el comentario largo en app.py (misma lógica): cierre real a
+        # mercado en los dos casos (target Y stop), no solo target. Para
+        # "stop" es una red de seguridad — si el stop real ya se ejecutó
+        # solo (colocado al entrar, ver executor.py), esto falla solo y
+        # sigue de largo.
+        if Config.LIVE_TRADING and trade.get("order_id"):
+            try:
+                exchange_client.cancel_order(symbol, trade["order_id"])
+            except Exception:
+                pass
+            side = "sell" if direction == "LONG" else "buy"
+            try:
+                exchange_client.create_order(symbol, side, trade["position_size"], order_type="market")
+            except Exception as e:
+                errors.append(f"{symbol}: no se pudo forzar el cierre a mercado tras {outcome}: {e}")
+                notifier.send_message(
+                    f"⚠️ {symbol}: {outcome} detectado pero el cierre real en el exchange "
+                    f"FALLÓ ({e}) — revisar la posición a mano."
+                )
+
         emoji = "✅" if outcome == "target" else "🛑"
         r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
         notifier.send_message(

@@ -65,15 +65,30 @@ class PositionManager:
 
                 if moved:
                     log.info(f"[TRAILING STOP] {symbol} {direction}: Stop movido de {current_stop:.6f} a {new_stop:.6f}")
-                    self.db.update_trade_stop(trade_id, new_stop)
-                    
+
+                    new_order_id = None
                     if self.config.LIVE_TRADING and trade["order_id"]:
                         # En LIVE: Cancelar la orden de stop anterior y crear una nueva
-                        self.exchange.cancel_order(symbol, trade["order_id"])
+                        try:
+                            self.exchange.cancel_order(symbol, trade["order_id"])
+                        except Exception as e:
+                            log.warning(f"No se pudo cancelar la orden de stop anterior de {symbol} ({trade['order_id']}): {e}")
                         side = "sell" if direction == "LONG" else "buy"
-                        new_order = self.exchange.create_stop_order(symbol, side, position_size, new_stop)
-                        # Actualizar el order_id en la DB (simplificado, requeriría un método update_order_id)
-                    
+                        try:
+                            new_order = self.exchange.create_stop_order(symbol, side, position_size, new_stop)
+                            new_order_id = new_order.get("id") if isinstance(new_order, dict) else None
+                        except Exception as e:
+                            log.warning(f"No se pudo crear la nueva orden de stop para {symbol}: {e}")
+                            self.notifier.send_message(
+                                f"\u26A0\uFE0F {symbol}: el trailing stop se movió en la base de datos "
+                                f"pero la orden real en el exchange NO se pudo recrear — revisar a mano."
+                            )
+
+                    # NUEVO: se guarda el order_id nuevo (o se limpia si falló
+                    # crearlo) — antes esto se perdía siempre, ver db.py.
+                    self.db.update_trade_stop(trade_id, new_stop, new_order_id=new_order_id if self.config.LIVE_TRADING else None)
+                    trade["order_id"] = new_order_id if self.config.LIVE_TRADING else trade["order_id"]
+
                     self.notifier.send_message(f"🛡️ *Trailing Stop Actualizado*\n{symbol} {direction}\nNuevo Stop: `{new_stop:.6f}`")
                     current_stop = new_stop
 
@@ -91,8 +106,16 @@ class PositionManager:
                     outcome = "target" if hit_target else "stop"
                     exit_price = target_price if hit_target else current_stop
 
-                    if self.config.LIVE_TRADING and trade["order_id"] and outcome == "target":
-                        # Si ganó por target y había una orden de stop viva en el exchange, cancelarla
+                    # NUEVO: antes esto solo cerraba a mercado en el exchange
+                    # cuando outcome=="target" — si tocaba el STOP, la
+                    # posición real quedaba abierta y desprotegida (la DB
+                    # decía "cerrada" pero el exchange no se enteraba). Ahora
+                    # se cierra en los dos casos. Para "stop" es además una
+                    # red de seguridad: si el stop real ya se ejecutó solo en
+                    # el exchange (colocado al entrar, ver executor.py), este
+                    # intento adicional falla solo (ej. "insufficient
+                    # balance") porque ya no queda nada que cerrar.
+                    if self.config.LIVE_TRADING and trade["order_id"]:
                         try:
                             self.exchange.cancel_order(symbol, trade["order_id"])
                         except Exception:
@@ -101,7 +124,11 @@ class PositionManager:
                         try:
                             self.exchange.create_order(symbol, side, position_size, order_type="market")
                         except Exception as e:
-                            log.warning(f"No se pudo cerrar {symbol} en el exchange al tocar target: {e}")
+                            log.warning(f"No se pudo cerrar {symbol} en el exchange al tocar {outcome}: {e}")
+                            self.notifier.send_message(
+                                f"⚠️ {symbol}: {outcome} detectado pero el cierre real en el "
+                                f"exchange FALLÓ ({e}) — revisar la posición a mano."
+                            )
 
                     r_multiple = self.db.close_trade_with_outcome(trade, exit_price, outcome)
                     emoji = "✅" if outcome == "target" else "🛑"

@@ -67,12 +67,17 @@ class RiskManager:
             {"label": "Sistema no detenido por circuit breaker", "ok": not self.is_halted()},
         ]
         
-        # NUEVO: Filtro de Spread
+        # NUEVO: antes esto era "ok": True con el comentario "fallo seguro"
+        # — pero aprobar automáticamente cuando FALTAN los datos es fail-OPEN,
+        # no fail-safe. Un chequeo de riesgo que no puede verificarse debe
+        # bloquear, no pasar de largo. (Y antes de esto, app.py ni siquiera
+        # pasaba `ticker`, así que esta rama corría siempre — el spread
+        # nunca bloqueó nada; ver el fix en app.py que ahora sí lo trae.)
         if ticker and "bid" in ticker and "ask" in ticker and ticker["bid"] > 0:
             spread_pct = ((ticker["ask"] - ticker["bid"]) / ticker["bid"]) * 100
             checks.append({"label": f"Spread < {self.config.MAX_SPREAD_PCT}%", "ok": spread_pct < self.config.MAX_SPREAD_PCT})
         else:
-            checks.append({"label": "Spread (datos no disponibles)", "ok": True}) # Fallo seguro si no hay datos
+            checks.append({"label": "Spread (datos no disponibles — bloqueado por seguridad)", "ok": False})
 
         # NUEVO: Exposición correlacionada — evita que varias posiciones en la
         # misma dirección (LONG o SHORT), aunque sean símbolos distintos,

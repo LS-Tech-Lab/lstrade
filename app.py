@@ -4,10 +4,14 @@ Entrypoint único de Vercel Functions (Python runtime 2026+).
 Vercel ya no soporta un archivo = una función por cada módulo dentro de
 `api/`; construye una sola Vercel Function a partir de UN entrypoint
 Python en la raíz (`app.py`, `index.py`, `main.py`, etc.) que exponga
-una variable `app` (ASGI/WSGI). Por eso los 3 endpoints que antes vivían
-en `api/cycle.py`, `api/reset_halt.py` y `api/telegram_webhook.py` se
-consolidan acá en una sola app FastAPI, con las mismas rutas, misma
-lógica de negocio, misma auth y mismas respuestas que antes.
+una variable `app` (ASGI/WSGI). Por eso los 9 endpoints que antes vivían
+como archivos separados en `api/` — cycle, manage_positions, polymarket_cycle,
+polymarket_resolve, polymarket_track_results, weather_cycle,
+weather_track_results, reset_halt y telegram_webhook — se consolidan acá en
+una sola app FastAPI, con las mismas rutas, misma lógica de negocio, misma
+auth y mismas respuestas que antes. Los archivos en `api/` siguen en el repo
+como referencia legible de la misma lógica en aislamiento, pero NO se
+despliegan — Vercel solo construye la función a partir de este archivo.
 
 `main.py` (loop del bot en modo VPS) sigue excluido del build por
 `.vercelignore` — no es una app web y no expone `app`.
@@ -114,8 +118,33 @@ def run_cycle():
         return {"status": "halted", "reason": reason}
 
     if db.has_open_pending_decision():
-        # Ya hay un memo esperando tu respuesta en Telegram — no generamos otro encima.
-        return {"status": "waiting_for_human_approval"}
+        # NUEVO: antes esto cortaba el ciclo para siempre si te perdías el
+        # aviso de Telegram — ni señales nuevas, ni heartbeat, nada, hasta
+        # que vos mismo tocaras un botón en un mensaje potencialmente viejo.
+        # Ahora primero se vencen las que ya pasaron el timeout (se registran
+        # como 'expired' y se avisa), y recién si sigue habiendo una
+        # pendiente DENTRO del timeout se corta el ciclo — pero igual se
+        # manda el heartbeat si hace falta, para no quedar en silencio total
+        # mientras esperás.
+        expired = db.expire_stale_pending_decisions(config.PENDING_DECISION_EXPIRY_SECONDS)
+        for pending in expired:
+            symbol = pending.get("symbol")
+            notifier.send_message(
+                f"\u23F1 Decisión pendiente en {symbol} venció sin respuesta "
+                f"({config.PENDING_DECISION_EXPIRY_SECONDS/60:.0f} min) — no se ejecutó nada."
+            )
+            db.log_decision(
+                symbol, pending.get("signal"), pending.get("risk_report"),
+                pending.get("plan"), "expired",
+            )
+        if expired:
+            _touch_notification(db)
+
+        if db.has_open_pending_decision():
+            equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.peak_equity() or 10000.0)
+            dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
+            _maybe_send_heartbeat(db, notifier, equity, dd_pct, [])
+            return {"status": "waiting_for_human_approval"}
 
     try:
         equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.peak_equity() or 10000.0)
@@ -180,7 +209,18 @@ def run_cycle():
 
     notifier.send_alert(f"Señal detectada: {best_symbol} · {best_signal['type']} ({best_signal['direction']})")
     _touch_notification(db)
-    risk_report = risk_manager.check(best_symbol, best_signal, equity)
+    # NUEVO: antes se llamaba a check() sin ticker, así que el chequeo de
+    # spread SIEMPRE caía en la rama "sin datos" — y esa rama decía
+    # "ok": True (fail-open: sin datos, se aprueba igual). En la práctica
+    # el filtro de spread nunca bloqueó nada, nunca. Ahora se trae el
+    # ticker de verdad; si igual falla (red, símbolo raro), risk_manager
+    # ya fue corregido para fallar CERRADO en ese caso — ver risk_manager.py.
+    try:
+        ticker = exchange_client.fetch_ticker(best_symbol)
+    except Exception as e:
+        ticker = None
+        errors.append(f"{best_symbol} ticker: {e}")
+    risk_report = risk_manager.check(best_symbol, best_signal, equity, ticker=ticker)
 
     if not risk_report["pass"]:
         failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]
@@ -212,12 +252,25 @@ def run_cycle():
         executor = Executor(exchange_client, config)
         order_detail = executor.execute(best_symbol, plan)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
-        order_id = order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+        # NUEVO: se guarda el id de la orden de STOP real (no el de la
+        # entrada, que ya se llenó y no necesita más gestión) — es la que
+        # run_manage_positions() necesita para cancelar/reemplazar después.
+        stop_order = order_detail.get("stop_order") if isinstance(order_detail, dict) else None
+        order_id = (
+            stop_order.get("id") if isinstance(stop_order, dict)
+            else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+        )
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"], plan["target"],
             plan["position_size"], order_id,
         )
         notifier.send_message(f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}")
+        if isinstance(order_detail, dict) and order_detail.get("stop_order_error"):
+            notifier.send_message(
+                f"\u26A0\uFE0F {best_symbol}: la entrada se ejecutó pero el STOP-LOSS real "
+                f"NO se pudo colocar en el exchange ({order_detail['stop_order_error']}) — "
+                f"posición desprotegida, revisar a mano."
+            )
         _touch_notification(db)
         return {"status": "auto_executed", "symbol": best_symbol, "order": order_detail}
 
@@ -620,6 +673,31 @@ def run_manage_positions():
             # conteo de "closed".
             continue
 
+        # NUEVO: antes esto solo cerraba la posición real en el exchange
+        # cuando outcome=="target" — si tocaba el STOP, la base de datos
+        # quedaba diciendo "cerrada" pero la posición real seguía abierta y
+        # expuesta, sin que el bot volviera a mirarla nunca más (ya no está
+        # en open_trades). Ahora se cierra a mercado en los dos casos, igual
+        # que ya se hacía para target. Para "stop" esto es además una red de
+        # seguridad: si la orden de stop-loss real (creada en executor.py al
+        # entrar) ya se ejecutó sola, este intento de cierre adicional va a
+        # fallar solo (ej. "insufficient balance") porque ya no hay nada que
+        # cerrar — se loguea en `errors`, no rompe nada.
+        if Config.LIVE_TRADING and trade.get("order_id"):
+            try:
+                exchange_client.cancel_order(symbol, trade["order_id"])
+            except Exception:
+                pass
+            side = "sell" if direction == "LONG" else "buy"
+            try:
+                exchange_client.create_order(symbol, side, trade["position_size"], order_type="market")
+            except Exception as e:
+                errors.append(f"{symbol}: no se pudo forzar el cierre a mercado tras {outcome}: {e}")
+                notifier.send_message(
+                    f"\u26A0\uFE0F {symbol}: {outcome} detectado pero el cierre real en el exchange "
+                    f"FALLÓ ({e}) — revisar la posición a mano."
+                )
+
         emoji = "\u2705" if outcome == "target" else "\U0001F6D1"
         r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
         notifier.send_message(
@@ -718,6 +796,26 @@ def handle_update(update):
         order_detail = executor.execute(symbol, plan)
         notifier.answer_callback(cq["id"], "Orden ejecutada")
         notifier.send_message(f"\u2705 Orden ejecutada en {symbol}: {order_detail.get('status')}")
+
+        # NUEVO: antes esto nunca llegaba a open_trades — la orden se
+        # ejecutaba de verdad en el exchange pero quedaba invisible para
+        # run_manage_positions() para siempre, sin gestión ni cierre nunca.
+        if order_detail.get("status") in ("filled", "simulated"):
+            stop_order = order_detail.get("stop_order")
+            order_id = (
+                stop_order.get("id") if isinstance(stop_order, dict)
+                else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+            )
+            db.add_open_trade(
+                symbol, signal["direction"], plan["entry"], plan["stop"],
+                plan["target"], plan["position_size"], order_id,
+            )
+            if order_detail.get("stop_order_error"):
+                notifier.send_message(
+                    f"\u26A0\uFE0F {symbol}: la entrada se ejecutó pero el STOP-LOSS real "
+                    f"NO se pudo colocar en el exchange ({order_detail['stop_order_error']}) — "
+                    f"posición desprotegida, revisar a mano."
+                )
     elif decision == "watchlist":
         notifier.answer_callback(cq["id"], "Agregado a watchlist")
     else:

@@ -38,6 +38,20 @@ class TelegramNotifier:
         try:
             return self._call("sendMessage", {"chat_id": self.chat_id, "text": text, "parse_mode": "Markdown"})
         except Exception as e:
+            # NUEVO: si `text` trae _ * ` [ sin escapar (títulos de mercados
+            # de Polymarket, nombres de ciudades, lo que sea que no
+            # controlamos nosotros), Telegram devuelve 400 "can't parse
+            # entities" y el mensaje se perdía ENTERO en silencio — ni vos
+            # te enterabas de que hubo una señal. Antes de darnos por
+            # vencidos, reintentamos una vez en texto plano (sin
+            # parse_mode): se pierde el formato en negrita, pero el
+            # contenido llega.
+            if "can't parse entities" in str(e).lower() or "400" in str(e):
+                try:
+                    return self._call("sendMessage", {"chat_id": self.chat_id, "text": text})
+                except Exception as e2:
+                    log.warning(f"No se pudo enviar mensaje a Telegram (ni siquiera en texto plano): {e2}")
+                    return None
             log.warning(f"No se pudo enviar mensaje a Telegram: {e}")
             return None
 
@@ -96,8 +110,22 @@ class TelegramNotifier:
                 "reply_markup": keyboard,
             })
         except Exception as e:
-            log.warning(f"No se pudo enviar memo a Telegram: {e}")
-            return None
+            # Ver el mismo fallback en send_message — acá es todavía más
+            # importante: si esto se pierde, no solo no te enterás de la
+            # señal, el ciclo entero queda trabado esperando una aprobación
+            # que nunca vas a poder dar (mitigado además por
+            # expire_stale_pending_decisions, pero mejor que ni haga falta).
+            if "can't parse entities" in str(e).lower() or "400" in str(e):
+                try:
+                    result = self._call("sendMessage", {
+                        "chat_id": self.chat_id, "text": memo_text, "reply_markup": keyboard,
+                    })
+                except Exception as e2:
+                    log.warning(f"No se pudo enviar memo a Telegram (ni siquiera en texto plano): {e2}")
+                    return None
+            else:
+                log.warning(f"No se pudo enviar memo a Telegram: {e}")
+                return None
         if not result or not result.get("ok"):
             return None
         return result["result"]["message_id"]

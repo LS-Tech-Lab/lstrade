@@ -29,7 +29,7 @@ def compute_indicator_snapshot(candles):
     if sma_short is None or sma_long is None:
         return None
 
-    momentum = (closes[-1] - closes[-6]) / closes[-6] if len(closes) > 6 else None
+    momentum = (closes[-1] - closes[-6]) / closes[-6] if len(closes) > 6 and closes[-6] else None
     trend_align = (sma_short - sma_long) / sma_long if sma_long else None
 
     return {
@@ -61,7 +61,7 @@ def generate_signal(candles, higher_tf_candles=None, btc_bias=None, min_score=0.
     if sma_short is None or sma_long is None or ema_mid is None or ema_trend is None:
         return None
     
-    momentum = (closes[-1] - closes[-6]) / closes[-6]
+    momentum = (closes[-1] - closes[-6]) / closes[-6] if closes[-6] else 0.0
     trend_align = (sma_short - sma_long) / sma_long
     vol = ind.rolling_return_stdev(candles, 10)
     rsi_val = ind.rsi(candles, 14)

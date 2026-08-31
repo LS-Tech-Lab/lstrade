@@ -178,8 +178,21 @@ class Database:
         ).fetchone()
         return row["n"] if row else 0
 
-    def update_trade_stop(self, trade_id, new_stop_price):
-        self.conn.execute("UPDATE open_trades SET current_stop = ? WHERE id = ?", (new_stop_price, trade_id))
+    def update_trade_stop(self, trade_id, new_stop_price, new_order_id=None):
+        # NUEVO: `new_order_id` opcional — antes esto solo actualizaba el
+        # precio del stop, nunca el order_id de la orden real que lo
+        # representa en el exchange. Cuando position_manager.py cancelaba
+        # la orden vieja y creaba una nueva (trailing stop), ese nuevo id
+        # nunca quedaba guardado — el próximo trailing intentaba cancelar
+        # con el id VIEJO (ya inexistente), fallaba en silencio, y se podían
+        # ir acumulando órdenes de stop huérfanas en el exchange.
+        if new_order_id is not None:
+            self.conn.execute(
+                "UPDATE open_trades SET current_stop = ?, order_id = ? WHERE id = ?",
+                (new_stop_price, new_order_id, trade_id)
+            )
+        else:
+            self.conn.execute("UPDATE open_trades SET current_stop = ? WHERE id = ?", (new_stop_price, trade_id))
         self.conn.commit()
 
     def close_trade(self, trade_id):

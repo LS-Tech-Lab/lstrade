@@ -149,18 +149,26 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
         order_detail = executor.execute(best_symbol, plan)
         log.info(f"Resultado de la orden: {order_detail}")
         notifier.send_message(f"✅ Orden ejecutada en {best_symbol}: {order_detail.get('status')}")
-        
-        # Registrar en DB para Trailing Stop
-        order_id = order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+
+        # NUEVO: executor.execute() ahora coloca el stop-loss real en el
+        # exchange internamente (ver executor.py) — antes ese paso vivía acá
+        # duplicado Y con un bug propio: guardaba el order_id de la ENTRADA
+        # (ya llenada, sin uso futuro) en vez del de la orden de STOP, así
+        # que position_manager.py más tarde intentaba cancelar/reemplazar la
+        # orden equivocada. Ahora se usa el id que devuelve el stop real.
+        stop_order = order_detail.get("stop_order") if isinstance(order_detail, dict) else None
+        order_id = (
+            stop_order.get("id") if isinstance(stop_order, dict)
+            else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+        )
         db.add_open_trade(best_symbol, best_signal['direction'], plan['entry'], plan['stop'], plan['target'], plan['position_size'], order_id)
-        
-        # Colocar Stop Loss inicial en el exchange
-        if config.LIVE_TRADING and order_id:
-            side = "sell" if best_signal['direction'] == "LONG" else "buy"
-            try:
-                exchange_client.create_stop_order(best_symbol, side, plan['position_size'], plan['stop'])
-            except Exception as e:
-                log.warning(f"No se pudo colocar Stop Loss inicial: {e}")
+
+        if isinstance(order_detail, dict) and order_detail.get("stop_order_error"):
+            notifier.send_message(
+                f"⚠️ {best_symbol}: la entrada se ejecutó pero el STOP-LOSS real "
+                f"NO se pudo colocar en el exchange ({order_detail['stop_order_error']}) — "
+                f"posición desprotegida, revisar a mano."
+            )
     else:
         notifier.send_message(f"Decisión final para {best_symbol}: {decision}")
     

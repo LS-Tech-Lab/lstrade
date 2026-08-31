@@ -150,6 +150,15 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
     APPROVAL_TIMEOUT_SECONDS = _int("APPROVAL_TIMEOUT_SECONDS", 900)
+    # NUEVO: distinto del anterior — ese es para el modo VPS bloqueante
+    # (ask_approval hace polling y espera esto antes de rechazar solo). Este
+    # es para el modo serverless no bloqueante: si una decisión pendiente
+    # (creada por /api/cycle, esperando que toques un botón en Telegram)
+    # sigue sin resolver después de este tiempo, se vence sola en el
+    # siguiente ciclo — sin esto, un aviso que se te pasa deja el bot entero
+    # mudo para siempre (has_open_pending_decision() corta el ciclo antes de
+    # llegar a generar señales nuevas O al heartbeat).
+    PENDING_DECISION_EXPIRY_SECONDS = _int("PENDING_DECISION_EXPIRY_SECONDS", 3600)
 
     @classmethod
     def validate(cls):

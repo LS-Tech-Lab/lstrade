@@ -289,6 +289,25 @@ class SupabaseDatabase:
         )
         return res.data[0] if res.data else None
 
+    def expire_stale_pending_decisions(self, older_than_seconds):
+        """
+        Vence (resolved=True, sin ejecutar nada) las decisiones pendientes
+        más viejas que `older_than_seconds` — para que un aviso de Telegram
+        que se te pasó no deje el bot mudo indefinidamente (ver el comentario
+        largo en config.py, PENDING_DECISION_EXPIRY_SECONDS). Devuelve la
+        lista de las que venció, para poder avisar y loguearlas como
+        'expired' en vez de que desaparezcan sin dejar rastro.
+        """
+        cutoff = time.time() - older_than_seconds
+        res = (
+            self.client.table("pending_decisions")
+            .update({"resolved": True})
+            .eq("resolved", False)
+            .lt("ts", cutoff)
+            .execute()
+        )
+        return res.data or []
+
     def claim_pending_decision(self, message_id):
         """
         Lee Y marca como resuelta la decisión en una sola operación atómica
