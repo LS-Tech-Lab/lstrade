@@ -24,7 +24,7 @@ log = logging.getLogger("polymarket_main")
 # vez serían decenas de mensajes por día solo de este aviso — se limita a
 # un máximo de una vez por MARKET_WATCH_INTERVAL_SECONDS, usando el mismo
 # patrón de reloj en bot_state que el heartbeat de cripto (ver app.py).
-MARKET_WATCH_INTERVAL_SECONDS = 3600  # 1 hora
+MARKET_WATCH_INTERVAL_SECONDS = 6 * 3600  # 6 horas
 
 
 def build_market_watch_text(parsed_markets, markdown=False):
