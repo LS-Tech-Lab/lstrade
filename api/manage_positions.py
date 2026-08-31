@@ -60,6 +60,8 @@ def run_manage_positions():
         outcome = "target" if hit_target else "stop"
         exit_price = target_price if hit_target else current_stop
         r_multiple = db.close_trade_with_outcome(trade, exit_price, outcome)
+        if r_multiple is False:
+            continue  # otra invocación ya cerró este trade primero
 
         emoji = "✅" if outcome == "target" else "🛑"
         r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
