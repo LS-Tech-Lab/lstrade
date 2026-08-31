@@ -232,9 +232,18 @@ def run_cycle():
     plan = compute_plan(best_signal, risk_report, config)
 
     if not config.LIVE_TRADING:
+        # NUEVO: antes este mensaje era el memo de decisión pelado con una
+        # aclaración chiquita al final — se leía igual que un mensaje de
+        # aprobación pendiente, no como confirmación de que la posición ya
+        # quedó abierta y en seguimiento. Ahora tiene el mismo formato
+        # "evento" (emoji + título en negrita) que los mensajes de cierre
+        # (✅/🛑 Posición cerrada de api/manage_positions.py), para que
+        # abrir y cerrar se lean simétricos en el chat.
         notifier.send_message(
-            build_memo_markdown(best_symbol, best_signal, risk_report, plan)
-            + "\n\n_(modo papel — no se ejecutó nada real)_"
+            f"\U0001F4C8 *Posición abierta (papel)* — {best_symbol}\n\n"
+            + build_memo_markdown(best_symbol, best_signal, risk_report, plan)
+            + "\n\n_(modo papel — no se ejecutó nada real, pero queda registrada "
+              "y se va a monitorear hasta que toque target o stop)_"
         )
         _touch_notification(db)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
