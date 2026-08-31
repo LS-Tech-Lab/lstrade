@@ -86,5 +86,27 @@ create table if not exists polymarket_signals (
     ts_resolved double precision
 );
 
+-- Señales de clima con la probabilidad estimada por el modelo (my_prob) —
+-- weather_track_results resuelve outcome ('yes'/'no') mirando si el precio
+-- del token convergió a ~1 o ~0, y con eso se puede medir calibración real
+-- (Brier score) en vez de confiar a ciegas en la estimación.
+create table if not exists weather_signals (
+    id bigserial primary key,
+    condition_id text not null,
+    question text,
+    event_title text,
+    station_icao text,
+    my_prob double precision not null,
+    market_price double precision not null,
+    ev double precision,
+    center_estimate_f double precision,
+    sigma double precision,
+    yes_token_id text,
+    ts_signaled double precision not null,
+    outcome text,
+    ts_resolved double precision
+);
+
 create index if not exists idx_closed_trades_ts on closed_trades (ts_closed desc);
 create index if not exists idx_polymarket_signals_outcome on polymarket_signals (outcome);
+create index if not exists idx_weather_signals_outcome on weather_signals (outcome);
