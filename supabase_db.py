@@ -79,6 +79,28 @@ class SupabaseDatabase:
         )
         return res.data
 
+    # --- indicadores en vivo (paridad con db.py) ---
+    # FIX: este método no existía acá — app.py lo llama en cada ciclo
+    # (una vez por símbolo) para poblar indicator_snapshots, pero como
+    # SupabaseDatabase no lo tenía, cada llamado tiraba AttributeError,
+    # se tragaba en el try/except de app.py y quedaba solo en `errors`
+    # (nunca visible). Resultado: la tabla dejó de recibir filas nuevas
+    # apenas se migró de SQLite (db.py) a Supabase (este archivo), y el
+    # panel quedó mostrando el último snapshot que sí se había guardado.
+    def record_indicator_snapshot(self, symbol, snapshot):
+        self.client.table("indicator_snapshots").insert({
+            "symbol": symbol,
+            "ts": time.time(),
+            "price": snapshot.get("price"),
+            "rsi": snapshot.get("rsi"),
+            "atr_pct": snapshot.get("atr_pct"),
+            "volume_ratio": snapshot.get("volume_ratio"),
+            "volatility": snapshot.get("volatility"),
+            "momentum": snapshot.get("momentum"),
+            "trend_align": snapshot.get("trend_align"),
+            "trend_bias": snapshot.get("trend_bias"),
+        }).execute()
+
     # --- posiciones abiertas / correlación (paridad con db.py) ---
     def count_open_trades_by_direction(self, direction):
         """
