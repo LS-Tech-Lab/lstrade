@@ -1,20 +1,15 @@
-name: Trigger Weather track results
+name: Trigger Weather cycle
 
 on:
-  # Mismo motivo que los demás triggers: el disparo real es un cron
-  # externo (cron-job.org) pegándole directo a la URL de Vercel — este
-  # workflow queda solo para forzar una corrida manual puntual desde la
-  # pestaña Actions. Correr cada 1-3 horas alcanza de sobra: los mercados
-  # de clima no se resuelven en minutos.
   workflow_dispatch: {}
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Llamar al endpoint de resolución de clima en Vercel
+      - name: Llamar al endpoint de ciclo de clima en Vercel
         run: |
-          curl -sf -X POST "${{ secrets.VERCEL_WEATHER_TRACK_URL }}" \
+          curl -sf -X POST "${{ secrets.VERCEL_WEATHER_CYCLE_URL }}" \
             -H "Authorization: Bearer ${{ secrets.VERCEL_CRON_SECRET }}" \
             -H "Content-Type: application/json" \
           || echo "La llamada falló — revisá los logs de la función en Vercel."
