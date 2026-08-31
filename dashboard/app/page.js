@@ -63,29 +63,113 @@ function Info({ text }) {
   );
 }
 
-function EquitySparkline({ points }) {
+// Formatea un timestamp unix (segundos) en fecha corta, para el tooltip
+// del gráfico de equity.
+function formatChartDate(ts) {
+  return new Date(ts * 1000).toLocaleString(undefined, {
+    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+// Gráfico de equity — el elemento central del panel: es lo primero que
+// alguien quiere ver ("¿cómo viene la plata?"), así que es el único lugar
+// donde el dashboard se permite un poco de espectáculo (relleno con
+// degradé, cuadrícula, tooltip al pasar el dedo/mouse). El resto del panel
+// se mantiene deliberadamente tranquilo alrededor de esto.
+function EquityChart({ points }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+
   if (!points || points.length < 2) {
     return <div className="empty">Todavía no hay suficiente historial de equity.</div>;
   }
+
   const values = points.map((p) => p.equity);
   const min = Math.min(...values);
-  const max = Math.max(...values);
-  const w = 600, h = 120, pad = 8;
-  const norm = points
-    .map((p, i) => {
-      const x = pad + (i / (points.length - 1)) * (w - pad * 2);
-      const y = h - pad - ((p.equity - min) / (max - min || 1)) * (h - pad * 2);
-      return `${x},${y}`;
-    })
-    .join(" ");
+  const max = Math.min(...values) === Math.max(...values) ? min + 1 : Math.max(...values);
+  const w = 640, h = 200, padX = 4, padTop = 14, padBottom = 24;
+  const xAt = (i) => padX + (i / (points.length - 1)) * (w - padX * 2);
+  const yAt = (v) => padTop + (1 - (v - min) / (max - min)) * (h - padTop - padBottom);
+
+  const linePoints = points.map((p, i) => `${xAt(i)},${yAt(p.equity)}`).join(" ");
+  const areaPoints = `${xAt(0)},${h - padBottom} ${linePoints} ${xAt(points.length - 1)},${h - padBottom}`;
+
+  const first = values[0];
+  const last = values[values.length - 1];
+  const changePct = first !== 0 ? ((last - first) / Math.abs(first)) * 100 : 0;
+  const positive = changePct >= 0;
+
+  const hover = hoverIdx !== null ? points[hoverIdx] : null;
+
+  function handleMove(clientX, svgEl) {
+    const rect = svgEl.getBoundingClientRect();
+    const relX = ((clientX - rect.left) / rect.width) * w;
+    let nearest = 0, best = Infinity;
+    points.forEach((p, i) => {
+      const d = Math.abs(xAt(i) - relX);
+      if (d < best) { best = d; nearest = i; }
+    });
+    setHoverIdx(nearest);
+  }
+
+  const gridLines = [0.25, 0.5, 0.75];
+
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="equity-chart" preserveAspectRatio="none">
-      <polyline points={norm} fill="none" stroke="#E15A2C" strokeWidth="2" />
-    </svg>
+    <div className="equity-chart-wrap">
+      <div className="equity-chart-header">
+        <div className="equity-value">${last.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        <div className={`equity-change ${positive ? "ok" : "fail"}`}>
+          {positive ? "▲" : "▼"} {Math.abs(changePct).toFixed(2)}% desde el inicio del historial
+        </div>
+      </div>
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className="equity-chart"
+        preserveAspectRatio="none"
+        onMouseMove={(e) => handleMove(e.clientX, e.currentTarget)}
+        onMouseLeave={() => setHoverIdx(null)}
+        onTouchMove={(e) => { if (e.touches[0]) handleMove(e.touches[0].clientX, e.currentTarget); }}
+        onTouchEnd={() => setHoverIdx(null)}
+      >
+        <defs>
+          <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.32" />
+            <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+
+        {gridLines.map((g) => (
+          <line key={g} x1={padX} x2={w - padX} y1={padTop + g * (h - padTop - padBottom)} y2={padTop + g * (h - padTop - padBottom)}
+            className="equity-grid-line" />
+        ))}
+
+        <polygon points={areaPoints} fill="url(#equityFill)" className="equity-area" />
+        <polyline points={linePoints} fill="none" stroke="var(--accent)" strokeWidth="2.25"
+          strokeLinejoin="round" strokeLinecap="round" className="equity-line" />
+
+        {hover && (
+          <g className="equity-hover">
+            <line x1={xAt(hoverIdx)} x2={xAt(hoverIdx)} y1={padTop} y2={h - padBottom} className="equity-crosshair" />
+            <circle cx={xAt(hoverIdx)} cy={yAt(hover.equity)} r="4" className="equity-hover-dot" />
+          </g>
+        )}
+        {!hover && (
+          <circle cx={xAt(points.length - 1)} cy={yAt(last)} r="4" className="equity-hover-dot equity-hover-dot-static" />
+        )}
+      </svg>
+      {hover && (
+        <div
+          className="equity-tooltip"
+          style={{ left: `${(xAt(hoverIdx) / w) * 100}%` }}
+        >
+          <div className="equity-tooltip-value">${hover.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          <div className="equity-tooltip-date">{formatChartDate(hover.ts)}</div>
+        </div>
+      )}
+    </div>
   );
 }
 
-function StatCard({ label, value, suffix = "", tone, info }) {
+function StatCard({ label, value, suffix = "", tone, info, barPct }) {
   return (
     <div className={`stat-card ${tone || ""}`}>
       <div className="stat-label">
@@ -93,6 +177,11 @@ function StatCard({ label, value, suffix = "", tone, info }) {
         {info && <Info text={info} />}
       </div>
       <div className="stat-value">{value === null || value === undefined ? "—" : `${value}${suffix}`}</div>
+      {barPct !== undefined && (
+        <div className="stat-bar-track">
+          <div className={`stat-bar-fill ${tone || ""}`} style={{ width: `${Math.max(0, Math.min(100, barPct))}%` }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -114,7 +203,7 @@ function StatsRow({ title, subtitle, stats, showProfitFactor, emptyMessage }) {
       <div className="stats-grid">
         <StatCard label="Trades cerrados" value={stats.n} />
         <StatCard label="Win rate" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone}
-          info={GLOSSARY.find(([k]) => k === "Win rate")[1]} />
+          info={GLOSSARY.find(([k]) => k === "Win rate")[1]} barPct={stats.win_rate} />
         {stats.expectancy_r !== undefined && (
           <StatCard label="Expectancy" value={stats.expectancy_r >= 0 ? `+${stats.expectancy_r.toFixed(2)}` : stats.expectancy_r.toFixed(2)} suffix="R"
             tone={stats.expectancy_r >= 0 ? "ok" : "fail"} info={GLOSSARY.find(([k]) => k === "Expectancy (R)")[1]} />
@@ -232,11 +321,20 @@ function IndicatorCard({ symbol, snapshot }) {
   );
 }
 
+// NUEVO: envuelve cualquier tabla ancha para que en pantallas chicas se
+// pueda desplazar horizontalmente en vez de desbordar el layout o achicar
+// el texto hasta ser ilegible. El borde/degradé lateral es la señal visual
+// de "hay más contenido para el costado".
+function TableScroll({ children }) {
+  return <div className="table-scroll">{children}</div>;
+}
+
 function CryptoOpenTable({ rows }) {
   if (!rows || rows.length === 0) {
     return <p className="empty">Sin posiciones cripto abiertas ahora mismo.</p>;
   }
   return (
+    <TableScroll>
     <table>
       <thead>
         <tr>
@@ -263,6 +361,7 @@ function CryptoOpenTable({ rows }) {
         ))}
       </tbody>
     </table>
+    </TableScroll>
   );
 }
 
@@ -271,7 +370,9 @@ function PolymarketCategoryTable({ byCategory }) {
   if (rows.length === 0) {
     return <p className="empty">Todavía no hay señales resueltas para desglosar por categoría.</p>;
   }
+  const maxAbs = Math.max(...rows.map(([, s]) => Math.abs(s.total_r)), 0.01);
   return (
+    <TableScroll>
     <table>
       <thead>
         <tr>
@@ -286,6 +387,7 @@ function PolymarketCategoryTable({ byCategory }) {
       <tbody>
         {rows.map(([cat, s]) => {
           const tone = s.total_r >= 0 ? "ok" : "fail";
+          const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
           return (
             <tr key={cat}>
               <td>{cat}{s.n < 5 ? " ⚠️" : ""}</td>
@@ -293,12 +395,20 @@ function PolymarketCategoryTable({ byCategory }) {
               <td>{s.win_rate.toFixed(0)}%</td>
               <td className={tone}>{s.expectancy_r >= 0 ? "+" : ""}{s.expectancy_r.toFixed(2)}R</td>
               <td>{s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"}</td>
-              <td className={tone}>{s.total_r >= 0 ? "+" : ""}{s.total_r.toFixed(2)}R</td>
+              <td className={tone}>
+                <div className="cell-bar-wrap">
+                  <span>{s.total_r >= 0 ? "+" : ""}{s.total_r.toFixed(2)}R</span>
+                  <div className="cell-bar-track">
+                    <div className={`cell-bar-fill ${tone}`} style={{ width: `${barPct}%` }} />
+                  </div>
+                </div>
+              </td>
             </tr>
           );
         })}
       </tbody>
     </table>
+    </TableScroll>
   );
 }
 
@@ -307,6 +417,7 @@ function PolymarketOpenTable({ rows }) {
     return <p className="empty">Sin señales de Polymarket abiertas ahora mismo.</p>;
   }
   return (
+    <TableScroll>
     <table>
       <thead>
         <tr>
@@ -331,6 +442,7 @@ function PolymarketOpenTable({ rows }) {
         ))}
       </tbody>
     </table>
+    </TableScroll>
   );
 }
 
@@ -339,6 +451,7 @@ function PolymarketResolvedTable({ rows }) {
     return <p className="empty">Todavía no hay señales resueltas.</p>;
   }
   return (
+    <TableScroll>
     <table>
       <thead>
         <tr>
@@ -359,6 +472,7 @@ function PolymarketResolvedTable({ rows }) {
         ))}
       </tbody>
     </table>
+    </TableScroll>
   );
 }
 
@@ -379,7 +493,6 @@ function Glossary() {
 }
 
 function CriptoTab({ data }) {
-  const lastEquity = data.equity.length ? data.equity[data.equity.length - 1].equity : null;
   const indicatorsBySymbol = Object.fromEntries((data.indicators || []).map((s) => [s.symbol, s]));
   // Símbolos a mostrar: unión de lo configurado (inferido de los snapshots
   // recibidos) y lo que aparece en la bitácora, así no queda un símbolo
@@ -419,8 +532,7 @@ function CriptoTab({ data }) {
       <div className="card">
         <h2>Equity</h2>
         <p className="card-subtitle">Evolución del capital simulado a lo largo del tiempo.</p>
-        {lastEquity !== null && <div className="equity-value">${lastEquity.toFixed(2)}</div>}
-        <EquitySparkline points={data.equity} />
+        <EquityChart points={data.equity} />
       </div>
 
       <div className="card">
@@ -429,6 +541,7 @@ function CriptoTab({ data }) {
         {data.decisions.length === 0 ? (
           <p className="empty">Todavía no hay decisiones registradas.</p>
         ) : (
+          <TableScroll>
           <table>
             <thead>
               <tr>
@@ -455,6 +568,7 @@ function CriptoTab({ data }) {
               ))}
             </tbody>
           </table>
+          </TableScroll>
         )}
       </div>
 
