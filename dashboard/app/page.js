@@ -473,23 +473,47 @@ function RowCarousel({ items, keyExtractor, renderFields, emptyMessage, maxDots 
   );
 }
 
+// NUEVO: % de riesgo y de objetivo, más el ratio R:B, calculados a partir de
+// entry/stop/target que ya vienen guardados en open_trades — antes la
+// tarjeta mostraba los tres precios pelados y había que hacer la cuenta a
+// mano para saber qué tan lejos está el stop o si el setup vale la pena.
+function riskRewardStats(entry, stop, target) {
+  if (!entry) return null;
+  const riskPct = (Math.abs(entry - stop) / entry) * 100;
+  const rewardPct = (Math.abs(target - entry) / entry) * 100;
+  const rr = riskPct > 0 ? rewardPct / riskPct : null;
+  return { riskPct, rewardPct, rr };
+}
+
 function CryptoOpenTable({ rows }) {
   return (
     <RowCarousel
       items={rows}
       keyExtractor={(r) => r.id}
       emptyMessage="Sin posiciones cripto abiertas ahora mismo."
-      renderFields={(r) => (
-        <>
-          <RowField label="Símbolo" value={r.symbol} />
-          <RowField label="Dirección" value={directionLabel(r.direction)} />
-          <RowField label="Entrada" value={r.entry_price?.toFixed(6)} />
-          <RowField label="Target" value={r.target_price?.toFixed(6)} />
-          <RowField label="Stop" value={r.current_stop?.toFixed(6)} />
-          <RowField label="Tamaño" value={r.position_size?.toFixed(6)} />
-          <RowField label="Abierta" value={new Date(r.ts_opened * 1000).toLocaleString()} />
-        </>
-      )}
+      renderFields={(r) => {
+        const rrStats = riskRewardStats(r.entry_price, r.current_stop, r.target_price);
+        return (
+          <>
+            <RowField label="Símbolo" value={r.symbol} />
+            <RowField label="Dirección" value={directionLabel(r.direction)} />
+            <RowField label="Entrada" value={r.entry_price?.toFixed(6)} />
+            <RowField
+              label="Target"
+              value={rrStats ? `${r.target_price?.toFixed(6)} (+${rrStats.rewardPct.toFixed(1)}%)` : r.target_price?.toFixed(6)}
+              tone="ok"
+            />
+            <RowField
+              label="Stop"
+              value={rrStats ? `${r.current_stop?.toFixed(6)} (-${rrStats.riskPct.toFixed(1)}%)` : r.current_stop?.toFixed(6)}
+              tone="fail"
+            />
+            <RowField label="Ratio R:B" value={rrStats?.rr ? `1 : ${rrStats.rr.toFixed(2)}` : "—"} />
+            <RowField label="Tamaño" value={r.position_size?.toFixed(6)} />
+            <RowField label="Abierta" value={new Date(r.ts_opened * 1000).toLocaleString()} />
+          </>
+        );
+      }}
     />
   );
 }
