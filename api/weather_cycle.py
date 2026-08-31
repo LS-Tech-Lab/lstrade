@@ -28,6 +28,7 @@ from telegram_notifier import TelegramNotifier
 from weather_signal_engine import (
     generate_weather_signal,
     build_weather_memo,
+    resolve_station,
     WeatherNotifyStateStore,
 )
 
@@ -54,11 +55,17 @@ def run_weather_cycle():
     if not events:
         return {"status": "no_events"}
 
+    # Ver el comentario largo en app.py (misma lógica) — se prioriza lo que
+    # el motor puede resolver de verdad (resolve_station) antes de ordenar
+    # por liquidez, para no llenar el top_n con ciudades sin estación
+    # cubierta.
     top_n = int(os.environ.get("WEATHER_TOP_N", "3"))
     events = sorted(
         events,
-        key=lambda e: sum(m.get("liquidity", 0) for m in e["markets"]),
-        reverse=True,
+        key=lambda e: (
+            0 if resolve_station(e.get("title") or "", override_icao=getattr(config, "WEATHER_STATION_OVERRIDE", None)) else 1,
+            -sum(m.get("liquidity", 0) for m in e["markets"]),
+        ),
     )[:top_n]
 
     sent = 0
