@@ -9,7 +9,7 @@ from config import Config
 from db import Database
 from exchange_client import ExchangeClient
 from signal_engine import generate_signal
-from risk_manager import RiskManager
+from risk_manager import RiskManager, format_blocked_message
 from trade_planner import compute_plan
 from executor import Executor
 from telegram_notifier import TelegramNotifier
@@ -120,7 +120,7 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     if not risk_report["pass"]:
         log.warning(f"{best_symbol}: bloqueado por módulo de riesgo.")
         failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]
-        notifier.send_message(f"⛔ {best_symbol} bloqueado por riesgo: {', '.join(failed)}")
+        notifier.send_message(format_blocked_message(best_symbol, best_signal, failed))
         db.log_decision(best_symbol, best_signal, risk_report, None, "blocked")
         return
 
