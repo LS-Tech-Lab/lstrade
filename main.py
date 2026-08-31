@@ -128,8 +128,14 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     print_memo(best_symbol, best_signal, risk_report, plan)
 
     if not config.LIVE_TRADING:
-        notifier.send_message(build_memo_text(best_symbol, best_signal, risk_report, plan, markdown=True) +
-                              "\n\n_(modo papel — no se ejecutó nada real)_")
+        # Mismo fix que app.py/api/cycle.py: mensaje simétrico con el de
+        # cierre en vez de leerse como un memo de decisión pendiente.
+        notifier.send_message(
+            f"\U0001F4C8 *Posición abierta (papel)* — {best_symbol}\n\n"
+            + build_memo_text(best_symbol, best_signal, risk_report, plan, markdown=True)
+            + "\n\n_(modo papel — no se ejecutó nada real, pero queda registrada "
+              "y se va a monitorear hasta que toque target o stop)_"
+        )
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         # Simular apertura de trade para que el Trailing Stop funcione en papel
         db.add_open_trade(best_symbol, best_signal['direction'], plan['entry'], plan['stop'], plan['target'], plan['position_size'])
