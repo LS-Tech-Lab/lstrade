@@ -19,7 +19,7 @@ from config import Config
 from supabase_db import SupabaseDatabase
 from exchange_client import ExchangeClient
 from signal_engine import generate_signal
-from risk_manager import RiskManager
+from risk_manager import RiskManager, format_blocked_message
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
 
@@ -80,12 +80,16 @@ def run_cycle():
     try:
         ticker = exchange_client.fetch_ticker(best_symbol)
     except Exception:
-        ticker = None  # el filtro de spread cae a "ok" de forma segura si no hay datos
+        # FIX: el comentario original acá decía que sin ticker el filtro de
+        # spread "cae a ok de forma segura" — eso describía el bug fail-open
+        # que risk_manager.check() ya no tiene: sin datos de ticker, el
+        # chequeo de spread ahora falla CERRADO (bloquea) en vez de aprobar.
+        ticker = None
     risk_report = risk_manager.check(best_symbol, best_signal, equity, ticker=ticker)
 
     if not risk_report["pass"]:
         failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]
-        notifier.send_message(f"\u26D4 {best_symbol} bloqueado por riesgo: {', '.join(failed)}")
+        notifier.send_message(format_blocked_message(best_symbol, best_signal, failed))
         db.log_decision(best_symbol, best_signal, risk_report, None, "blocked")
         return {"status": "blocked", "symbol": best_symbol, "failed_checks": failed}
 
