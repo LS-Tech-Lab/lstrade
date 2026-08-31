@@ -90,6 +90,18 @@ def run_weather_cycle():
             notifier.send_message(memo)
             state_store.record_notified(best["condition_id"], best["ev"])
             sent += 1
+            # NUEVO: registra la probabilidad estimada para poder medir
+            # después (weather_track_results) si el modelo está calibrado —
+            # ver weather_signals en schema.sql.
+            try:
+                db.record_weather_signal(
+                    best["condition_id"], best["question"], event["title"],
+                    signal["station"].get("icao"), best["my_prob"], best["market_price"],
+                    best["ev"], signal["center_estimate_f"], signal["sigma"],
+                    best.get("yes_token_id"),
+                )
+            except Exception as e:
+                detail.append({"title": event["title"], "status": "error_registro", "error": str(e)})
         except Exception as e:
             detail.append({"title": event["title"], "status": "error_envio", "error": str(e)})
 
