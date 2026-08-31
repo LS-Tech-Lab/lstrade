@@ -381,7 +381,7 @@ def run_weather_cycle():
     def time_left():
         return time_budget - (time.monotonic() - started)
 
-    events = client.fetch_weather_events(limit=20)
+    events = client.fetch_weather_events(limit=20, time_budget_seconds=time_budget * 0.5)
     if not events:
         return {"status": "no_events"}
 
