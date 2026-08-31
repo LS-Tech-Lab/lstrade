@@ -25,6 +25,17 @@ class Config:
     API_KEY = os.getenv("API_KEY", "")
     API_SECRET = os.getenv("API_SECRET", "")
     API_PASSWORD = os.getenv("API_PASSWORD", "")
+    # NUEVO: ccxt sin `timeout` explícito espera hasta su default (10s) POR
+    # CADA request HTTP individual — y fetch_ohlcv() dispara un load_markets()
+    # implícito la primera vez que se usa en el proceso (ver exchange_client.py),
+    # que en serverless es SIEMPRE la primera vez, porque cada invocación
+    # arranca un proceso nuevo sin caché entre ciclos. Con 2+ símbolos, eso es
+    # load_markets() + N×fetch_ohlcv(), cada uno pudiendo tardar hasta el
+    # default — fácil de exceder el maxDuration de Vercel sin que ninguna
+    # request individual "esté mal", solo que se van sumando. Bajar esto
+    # fuerza que una request lenta falle rápido (se loguea en `errors` y se
+    # sigue con el próximo símbolo) en vez de colgar todo el ciclo.
+    EXCHANGE_TIMEOUT_MS = _int("EXCHANGE_TIMEOUT_MS", 8000)
 
     SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT").split(",") if s.strip()]
     TIMEFRAME = os.getenv("TIMEFRAME", "1h")
