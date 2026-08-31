@@ -424,6 +424,29 @@ function RowField({ label, value, tone }) {
   );
 }
 
+// NUEVO: detalle expandible de los checks de riesgo dentro de cada tarjeta
+// de la bitácora. Antes la tarjeta solo mostraba "Bloqueada" sin decir cuál
+// filtro falló — el dato completo (risk_detail.checks, con label + ok/fail
+// por cada chequeo: spread, exposición, drawdown, volatilidad, correlación,
+// circuit breaker) ya venía en la respuesta de la API pero no se usaba acá.
+function RiskChecklist({ detail }) {
+  const checks = detail?.checks;
+  if (!checks || checks.length === 0) return null;
+  return (
+    <details className="risk-detail">
+      <summary>Ver detalle del riesgo</summary>
+      <ul className="risk-detail-list">
+        {checks.map((c, i) => (
+          <li key={i} className={c.ok ? "ok" : "fail"}>
+            <span className="risk-detail-icon">{c.ok ? "✓" : "✕"}</span>
+            <span>{c.label}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 // NUEVO: reemplaza la tabla ancha (que en mobile se convertía en una lista
 // vertical larga, una tarjeta debajo de la otra) por un carrusel horizontal
 // de tarjetas — una por fila, con scroll lateral, flechas y puntos, igual
@@ -685,6 +708,7 @@ function CriptoTab({ data }) {
               <RowField label="Confianza" value={d.confidence ? "★".repeat(d.confidence) : "—"} />
               <RowField label="Riesgo" value={d.risk_pass ? "OK" : "Bloqueada"} tone={d.risk_pass ? "ok" : "fail"} />
               <RowField label="Decisión" value={decisionLabel(d.decision)} tone={`decision-${d.decision}`} />
+              <RiskChecklist detail={d.risk_detail} />
             </>
           )}
         />
