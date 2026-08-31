@@ -159,15 +159,53 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 .tab.active{background:var(--accent-dim); color:var(--accent); box-shadow:inset 0 0 0 1px rgba(61,220,151,0.35);}
 .tab:not(.active):hover{color:var(--ink); background:rgba(255,255,255,0.03);}
 
-/* NUEVO: tarjetas de indicadores en vivo por símbolo */
-.indicator-grid{
-  display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px;
+/* NUEVO: carrusel de tarjetas de indicadores — scroll horizontal nativo
+   con snap, degradé lateral (mismo lenguaje que table-scroll) que avisa
+   que hay más símbolos para el costado, y puntos abajo para saltar
+   directo o ver cuántos hay en total. */
+.indicator-carousel-track{
+  display:flex; gap:12px; overflow-x:auto; -webkit-overflow-scrolling:touch;
+  scroll-snap-type:x mandatory; scroll-padding-left:2px;
+  padding:2px 2px 4px; margin:0 -2px;
+  mask-image:linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+  -webkit-mask-image:linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
 }
+.indicator-carousel-track::-webkit-scrollbar{display:none;}
+.indicator-carousel-track{scrollbar-width:none;}
 .indicator-card{
   border:1px solid var(--line); border-radius:12px; padding:13px 15px; background:var(--paper);
   transition:border-color 0.15s;
+  flex:0 0 clamp(230px, 44%, 300px); scroll-snap-align:start;
 }
 .indicator-card:hover{border-color:rgba(61,220,151,0.25);}
+
+.carousel-dots{display:flex; justify-content:center; gap:7px; margin-top:12px;}
+.carousel-dot{
+  width:7px; height:7px; border-radius:50%; border:none; padding:0; cursor:pointer;
+  background:var(--line); transition:background 0.15s, transform 0.15s;
+}
+.carousel-dot.active{background:var(--accent); transform:scale(1.3);}
+
+/* NUEVO: aviso visual cuando un snapshot dejó de actualizarse — antes la
+   única pista era que los números no cambiaban, algo fácil de no notar
+   durante horas o días (ver bug de record_indicator_snapshot). */
+.indicator-card.stale-warn{border-color:rgba(224,169,58,0.45);}
+.indicator-card.stale-fail{border-color:rgba(255,93,108,0.5);}
+.indicator-ts{
+  font-size:9.5px; color:var(--ink-soft); border-top:1px solid var(--line-soft); padding-top:8px; margin-top:4px;
+  display:flex; align-items:center; gap:5px;
+}
+.indicator-ts-sep{opacity:0.5;}
+.indicator-ts .warn{color:#E0A93A; font-weight:700;}
+.indicator-ts .fail{color:var(--bad); font-weight:700;}
+.freshness-dot{width:6px; height:6px; border-radius:50%; background:var(--good); flex:none;}
+.freshness-dot.warn{background:#E0A93A;}
+.freshness-dot.fail{background:var(--bad); box-shadow:0 0 6px 1px var(--bad);}
+
+.stale-banner{
+  background:var(--bad-dim); border:1px solid rgba(255,93,108,0.35); color:var(--bad);
+  border-radius:8px; padding:9px 12px; font-size:11.5px; font-weight:700; margin-bottom:12px; line-height:1.4;
+}
 .indicator-header{display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:8px;}
 .indicator-symbol{font-family:'Archivo Black', sans-serif; font-size:14px; letter-spacing:0.01em;}
 .indicator-price{font-size:19px; font-weight:700; margin-bottom:12px; font-family:'Archivo Black', sans-serif;}
@@ -323,7 +361,7 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   .stats-grid{grid-template-columns:repeat(2, 1fr);}
   .stat-value{font-size:18px;}
 
-  .indicator-grid{grid-template-columns:1fr;}
+  .indicator-card{flex-basis:85%;}
   .indicator-mini-grid{grid-template-columns:repeat(2, 1fr);}
 
   .equity-value{font-size:22px;}
