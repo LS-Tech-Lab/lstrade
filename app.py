@@ -29,7 +29,7 @@ from config import Config
 from supabase_db import SupabaseDatabase
 from exchange_client import ExchangeClient
 from signal_engine import compute_indicator_snapshot, generate_signal
-from risk_manager import RiskManager
+from risk_manager import RiskManager, format_blocked_message
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
 from polymarket_client import PolymarketClient
@@ -224,7 +224,7 @@ def run_cycle():
 
     if not risk_report["pass"]:
         failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]
-        notifier.send_message(f"\u26D4 {best_symbol} bloqueado por riesgo: {', '.join(failed)}")
+        notifier.send_message(format_blocked_message(best_symbol, best_signal, failed))
         _touch_notification(db)
         db.log_decision(best_symbol, best_signal, risk_report, None, "blocked")
         return {"status": "blocked", "symbol": best_symbol, "failed_checks": failed}
