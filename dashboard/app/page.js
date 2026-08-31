@@ -350,13 +350,13 @@ function CryptoOpenTable({ rows }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.id}>
-            <td>{r.symbol}</td>
-            <td>{directionLabel(r.direction)}</td>
-            <td>{r.entry_price?.toFixed(6)}</td>
-            <td>{r.target_price?.toFixed(6)}</td>
-            <td>{r.current_stop?.toFixed(6)}</td>
-            <td>{r.position_size?.toFixed(6)}</td>
-            <td>{new Date(r.ts_opened * 1000).toLocaleString()}</td>
+            <td data-label="Símbolo">{r.symbol}</td>
+            <td data-label="Dirección">{directionLabel(r.direction)}</td>
+            <td data-label="Entrada">{r.entry_price?.toFixed(6)}</td>
+            <td data-label="Target">{r.target_price?.toFixed(6)}</td>
+            <td data-label="Stop">{r.current_stop?.toFixed(6)}</td>
+            <td data-label="Tamaño">{r.position_size?.toFixed(6)}</td>
+            <td data-label="Abierta">{new Date(r.ts_opened * 1000).toLocaleString()}</td>
           </tr>
         ))}
       </tbody>
@@ -390,12 +390,12 @@ function PolymarketCategoryTable({ byCategory }) {
           const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
           return (
             <tr key={cat}>
-              <td>{cat}{s.n < 5 ? " ⚠️" : ""}</td>
-              <td>{s.n}</td>
-              <td>{s.win_rate.toFixed(0)}%</td>
-              <td className={tone}>{s.expectancy_r >= 0 ? "+" : ""}{s.expectancy_r.toFixed(2)}R</td>
-              <td>{s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"}</td>
-              <td className={tone}>
+              <td data-label="Categoría">{cat}{s.n < 5 ? " ⚠️" : ""}</td>
+              <td data-label="n">{s.n}</td>
+              <td data-label="Win%">{s.win_rate.toFixed(0)}%</td>
+              <td data-label="Expectancy" className={tone}>{s.expectancy_r >= 0 ? "+" : ""}{s.expectancy_r.toFixed(2)}R</td>
+              <td data-label="PF">{s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"}</td>
+              <td data-label="Total R" className={tone}>
                 <div className="cell-bar-wrap">
                   <span>{s.total_r >= 0 ? "+" : ""}{s.total_r.toFixed(2)}R</span>
                   <div className="cell-bar-track">
@@ -432,12 +432,12 @@ function PolymarketOpenTable({ rows }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.id}>
-            <td>{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
-            <td>{directionLabel(r.direction)}</td>
-            <td>{r.entry?.toFixed(3)}</td>
-            <td>{r.target?.toFixed(3)}</td>
-            <td>{r.stop?.toFixed(3)}</td>
-            <td>{new Date(r.ts_signaled * 1000).toLocaleString()}</td>
+            <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
+            <td data-label="Dirección">{directionLabel(r.direction)}</td>
+            <td data-label="Entrada">{r.entry?.toFixed(3)}</td>
+            <td data-label="Target">{r.target?.toFixed(3)}</td>
+            <td data-label="Stop">{r.stop?.toFixed(3)}</td>
+            <td data-label="Enviada">{new Date(r.ts_signaled * 1000).toLocaleString()}</td>
           </tr>
         ))}
       </tbody>
@@ -464,10 +464,10 @@ function PolymarketResolvedTable({ rows }) {
       <tbody>
         {rows.map((r) => (
           <tr key={r.id}>
-            <td>{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
-            <td>{directionLabel(r.direction)}</td>
-            <td className={r.outcome === "target" ? "ok" : "fail"}>{r.outcome === "target" ? "GANADA" : "PERDIDA"}</td>
-            <td>{r.ts_resolved ? new Date(r.ts_resolved * 1000).toLocaleString() : "—"}</td>
+            <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
+            <td data-label="Dirección">{directionLabel(r.direction)}</td>
+            <td data-label="Resultado" className={r.outcome === "target" ? "ok" : "fail"}>{r.outcome === "target" ? "GANADA" : "PERDIDA"}</td>
+            <td data-label="Resuelta">{r.ts_resolved ? new Date(r.ts_resolved * 1000).toLocaleString() : "—"}</td>
           </tr>
         ))}
       </tbody>
@@ -557,13 +557,13 @@ function CriptoTab({ data }) {
             <tbody>
               {data.decisions.map((d) => (
                 <tr key={d.id}>
-                  <td>{new Date(d.ts * 1000).toLocaleString()}</td>
-                  <td>{d.symbol}</td>
-                  <td>{d.signal_type || "—"}</td>
-                  <td>{directionLabel(d.direction)}</td>
-                  <td>{d.confidence ? "★".repeat(d.confidence) : "—"}</td>
-                  <td className={d.risk_pass ? "ok" : "fail"}>{d.risk_pass ? "OK" : "Bloqueada"}</td>
-                  <td className={`decision-${d.decision}`}>{decisionLabel(d.decision)}</td>
+                  <td data-label="Fecha">{new Date(d.ts * 1000).toLocaleString()}</td>
+                  <td data-label="Símbolo">{d.symbol}</td>
+                  <td data-label="Señal">{d.signal_type || "—"}</td>
+                  <td data-label="Dirección">{directionLabel(d.direction)}</td>
+                  <td data-label="Confianza">{d.confidence ? "★".repeat(d.confidence) : "—"}</td>
+                  <td data-label="Riesgo" className={d.risk_pass ? "ok" : "fail"}>{d.risk_pass ? "OK" : "Bloqueada"}</td>
+                  <td data-label="Decisión" className={`decision-${d.decision}`}>{decisionLabel(d.decision)}</td>
                 </tr>
               ))}
             </tbody>
