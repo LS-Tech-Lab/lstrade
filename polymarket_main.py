@@ -80,6 +80,8 @@ def build_polymarket_memo(signal, markdown=False):
     
     lines.append("")
     lines.append(f"🆔 Condition ID: `{m['condition_id']}`")
+    if m.get("url"):
+        lines.append(f"🔗 {m['url']}")
     lines.append("")
     lines.append("_⚠️ MODO LECTURA — No se ejecutó ninguna operación real._")
     
