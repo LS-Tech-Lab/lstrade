@@ -421,6 +421,18 @@ def run_weather_cycle():
             notifier.send_message(memo)
             state_store.record_notified(best["condition_id"], best["ev"])
             sent += 1
+            # NUEVO: registra la probabilidad estimada para poder medir
+            # después (weather_track_results) si el modelo está calibrado —
+            # ver weather_signals en schema.sql.
+            try:
+                db.record_weather_signal(
+                    best["condition_id"], best["question"], event["title"],
+                    signal["station"].get("icao"), best["my_prob"], best["market_price"],
+                    best["ev"], signal["center_estimate_f"], signal["sigma"],
+                    best.get("yes_token_id"),
+                )
+            except Exception as e:
+                detail.append({"title": event["title"], "status": "error_registro", "error": str(e)})
         except Exception as e:
             detail.append({"title": event["title"], "status": "error_envio", "error": str(e)})
 
@@ -453,6 +465,77 @@ async def weather_cycle_get(request: Request):
 @app.post("/api/weather_cycle")
 async def weather_cycle_post(request: Request):
     return await _weather_cycle_endpoint(request)
+
+
+# ────────────────────────────────────────────────────────────────────
+# /api/weather_track_results — resuelve las señales de clima que
+# run_weather_cycle registró (weather_signals) y todavía no tienen
+# outcome. A diferencia de Polymarket (que usa target/stop de un plan de
+# entrada), acá no hay plan de salida — lo que importa es si el bucket
+# de temperatura terminó ganando o no. Sin un endpoint de resolución
+# oficial en Gamma para esto vía API pública simple, se aproxima con el
+# mismo dato que ya trae price_history: el precio del token converge a
+# ~1.0 o ~0.0 cuando el mercado se resuelve, así que un umbral cerca de
+# los extremos es una proxy confiable sin pegarle a ningún endpoint nuevo.
+# Corre con menos frecuencia que weather_cycle — los mercados de clima se
+# resuelven en horas/días, no en minutos.
+# ────────────────────────────────────────────────────────────────────
+WEATHER_RESOLVED_YES_THRESHOLD = 0.98
+WEATHER_RESOLVED_NO_THRESHOLD = 0.02
+
+
+def run_weather_track_results():
+    config = Config
+    db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    client = PolymarketClient(config)
+
+    open_signals = db.get_open_weather_signals()
+    if not open_signals:
+        return {"status": "no_open_signals"}
+
+    resolved = []
+    for sig in open_signals:
+        token_id = sig.get("yes_token_id")
+        if not token_id:
+            continue
+        history = client.fetch_price_history(token_id, interval="1h", fidelity=60)
+        if not history:
+            continue
+        current_price = history[-1]["p"]
+
+        if current_price >= WEATHER_RESOLVED_YES_THRESHOLD:
+            outcome = "yes"
+        elif current_price <= WEATHER_RESOLVED_NO_THRESHOLD:
+            outcome = "no"
+        else:
+            continue  # todavía no convergió — sigue abierta
+
+        db.resolve_weather_signal(sig["id"], outcome)
+        resolved.append({"condition_id": sig["condition_id"], "outcome": outcome})
+
+    return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
+
+
+async def _weather_track_results_endpoint(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = run_weather_track_results()
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+
+@app.get("/api/weather_track_results")
+async def weather_track_results_get(request: Request):
+    return await _weather_track_results_endpoint(request)
+
+
+@app.post("/api/weather_track_results")
+async def weather_track_results_post(request: Request):
+    return await _weather_track_results_endpoint(request)
 
 
 # ────────────────────────────────────────────────────────────────────
