@@ -37,6 +37,8 @@ def build_memo_markdown(signal):
     tp = signal.get("trade_plan")
     if tp:
         lines.append(f"🎯 Entrada: ${tp['entry']:.3f} | Target: ${tp['target']:.3f} | Stop: ${tp['stop']:.3f}")
+    if m.get("url"):
+        lines.append(f"🔗 {m['url']}")
     lines.append("")
     lines.append("_⚠️ MODO LECTURA — No se ejecutó ninguna operación real._")
     return "\n".join(lines)
