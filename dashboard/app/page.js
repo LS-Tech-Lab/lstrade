@@ -358,39 +358,116 @@ function TableScroll({ children }) {
   return <div className="table-scroll">{children}</div>;
 }
 
-function CryptoOpenTable({ rows }) {
-  if (!rows || rows.length === 0) {
-    return <p className="empty">Sin posiciones cripto abiertas ahora mismo.</p>;
+// NUEVO: hook compartido por todos los carruseles (indicadores, posiciones
+// abiertas, bitácora de decisiones). Centraliza el cálculo de "qué tarjeta
+// está a la vista" (para los puntos/flechas) y el scroll programático al
+// hacer click en una flecha o un punto — antes esta lógica estaba duplicada
+// solo para el carrusel de indicadores.
+function useCarouselNav() {
+  const containerRef = useRef(null);
+  const [active, setActive] = useState(0);
+
+  function handleScroll() {
+    const el = containerRef.current;
+    if (!el || el.children.length === 0) return;
+    const cardWidth = el.children[0].offsetWidth + 12; // + gap
+    setActive(Math.round(el.scrollLeft / cardWidth));
   }
+
+  function goTo(i) {
+    const el = containerRef.current;
+    if (!el || !el.children.length) return;
+    const idx = Math.max(0, Math.min(el.children.length - 1, i));
+    el.children[idx].scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+  }
+
+  return { containerRef, active, handleScroll, goTo };
+}
+
+// NUEVO: flechas + puntos (o contador, si hay muchos elementos) debajo de
+// cualquier carrusel horizontal. Antes solo existían los puntos, que no
+// alcanzan para "adelante/atrás" sin deslizar con el dedo — esto agrega
+// una forma explícita de navegar, y con más de `maxDots` elementos (p.ej.
+// la bitácora de decisiones puede tener decenas) evita una fila de puntos
+// imposible de leer, mostrando "3 / 47" en su lugar.
+function CarouselNav({ count, active, goTo, maxDots = 10 }) {
+  if (count <= 1) return null;
   return (
-    <TableScroll>
-    <table>
-      <thead>
-        <tr>
-          <th>Símbolo</th>
-          <th>Dirección</th>
-          <th>Entrada</th>
-          <th>Target</th>
-          <th>Stop</th>
-          <th>Tamaño</th>
-          <th>Abierta</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.id}>
-            <td data-label="Símbolo">{r.symbol}</td>
-            <td data-label="Dirección">{directionLabel(r.direction)}</td>
-            <td data-label="Entrada">{r.entry_price?.toFixed(6)}</td>
-            <td data-label="Target">{r.target_price?.toFixed(6)}</td>
-            <td data-label="Stop">{r.current_stop?.toFixed(6)}</td>
-            <td data-label="Tamaño">{r.position_size?.toFixed(6)}</td>
-            <td data-label="Abierta">{new Date(r.ts_opened * 1000).toLocaleString()}</td>
-          </tr>
+    <div className="carousel-nav">
+      <button type="button" className="carousel-arrow" onClick={() => goTo(active - 1)}
+        disabled={active === 0} aria-label="Anterior">‹</button>
+      {count <= maxDots ? (
+        <div className="carousel-dots">
+          {Array.from({ length: count }).map((_, i) => (
+            <button key={i} type="button" className={`carousel-dot ${i === active ? "active" : ""}`}
+              aria-label={`Ir a la tarjeta ${i + 1}`} onClick={() => goTo(i)} />
+          ))}
+        </div>
+      ) : (
+        <span className="carousel-counter">{active + 1} / {count}</span>
+      )}
+      <button type="button" className="carousel-arrow" onClick={() => goTo(active + 1)}
+        disabled={active === count - 1} aria-label="Siguiente">›</button>
+    </div>
+  );
+}
+
+// NUEVO: fila de una tarjeta (etiqueta arriba, valor abajo) — mismo patrón
+// visual que antes usaban las filas de tabla apiladas en mobile (data-label),
+// ahora reutilizado dentro de una tarjeta de carrusel.
+function RowField({ label, value, tone }) {
+  return (
+    <div className="row-field">
+      <span className="row-field-label">{label}</span>
+      <span className={`row-field-value ${tone || ""}`}>{value ?? "—"}</span>
+    </div>
+  );
+}
+
+// NUEVO: reemplaza la tabla ancha (que en mobile se convertía en una lista
+// vertical larga, una tarjeta debajo de la otra) por un carrusel horizontal
+// de tarjetas — una por fila, con scroll lateral, flechas y puntos, igual
+// que el carrusel de indicadores. Así la página no se alarga tanto hacia
+// abajo sin importar cuántas filas haya.
+function RowCarousel({ items, keyExtractor, renderFields, emptyMessage, maxDots }) {
+  const { containerRef, active, handleScroll, goTo } = useCarouselNav();
+
+  if (!items || items.length === 0) {
+    return <p className="empty">{emptyMessage}</p>;
+  }
+
+  return (
+    <div className="row-carousel">
+      <div className="row-carousel-track" ref={containerRef} onScroll={handleScroll}>
+        {items.map((item) => (
+          <div className="row-card" key={keyExtractor(item)}>
+            {renderFields(item)}
+          </div>
         ))}
-      </tbody>
-    </table>
-    </TableScroll>
+      </div>
+      <CarouselNav count={items.length} active={active} goTo={goTo} maxDots={maxDots} />
+    </div>
+  );
+}
+
+function CryptoOpenTable({ rows }) {
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin posiciones cripto abiertas ahora mismo."
+      renderFields={(r) => (
+        <>
+          <RowField label="Símbolo" value={r.symbol} />
+          <RowField label="Dirección" value={directionLabel(r.direction)} />
+          <RowField label="Entrada" value={r.entry_price?.toFixed(6)} />
+          <RowField label="Target" value={r.target_price?.toFixed(6)} />
+          <RowField label="Stop" value={r.current_stop?.toFixed(6)} />
+          <RowField label="Tamaño" value={r.position_size?.toFixed(6)} />
+          <RowField label="Abierta" value={new Date(r.ts_opened * 1000).toLocaleString()} />
+        </>
+      )}
+    />
   );
 }
 
@@ -524,24 +601,12 @@ function Glossary() {
 // NUEVO: carrusel horizontal para las tarjetas de indicadores. Antes era
 // una grilla que en mobile terminaba siendo una lista vertical larga —
 // se vuelve incómodo apenas se agregan más símbolos en SYMBOLS (.env).
-// Es scroll nativo con snap (sin librerías), con puntos abajo que
-// muestran cuál tarjeta está a la vista y permiten saltar directo.
+// Es scroll nativo con snap (sin librerías). Cada tarjeta ocupa el 100%
+// del ancho disponible (mobile y escritorio) para que se vea siempre
+// completa y no cortada por la tarjeta vecina asomando al costado;
+// las flechas y los puntos de abajo son la forma de moverse entre ellas.
 function IndicatorCarousel({ symbols, indicatorsBySymbol }) {
-  const containerRef = useRef(null);
-  const [active, setActive] = useState(0);
-
-  function handleScroll() {
-    const el = containerRef.current;
-    if (!el || el.children.length === 0) return;
-    const cardWidth = el.children[0].offsetWidth + 12; // + gap
-    setActive(Math.round(el.scrollLeft / cardWidth));
-  }
-
-  function goTo(i) {
-    const el = containerRef.current;
-    if (!el || !el.children[i]) return;
-    el.children[i].scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
-  }
+  const { containerRef, active, handleScroll, goTo } = useCarouselNav();
 
   return (
     <div className="indicator-carousel">
@@ -550,18 +615,7 @@ function IndicatorCarousel({ symbols, indicatorsBySymbol }) {
           <IndicatorCard key={symbol} symbol={symbol} snapshot={indicatorsBySymbol[symbol]} />
         ))}
       </div>
-      {symbols.length > 1 && (
-        <div className="carousel-dots">
-          {symbols.map((symbol, i) => (
-            <button
-              key={symbol}
-              className={`carousel-dot ${i === active ? "active" : ""}`}
-              aria-label={`Ir a ${symbol}`}
-              onClick={() => goTo(i)}
-            />
-          ))}
-        </div>
-      )}
+      <CarouselNav count={symbols.length} active={active} goTo={goTo} />
     </div>
   );
 }
@@ -617,38 +671,23 @@ function CriptoTab({ data }) {
       <div className="card">
         <h2>Bitácora de decisiones</h2>
         <p className="card-subtitle">Cada vez que el bot detecta una señal, queda registrado acá qué decidió hacer con ella.</p>
-        {data.decisions.length === 0 ? (
-          <p className="empty">Todavía no hay decisiones registradas.</p>
-        ) : (
-          <TableScroll>
-          <table>
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>Símbolo</th>
-                <th>Señal</th>
-                <th>Dirección</th>
-                <th>Confianza</th>
-                <th>Riesgo</th>
-                <th>Decisión</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.decisions.map((d) => (
-                <tr key={d.id}>
-                  <td data-label="Fecha">{new Date(d.ts * 1000).toLocaleString()}</td>
-                  <td data-label="Símbolo">{d.symbol}</td>
-                  <td data-label="Señal">{d.signal_type || "—"}</td>
-                  <td data-label="Dirección">{directionLabel(d.direction)}</td>
-                  <td data-label="Confianza">{d.confidence ? "★".repeat(d.confidence) : "—"}</td>
-                  <td data-label="Riesgo" className={d.risk_pass ? "ok" : "fail"}>{d.risk_pass ? "OK" : "Bloqueada"}</td>
-                  <td data-label="Decisión" className={`decision-${d.decision}`}>{decisionLabel(d.decision)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </TableScroll>
-        )}
+        <RowCarousel
+          items={data.decisions}
+          keyExtractor={(d) => d.id}
+          emptyMessage="Todavía no hay decisiones registradas."
+          maxDots={8}
+          renderFields={(d) => (
+            <>
+              <RowField label="Fecha" value={new Date(d.ts * 1000).toLocaleString()} />
+              <RowField label="Símbolo" value={d.symbol} />
+              <RowField label="Señal" value={d.signal_type || "—"} />
+              <RowField label="Dirección" value={directionLabel(d.direction)} />
+              <RowField label="Confianza" value={d.confidence ? "★".repeat(d.confidence) : "—"} />
+              <RowField label="Riesgo" value={d.risk_pass ? "OK" : "Bloqueada"} tone={d.risk_pass ? "ok" : "fail"} />
+              <RowField label="Decisión" value={decisionLabel(d.decision)} tone={`decision-${d.decision}`} />
+            </>
+          )}
+        />
       </div>
 
       <Glossary />
