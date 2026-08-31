@@ -133,7 +133,18 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
             log.warning(f"Sin clobTokenId resuelto para '{market['question'][:50]}', se omite el historial de precios.")
             price_history = []
         else:
-            price_history = client.fetch_price_history(market["yes_token_id"], interval="1h", fidelity=60)
+            # `interval` en /prices-history de CLOB NO es "tamaño de vela" —
+            # es la VENTANA de tiempo hacia atrás (enum: max/all/1m/1w/1d/6h/1h),
+            # y `fidelity` (minutos) es lo que sí controla el tamaño de cada
+            # punto. interval="1h" pedía "la última 1 hora de historial" con
+            # velas de 60 min → como mucho 1-2 puntos, nunca los 12+ que pide
+            # analyze_probability_momentum(window=12) — por eso momentum_data
+            # daba None siempre y ninguna señal pasaba jamás el filtro de
+            # dirección (confirmado: 0 filas en polymarket_signals desde
+            # siempre, pese a que el escaneo y el Market Watch sí funcionan).
+            # interval="1d" + fidelity=60 trae ~24 puntos (uno por hora del
+            # último día) — suficiente para la ventana de 12.
+            price_history = client.fetch_price_history(market["yes_token_id"], interval="1d", fidelity=60)
         time.sleep(0.2)
         price_history_by_condition_id[market["condition_id"]] = price_history
         
@@ -333,8 +344,11 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
         if not market.get("yes_token_id"):
             price_history = []
         else:
+            # Ver nota en run_polymarket_cycle (loop local) más arriba: interval
+            # es una ventana de tiempo, no un tamaño de vela — "1h" dejaba
+            # momentum_data en None siempre. "1d" trae ~24 puntos (1 por hora).
             price_history = client.fetch_price_history(
-                market["yes_token_id"], interval="1h", fidelity=60, timeout=request_timeout
+                market["yes_token_id"], interval="1d", fidelity=60, timeout=request_timeout
             )
         analyzed += 1
 
