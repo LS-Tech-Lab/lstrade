@@ -13,9 +13,14 @@ log = logging.getLogger("polymarket_client")
 GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
 
-# Mismo criterio pragmático que polymarket_categories.categorize(): Gamma no
-# expone una taxonomía de tags 100% confiable para "clima" en todos los
-# eventos, así que se filtra por keyword en el título del evento.
+# Confirmado contra /tags/slug/weather en la API real: {"id":"84","label":"Weather"}.
+# Es el filtro principal en fetch_weather_events — mucho más preciso y barato
+# (1 sola llamada) que paginar y adivinar por palabra clave. El regex de abajo
+# se conserva como respaldo: si algún evento nuevo todavía no tiene el tag
+# aplicado, o si Polymarket cambia el ID en el futuro, no nos quedamos sin
+# datos — sigue funcionando, solo que gastando más requests.
+WEATHER_TAG_ID = "84"
+
 _WEATHER_EVENT_PATTERN = re.compile(
     r"temperature|hottest|coldest|rain|snow|hurricane|heat wave|weather|degrees?\b|Fahrenheit|Celsius",
     re.I,
@@ -94,14 +99,71 @@ class PolymarketClient:
         wu-airport-weather), así que esto pega contra /events en vez de
         /markets.
 
-        Antes esto pedía solo los 20 eventos con MÁS volumen de TODO
-        Polymarket (política, cripto, deportes...) y de ahí filtraba por
-        palabra clave — el clima casi nunca gana ese ranking global, así
-        que la función devolvía "sin eventos" casi siempre aunque hubiera
-        cientos de mercados de clima activos. Ahora pagina por `created_at`
-        descendente (más estable que volumen para no perderse eventos
-        recién creados con poco volumen todavía) hasta juntar suficientes
-        candidatos de clima o agotar max_pages/time_budget_seconds.
+        Método principal: filtrar por WEATHER_TAG_ID (confirmado contra la
+        API real: id=84, label="Weather") — una sola llamada, sin ambigüedad,
+        y no confunde mercados deportivos que mencionan "weather" en el
+        título (ej. "TOUR Championship: Weather Delay?") con clima real,
+        porque usa la categoría que Polymarket ya les asignó.
+
+        Si esa llamada falla o devuelve vacío (¿tag distinto en el futuro?
+        ¿evento nuevo sin tag todavía?), cae a _fetch_weather_events_by_keyword
+        como respaldo — más lento (pagina y filtra por palabra clave) pero no
+        depende de que el tag_id siga siendo válido para siempre.
+        """
+        by_tag = self._fetch_weather_events_by_tag(limit=limit, timeout=timeout)
+        if by_tag:
+            return by_tag
+
+        log.info("fetch_weather_events: tag_id=%s no devolvió nada, usando fallback por palabra clave", WEATHER_TAG_ID)
+        return self._fetch_weather_events_by_keyword(
+            limit=limit, timeout=timeout, max_pages=max_pages,
+            page_size=page_size, time_budget_seconds=time_budget_seconds,
+        )
+
+    def _fetch_weather_events_by_tag(self, limit=20, timeout=15):
+        try:
+            resp = self.session.get(
+                f"{GAMMA_API}/events",
+                params={
+                    "tag_id": WEATHER_TAG_ID,
+                    "limit": limit,
+                    "active": "true",
+                    "closed": "false",
+                    "order": "volume24hr",
+                    "ascending": "false",
+                },
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            events = resp.json()
+        except Exception as e:
+            log.warning(f"Error fetching events by tag_id={WEATHER_TAG_ID}: {e}")
+            return []
+
+        weather_events = []
+        for ev in events:
+            markets = []
+            for mk in ev.get("markets", []) or []:
+                parsed = self.parse_market_for_analysis(mk)
+                if parsed:
+                    markets.append(parsed)
+            if markets:
+                title = ev.get("title") or ev.get("ticker") or ""
+                weather_events.append({"title": title, "id": ev.get("id"), "markets": markets})
+        return weather_events
+
+    def _fetch_weather_events_by_keyword(self, limit=20, timeout=15, max_pages=6, page_size=100,
+                                          time_budget_seconds=None):
+        """
+        Respaldo de fetch_weather_events. Antes esto pedía solo los 20
+        eventos con MÁS volumen de TODO Polymarket (política, cripto,
+        deportes...) y de ahí filtraba por palabra clave — el clima casi
+        nunca gana ese ranking global, así que la función devolvía "sin
+        eventos" casi siempre aunque hubiera cientos de mercados de clima
+        activos. Ahora pagina por `created_at` descendente (más estable que
+        volumen para no perderse eventos recién creados con poco volumen
+        todavía) hasta juntar suficientes candidatos de clima o agotar
+        max_pages/time_budget_seconds.
         """
         started = time.monotonic()
         weather_events = []
