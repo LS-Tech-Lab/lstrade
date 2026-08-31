@@ -124,10 +124,29 @@ def run_cycle():
 
     dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
 
+    # NUEVO: presupuesto de tiempo — antes este ciclo no tenía ninguno (a
+    # diferencia de weather_cycle/polymarket_cycle_serverless), así que un
+    # exchange lento en un cold start (load_markets() implícito la primera
+    # vez que se llama fetch_ohlcv() en el proceso, sin caché entre
+    # invocaciones serverless) podía colgar la función entera hasta que
+    # Vercel la mataba con FUNCTION_INVOCATION_TIMEOUT — sin heartbeat, sin
+    # log de error, sin nada: silencio total. Ahora se corta el escaneo de
+    # símbolos restantes si queda poco tiempo y se sigue con lo que ya se
+    # tiene (best_signal encontrado hasta ese punto), igual que el resto
+    # del pipeline.
+    started = time.monotonic()
+    time_budget = float(os.environ.get("CYCLE_TIME_BUDGET_SECONDS", "20.0"))
+
+    def time_left():
+        return time_budget - (time.monotonic() - started)
+
     best_signal, best_symbol = None, None
     errors = []
     snapshots = []  # [(symbol, snapshot_dict)] — se reutiliza para el heartbeat si el ciclo queda en no_signal
     for symbol in config.SYMBOLS:
+        if time_left() < 1.0:
+            errors.append(f"{symbol}: sin tiempo — se cortó el escaneo (quedaban {len(config.SYMBOLS) - config.SYMBOLS.index(symbol)} símbolo(s))")
+            break
         try:
             candles = exchange_client.fetch_ohlcv(symbol)
         except Exception as e:
