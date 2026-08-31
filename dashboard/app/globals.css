@@ -160,31 +160,72 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 .tab:not(.active):hover{color:var(--ink); background:rgba(255,255,255,0.03);}
 
 /* NUEVO: carrusel de tarjetas de indicadores — scroll horizontal nativo
-   con snap, degradé lateral (mismo lenguaje que table-scroll) que avisa
-   que hay más símbolos para el costado, y puntos abajo para saltar
-   directo o ver cuántos hay en total. */
+   con snap. Cada tarjeta ocupa el 100% del ancho del carrusel (mobile y
+   escritorio por igual) para que se vea siempre completa: antes se
+   mostraba un porcentaje fijo (ej. 44%/85%) y quedaba un pedazo de la
+   tarjeta vecina asomando y cortado por el degradé lateral. Ahora ese
+   degradé no hace falta — las flechas y los puntos de abajo (ver
+   .carousel-nav) son la señal de que hay más para el costado. */
 .indicator-carousel-track{
   display:flex; gap:12px; overflow-x:auto; -webkit-overflow-scrolling:touch;
   scroll-snap-type:x mandatory; scroll-padding-left:2px;
   padding:2px 2px 4px; margin:0 -2px;
-  mask-image:linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-  -webkit-mask-image:linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
 }
 .indicator-carousel-track::-webkit-scrollbar{display:none;}
 .indicator-carousel-track{scrollbar-width:none;}
 .indicator-card{
   border:1px solid var(--line); border-radius:12px; padding:13px 15px; background:var(--paper);
   transition:border-color 0.15s;
-  flex:0 0 clamp(230px, 44%, 300px); scroll-snap-align:start;
+  flex:0 0 100%; width:100%; scroll-snap-align:start;
 }
 .indicator-card:hover{border-color:rgba(61,220,151,0.25);}
 
-.carousel-dots{display:flex; justify-content:center; gap:7px; margin-top:12px;}
+/* NUEVO: fila compartida de flechas + puntos (o contador) debajo de
+   cualquier carrusel horizontal (indicadores, posiciones, decisiones). */
+.carousel-nav{display:flex; align-items:center; justify-content:center; gap:14px; margin-top:12px;}
+.carousel-arrow{
+  flex:none; width:30px; height:30px; border-radius:50%; padding:0;
+  border:1px solid var(--line); background:var(--paper); color:var(--ink);
+  font-size:16px; line-height:1; cursor:pointer;
+  display:flex; align-items:center; justify-content:center;
+  transition:border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+.carousel-arrow:hover:not(:disabled){border-color:var(--accent); color:var(--accent);}
+.carousel-arrow:disabled{opacity:0.3; cursor:default;}
+.carousel-counter{font-size:11px; color:var(--ink-soft); min-width:44px; text-align:center;}
+.carousel-dots{display:flex; justify-content:center; align-items:center; gap:7px;}
 .carousel-dot{
   width:7px; height:7px; border-radius:50%; border:none; padding:0; cursor:pointer;
   background:var(--line); transition:background 0.15s, transform 0.15s;
 }
 .carousel-dot.active{background:var(--accent); transform:scale(1.3);}
+
+/* NUEVO: carrusel de tarjetas para filas de tabla (posiciones abiertas,
+   bitácora de decisiones) — mismo lenguaje visual y de navegación que el
+   carrusel de indicadores, para no alargar la página con una lista
+   vertical de tarjetas apiladas cuando hay muchas filas. */
+.row-carousel-track{
+  display:flex; gap:12px; overflow-x:auto; -webkit-overflow-scrolling:touch;
+  scroll-snap-type:x mandatory; scroll-padding-left:2px;
+  padding:2px 2px 4px; margin:0 -2px;
+}
+.row-carousel-track::-webkit-scrollbar{display:none;}
+.row-carousel-track{scrollbar-width:none;}
+.row-card{
+  flex:0 0 100%; width:100%; scroll-snap-align:start;
+  background:var(--paper); border:1px solid var(--line); border-radius:12px;
+  padding:6px 15px;
+}
+.row-field{
+  display:flex; flex-direction:column; align-items:flex-start; gap:3px;
+  padding:9px 0; border-bottom:1px dashed var(--line-soft);
+}
+.row-field:last-child{border-bottom:none;}
+.row-field-label{
+  font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em;
+  color:var(--ink-soft); font-weight:700;
+}
+.row-field-value{font-size:12.5px;}
 
 /* NUEVO: aviso visual cuando un snapshot dejó de actualizarse — antes la
    única pista era que los números no cambiaban, algo fácil de no notar
@@ -361,8 +402,9 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   .stats-grid{grid-template-columns:repeat(2, 1fr);}
   .stat-value{font-size:18px;}
 
-  .indicator-card{flex-basis:85%;}
   .indicator-mini-grid{grid-template-columns:repeat(2, 1fr);}
+  .row-card{padding:4px 12px;}
+  .carousel-arrow{width:26px; height:26px; font-size:14px;}
 
   .equity-value{font-size:22px;}
   .equity-chart{height:170px;}
