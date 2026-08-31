@@ -149,7 +149,8 @@ class PolymarketClient:
                     markets.append(parsed)
             if markets:
                 title = ev.get("title") or ev.get("ticker") or ""
-                weather_events.append({"title": title, "id": ev.get("id"), "markets": markets})
+                url = f"https://polymarket.com/event/{ev['slug']}" if ev.get("slug") else None
+                weather_events.append({"title": title, "id": ev.get("id"), "url": url, "markets": markets})
         return weather_events
 
     def _fetch_weather_events_by_keyword(self, limit=20, timeout=15, max_pages=6, page_size=100,
@@ -203,7 +204,8 @@ class PolymarketClient:
                     if parsed:
                         markets.append(parsed)
                 if markets:
-                    weather_events.append({"title": title, "id": ev.get("id"), "markets": markets})
+                    url = f"https://polymarket.com/event/{ev['slug']}" if ev.get("slug") else None
+                    weather_events.append({"title": title, "id": ev.get("id"), "url": url, "markets": markets})
 
             if len(weather_events) >= limit or len(page) < page_size:
                 break
@@ -244,7 +246,8 @@ class PolymarketClient:
                 if parsed:
                     markets.append(parsed)
             if markets:
-                weather_events.append({"title": title, "id": ev.get("id"), "markets": markets})
+                url = f"https://polymarket.com/event/{ev['slug']}" if ev.get("slug") else None
+                weather_events.append({"title": title, "id": ev.get("id"), "url": url, "markets": markets})
         return weather_events
 
     def parse_market_for_analysis(self, market):
@@ -296,7 +299,30 @@ class PolymarketClient:
                 "no_price": no_price,
                 "active": market.get("active", False),
                 "closed": market.get("closed", False),
+                "url": self._build_market_url(market),
             }
         except Exception as e:
             log.warning(f"Error parsing market: {e}")
             return None
+
+    @staticmethod
+    def _build_market_url(market):
+        """
+        Arma el link público a polymarket.com para este mercado.
+
+        Polymarket sirve las páginas bajo /event/{event_slug}, no bajo el
+        slug del mercado individual (que puede no resolver como URL propia,
+        sobre todo en eventos multi-outcome). El objeto de /markets trae
+        `events` (lista, casi siempre 1 elemento) con el slug del evento —
+        se prioriza ese. Si no viene (o viene vacío), se cae al slug del
+        propio mercado como mejor esfuerzo, que en eventos de un solo
+        mercado (el caso común de los mercados YES/NO que sigue este bot)
+        coincide con el slug del evento.
+        """
+        events = market.get("events") or []
+        if events and events[0].get("slug"):
+            return f"https://polymarket.com/event/{events[0]['slug']}"
+        slug = market.get("slug")
+        if slug:
+            return f"https://polymarket.com/event/{slug}"
+        return None
