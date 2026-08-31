@@ -433,6 +433,10 @@ def generate_weather_signal(event, config, min_ev=0.15):
             "ev": ev,
             "liquidity": m.get("liquidity", 0),
             "yes_token_id": m.get("yes_token_id"),
+            # Link directo al bucket específico si el mercado individual
+            # trae su propio slug; si no, más abajo se usa el link del
+            # evento completo como mejor esfuerzo.
+            "url": m.get("url") or event.get("url"),
         }
         rows.append(row)
         if ev is not None and ev >= min_ev and (best is None or ev > best["ev"]):
@@ -444,6 +448,7 @@ def generate_weather_signal(event, config, min_ev=0.15):
         "status": "ok",
         "type": "WEATHER_SIGNAL",
         "title": title,
+        "url": event.get("url"),
         "station": station,
         "center_estimate_f": center,
         "sigma": round(sigma, 2),
@@ -490,8 +495,12 @@ def build_weather_memo(signal, markdown=True):
         bt = signal["best_trade"]
         lines.append(f"🎯 Mejor EV: {bt['question'][:60]}")
         lines.append(f"   EV {bt['ev']*100:+.1f}% @ ${bt['market_price']:.3f} | mi prob {bt['my_prob']*100:.1f}%")
+        if bt.get("url"):
+            lines.append(f"🔗 {bt['url']}")
     else:
         lines.append("🎯 Sin edge suficiente hoy — pasar es la disciplina correcta.")
+        if signal.get("url"):
+            lines.append(f"🔗 {signal['url']}")
     lines.append("")
     disclaimer = signal["disclaimer"]
     lines.append(f"_{disclaimer}_" if markdown else disclaimer)
