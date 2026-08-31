@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // ────────────────────────────────────────────────────────────────────
 // Diccionario en español simple. Centraliza las explicaciones de los
@@ -51,6 +51,29 @@ function rsiState(value) {
   if (value < 22) return { text: "Sobrevendido — riesgo de rebote", tone: "fail" };
   if (value > 65 || value < 35) return { text: "Acercándose al extremo", tone: "warn" };
   return { text: "En rango neutral", tone: "ok" };
+}
+
+// El bot guarda un snapshot por símbolo en cada ciclo — el cron externo
+// (cron-job.org) hoy dispara /api/cycle cada ~10 minutos, así que un
+// snapshot recién guardado siempre debería tener pocos minutos. Si algo
+// se rompe en el medio (cron caído, símbolo con error, un método que
+// falta como pasó con record_indicator_snapshot), el dato queda "clavado"
+// sin ningún error visible — la única señal de que algo anda mal es que
+// deja de cambiar. Esto lo hace explícito en vez de exigir que alguien
+// note "che, esto no varía desde ayer".
+const FRESHNESS_WARN_MINUTES = 20;   // 2x el intervalo esperado del cron
+const FRESHNESS_FAIL_MINUTES = 60;   // 6x — casi seguro que el cron dejó de correr
+
+function freshnessState(ts) {
+  if (!ts) return { minutes: null, text: "Sin datos", tone: "" };
+  const minutes = (Date.now() / 1000 - ts) / 60;
+  if (minutes >= FRESHNESS_FAIL_MINUTES) {
+    return { minutes, text: `Sin actualizar hace ${Math.round(minutes)} min — revisá el cron`, tone: "fail" };
+  }
+  if (minutes >= FRESHNESS_WARN_MINUTES) {
+    return { minutes, text: `Desactualizado (${Math.round(minutes)} min)`, tone: "warn" };
+  }
+  return { minutes, text: minutes < 1 ? "Al día" : `Hace ${Math.round(minutes)} min`, tone: "ok" };
 }
 
 // Insignia "(?)" con una explicación corta al pasar el mouse o al tocarla
@@ -283,8 +306,9 @@ function IndicatorCard({ symbol, snapshot }) {
   }
   const isLong = snapshot.trend_bias === "LONG";
   const biasTone = isLong ? "ok" : "fail";
+  const freshness = freshnessState(snapshot.ts);
   return (
-    <div className="indicator-card">
+    <div className={`indicator-card ${freshness.tone === "fail" ? "stale-fail" : freshness.tone === "warn" ? "stale-warn" : ""}`}>
       <div className="indicator-header">
         <div className="indicator-symbol">{symbol}</div>
         <span className={`bias-badge ${biasTone}`}>{isLong ? "▲ Alcista" : "▼ Bajista"}</span>
@@ -316,7 +340,12 @@ function IndicatorCard({ symbol, snapshot }) {
           <div>{snapshot.volume_ratio !== null ? `${snapshot.volume_ratio.toFixed(2)}x` : "—"}</div>
         </div>
       </div>
-      <div className="indicator-ts">Actualizado: {new Date(snapshot.ts * 1000).toLocaleTimeString()}</div>
+      <div className="indicator-ts">
+        <span className={`freshness-dot ${freshness.tone}`} />
+        <span className={freshness.tone === "" ? "" : freshness.tone}>{freshness.text}</span>
+        <span className="indicator-ts-sep">·</span>
+        {new Date(snapshot.ts * 1000).toLocaleTimeString()}
+      </div>
     </div>
   );
 }
@@ -492,6 +521,51 @@ function Glossary() {
   );
 }
 
+// NUEVO: carrusel horizontal para las tarjetas de indicadores. Antes era
+// una grilla que en mobile terminaba siendo una lista vertical larga —
+// se vuelve incómodo apenas se agregan más símbolos en SYMBOLS (.env).
+// Es scroll nativo con snap (sin librerías), con puntos abajo que
+// muestran cuál tarjeta está a la vista y permiten saltar directo.
+function IndicatorCarousel({ symbols, indicatorsBySymbol }) {
+  const containerRef = useRef(null);
+  const [active, setActive] = useState(0);
+
+  function handleScroll() {
+    const el = containerRef.current;
+    if (!el || el.children.length === 0) return;
+    const cardWidth = el.children[0].offsetWidth + 12; // + gap
+    setActive(Math.round(el.scrollLeft / cardWidth));
+  }
+
+  function goTo(i) {
+    const el = containerRef.current;
+    if (!el || !el.children[i]) return;
+    el.children[i].scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+  }
+
+  return (
+    <div className="indicator-carousel">
+      <div className="indicator-carousel-track" ref={containerRef} onScroll={handleScroll}>
+        {symbols.map((symbol) => (
+          <IndicatorCard key={symbol} symbol={symbol} snapshot={indicatorsBySymbol[symbol]} />
+        ))}
+      </div>
+      {symbols.length > 1 && (
+        <div className="carousel-dots">
+          {symbols.map((symbol, i) => (
+            <button
+              key={symbol}
+              className={`carousel-dot ${i === active ? "active" : ""}`}
+              aria-label={`Ir a ${symbol}`}
+              onClick={() => goTo(i)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CriptoTab({ data }) {
   const indicatorsBySymbol = Object.fromEntries((data.indicators || []).map((s) => [s.symbol, s]));
   // Símbolos a mostrar: unión de lo configurado (inferido de los snapshots
@@ -500,6 +574,10 @@ function CriptoTab({ data }) {
   const symbols = Array.from(
     new Set([...(data.indicators || []).map((s) => s.symbol), ...data.decisions.map((d) => d.symbol)])
   );
+  const staleSymbols = symbols.filter((s) => {
+    const f = freshnessState(indicatorsBySymbol[s]?.ts);
+    return f.tone === "warn" || f.tone === "fail";
+  });
 
   return (
     <>
@@ -508,12 +586,13 @@ function CriptoTab({ data }) {
       <div className="card">
         <h2>Indicadores en vivo</h2>
         <p className="card-subtitle">Cómo está el mercado ahora mismo para cada símbolo que sigue el bot — no implica que vaya a operar.</p>
-        {symbols.length > 0 ? (
-          <div className="indicator-grid">
-            {symbols.map((symbol) => (
-              <IndicatorCard key={symbol} symbol={symbol} snapshot={indicatorsBySymbol[symbol]} />
-            ))}
+        {staleSymbols.length > 0 && (
+          <div className="stale-banner">
+            ⚠ {staleSymbols.join(", ")} no se {staleSymbols.length > 1 ? "actualizan" : "actualiza"} desde hace rato — puede que el cron externo no esté corriendo.
           </div>
+        )}
+        {symbols.length > 0 ? (
+          <IndicatorCarousel symbols={symbols} indicatorsBySymbol={indicatorsBySymbol} />
         ) : (
           <p className="empty">
             Esperando el primer ciclo exitoso — las tarjetas aparecen solas apenas se guarde el primer snapshot.
