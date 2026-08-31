@@ -96,9 +96,13 @@ def run_cycle():
     plan = compute_plan(best_signal, risk_report, config)
 
     if not config.LIVE_TRADING:
+        # Mismo fix que app.py: mensaje simétrico con el de cierre (✅/🛑
+        # Posición cerrada) en vez de leerse como un memo de decisión pendiente.
         notifier.send_message(
-            build_memo_markdown(best_symbol, best_signal, risk_report, plan)
-            + "\n\n_(modo papel — no se ejecutó nada real)_"
+            f"\U0001F4C8 *Posición abierta (papel)* — {best_symbol}\n\n"
+            + build_memo_markdown(best_symbol, best_signal, risk_report, plan)
+            + "\n\n_(modo papel — no se ejecutó nada real, pero queda registrada "
+              "y se va a monitorear hasta que toque target o stop)_"
         )
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         # Antes no se llamaba acá — la señal quedaba en el memo de Telegram
