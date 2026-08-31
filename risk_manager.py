@@ -21,6 +21,29 @@ def adaptive_atr_stop_mult(config, volatility_pct):
     return max(config.ATR_STOP_MULT_MIN, min(config.ATR_STOP_MULT_MAX, mult))
 
 
+def format_blocked_message(symbol, signal, failed_checks):
+    """
+    Arma el mensaje de Telegram para una señal bloqueada por riesgo.
+    Antes era una sola línea con todos los checks fallidos pegados por
+    coma (`', '.join(failed)`) — ilegible en el celular apenas fallaba más
+    de un check, y sin contexto de la señal (había que scrollear al mensaje
+    anterior de "Señal detectada" para ver dirección/confianza/precio).
+    Ahora: un check fallido por línea, más el contexto de la señal arriba.
+    Centralizado acá porque los tres entrypoints (app.py, main.py,
+    api/cycle.py) mandaban este mensaje por separado con el mismo texto.
+    """
+    stars = "★" * signal.get("confidence", 0)
+    price = signal.get("price")
+    price_str = f"{price:,.6g}" if isinstance(price, (int, float)) else "—"
+    lines = [
+        f"\u26D4 *{symbol} bloqueado por riesgo*",
+        f"{signal.get('type', '—')} · {signal.get('direction', '—')} · Confianza {stars or '—'} · Precio {price_str}",
+        "",
+    ]
+    lines.extend(f"\u2715 {label}" for label in failed_checks)
+    return "\n".join(lines)
+
+
 class RiskManager:
     def __init__(self, config, db):
         self.config = config
@@ -59,11 +82,16 @@ class RiskManager:
         exposure_pct = self.db.current_exposure_pct(equity)
         vol_pct = signal["volatility"] * 100
         
+        # NUEVO: las etiquetas ahora incluyen el valor actual, no solo el
+        # umbral — antes decían por ejemplo "Exposición < 20%" tanto si
+        # pasaba como si fallaba, así que un check bloqueado no decía por
+        # cuánto se pasó (¿19.9% o 45%?). Eso obligaba a ir a mirar los
+        # campos sueltos de risk_report en vez de leer el motivo solo.
         checks = [
             {"label": "Tamaño de posición calculable", "ok": stop_distance > 0 and position_size > 0},
-            {"label": f"Exposición < {self.config.MAX_EXPOSURE_PCT}%", "ok": exposure_pct < self.config.MAX_EXPOSURE_PCT},
-            {"label": f"Drawdown < {self.config.MAX_DRAWDOWN_PCT}%", "ok": dd_pct < self.config.MAX_DRAWDOWN_PCT},
-            {"label": f"Volatilidad < {self.config.MAX_VOLATILITY_PCT}%", "ok": vol_pct < self.config.MAX_VOLATILITY_PCT},
+            {"label": f"Exposición: {exposure_pct:.1f}% < {self.config.MAX_EXPOSURE_PCT}%", "ok": exposure_pct < self.config.MAX_EXPOSURE_PCT},
+            {"label": f"Drawdown: {dd_pct:.1f}% < {self.config.MAX_DRAWDOWN_PCT}%", "ok": dd_pct < self.config.MAX_DRAWDOWN_PCT},
+            {"label": f"Volatilidad: {vol_pct:.2f}% < {self.config.MAX_VOLATILITY_PCT}%", "ok": vol_pct < self.config.MAX_VOLATILITY_PCT},
             {"label": "Sistema no detenido por circuit breaker", "ok": not self.is_halted()},
         ]
         
@@ -75,7 +103,7 @@ class RiskManager:
         # nunca bloqueó nada; ver el fix en app.py que ahora sí lo trae.)
         if ticker and "bid" in ticker and "ask" in ticker and ticker["bid"] > 0:
             spread_pct = ((ticker["ask"] - ticker["bid"]) / ticker["bid"]) * 100
-            checks.append({"label": f"Spread < {self.config.MAX_SPREAD_PCT}%", "ok": spread_pct < self.config.MAX_SPREAD_PCT})
+            checks.append({"label": f"Spread: {spread_pct:.2f}% < {self.config.MAX_SPREAD_PCT}%", "ok": spread_pct < self.config.MAX_SPREAD_PCT})
         else:
             checks.append({"label": "Spread (datos no disponibles — bloqueado por seguridad)", "ok": False})
 
@@ -85,7 +113,7 @@ class RiskManager:
         # diversificada. Ver MAX_CORRELATED_POSITIONS en config.py.
         correlated_count = self.db.count_open_trades_by_direction(signal["direction"])
         checks.append({
-            "label": f"Posiciones correlacionadas ({signal['direction']}) < {self.config.MAX_CORRELATED_POSITIONS}",
+            "label": f"Posiciones correlacionadas ({signal['direction']}): {correlated_count} < {self.config.MAX_CORRELATED_POSITIONS}",
             "ok": correlated_count < self.config.MAX_CORRELATED_POSITIONS,
         })
 
