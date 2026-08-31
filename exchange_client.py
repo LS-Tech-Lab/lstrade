@@ -14,6 +14,10 @@ class ExchangeClient:
             "apiKey": config.API_KEY,
             "secret": config.API_SECRET,
             "enableRateLimit": True,
+            # NUEVO: sin esto, ccxt espera hasta su default (10s) por cada
+            # request HTTP — ver el comentario largo en config.py
+            # (EXCHANGE_TIMEOUT_MS) sobre por qué eso importa en serverless.
+            "timeout": config.EXCHANGE_TIMEOUT_MS,
             # NUEVO: ccxt llama automáticamente a fetch_currencies() dentro
             # de load_markets() (que a su vez dispara fetch_ohlcv() en el
             # primer uso) CUANDO hay API keys configuradas — sin importar
