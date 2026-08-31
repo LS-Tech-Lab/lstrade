@@ -37,7 +37,7 @@ def handle_update(update):
         notifier.answer_callback(cq["id"], "Acción no reconocida")
         return {"status": "ignored"}
 
-    pending = db.get_pending_decision(message_id)
+    pending = db.claim_pending_decision(message_id)
     if not pending:
         notifier.answer_callback(cq["id"], "Esta decisión ya fue resuelta o expiró")
         return {"status": "not_found"}
@@ -60,7 +60,6 @@ def handle_update(update):
         notifier.answer_callback(cq["id"], "Rechazado")
 
     db.log_decision(symbol, signal, risk_report, plan, decision, order_detail)
-    db.resolve_pending_decision(message_id)
     return {"status": "resolved", "decision": decision, "symbol": symbol}
 
 
