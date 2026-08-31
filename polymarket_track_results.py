@@ -48,7 +48,8 @@ def check_open_signals(db, client, notifier):
 
         outcome = "target" if hit_target else "stop"
         exit_price = sig["target"] if hit_target else sig["stop"]
-        db.resolve_polymarket_signal(sig["id"], exit_price, outcome)
+        if not db.resolve_polymarket_signal(sig["id"], exit_price, outcome):
+            continue  # otra invocación ya la había resuelto
 
         emoji = "✅" if outcome == "target" else "🛑"
         log.info(f"[{outcome.upper()}] {sig['question'][:60]} ({sig['direction']})")
