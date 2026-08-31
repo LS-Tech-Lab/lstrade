@@ -87,6 +87,28 @@ class Database:
             momentum REAL,
             trend_align REAL,
             trend_bias TEXT)""")
+
+        # NUEVO: señales de clima con la probabilidad estimada por el modelo,
+        # para poder medir después (weather_track_results.py) si esa
+        # probabilidad estuvo bien calibrada contra lo que realmente pasó —
+        # antes no había ningún registro, solo deduplicación de avisos
+        # (WeatherNotifyStateStore), así que no había forma de saber si el
+        # modelo de clima acierta lo que dice acertar.
+        c.execute("""CREATE TABLE IF NOT EXISTS weather_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            condition_id TEXT NOT NULL,
+            question TEXT,
+            event_title TEXT,
+            station_icao TEXT,
+            my_prob REAL NOT NULL,
+            market_price REAL NOT NULL,
+            ev REAL,
+            center_estimate_f REAL,
+            sigma REAL,
+            yes_token_id TEXT,
+            ts_signaled REAL NOT NULL,
+            outcome TEXT,
+            ts_resolved REAL)""")
         self.conn.commit()
 
     def record_equity(self, equity):
@@ -339,3 +361,66 @@ class Database:
             "expectancy_r": sum(r["r_multiple"] for r in rows) / n,
             "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
         }
+
+    # NUEVO: Tracking de resultados de señales de clima (calibración)
+    def record_weather_signal(self, condition_id, question, event_title, station_icao,
+                               my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id):
+        self.conn.execute(
+            """INSERT INTO weather_signals
+            (condition_id, question, event_title, station_icao, my_prob, market_price,
+             ev, center_estimate_f, sigma, yes_token_id, ts_signaled)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (condition_id, question, event_title, station_icao, my_prob, market_price,
+             ev, center_estimate_f, sigma, yes_token_id, time.time())
+        )
+        self.conn.commit()
+
+    def get_open_weather_signals(self):
+        return self.conn.execute(
+            "SELECT * FROM weather_signals WHERE outcome IS NULL"
+        ).fetchall()
+
+    def resolve_weather_signal(self, signal_id, outcome):
+        self.conn.execute(
+            "UPDATE weather_signals SET outcome=?, ts_resolved=? WHERE id=?",
+            (outcome, time.time(), signal_id)
+        )
+        self.conn.commit()
+
+    def weather_calibration_summary(self, bucket_size=0.1):
+        """
+        Brier score y calibración por rango de probabilidad predicha sobre
+        las señales de clima ya resueltas — responde la pregunta que antes
+        no se podía responder: "cuando el modelo dice 65%, ¿de verdad
+        acierta cerca del 65% de las veces?". Un Brier score de 0 es
+        predicción perfecta; 0.25 es equivalente a tirar una moneda siempre
+        con 50%; más de 0.25 es peor que no tener modelo.
+        """
+        rows = self.conn.execute(
+            "SELECT my_prob, outcome FROM weather_signals WHERE outcome IS NOT NULL"
+        ).fetchall()
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "brier_score": None, "buckets": []}
+
+        buckets = {}
+        brier_sum = 0.0
+        for r in rows:
+            actual = 1.0 if r["outcome"] == "yes" else 0.0
+            brier_sum += (r["my_prob"] - actual) ** 2
+            key = min(int(r["my_prob"] / bucket_size), int(1 / bucket_size) - 1)
+            b = buckets.setdefault(key, {"predicted": [], "actual": []})
+            b["predicted"].append(r["my_prob"])
+            b["actual"].append(actual)
+
+        bucket_rows = []
+        for key in sorted(buckets):
+            b = buckets[key]
+            bucket_rows.append({
+                "range": f"{key*bucket_size*100:.0f}-{(key+1)*bucket_size*100:.0f}%",
+                "n": len(b["predicted"]),
+                "avg_predicted": sum(b["predicted"]) / len(b["predicted"]),
+                "actual_freq": sum(b["actual"]) / len(b["actual"]),
+            })
+
+        return {"n": n, "brier_score": brier_sum / n, "buckets": bucket_rows}
