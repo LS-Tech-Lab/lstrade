@@ -178,6 +178,17 @@ class Database:
         ).fetchone()
         return row["n"] if row else 0
 
+    def has_open_trade_for_symbol(self, symbol):
+        """
+        FIX: paridad con supabase_db.py — ver docstring allá. Sin esto no
+        había forma de detectar que un mismo símbolo ya tenía una posición
+        abierta antes de abrir otra encima en el siguiente escaneo.
+        """
+        row = self.conn.execute(
+            "SELECT COUNT(*) as n FROM open_trades WHERE symbol = ?", (symbol,)
+        ).fetchone()
+        return bool(row and row["n"] > 0)
+
     def update_trade_stop(self, trade_id, new_stop_price, new_order_id=None):
         # NUEVO: `new_order_id` opcional — antes esto solo actualizaba el
         # precio del stop, nunca el order_id de la orden real que lo
