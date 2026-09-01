@@ -127,6 +127,17 @@ class Config:
     # POLYMARKET_STOP_VOL_MULT en su momento — punto de partida.
     WEATHER_MIN_EV = _float("WEATHER_MIN_EV", 0.15)
 
+    # Piso de precio de mercado para considerar una señal operable (hallazgo
+    # 01/09/2026: EV = mi_prob/precio - 1 se dispara a miles de % cuando el
+    # precio está pegado al piso de Polymarket, ej. $0.0005 — no porque haya
+    # ventaja real, sino porque dividir por casi-cero infla cualquier
+    # probabilidad, por chica que sea. Un bucket tan "muerto" para el
+    # mercado normalmente tampoco tiene book real detrás. Se descarta como
+    # candidato a mejor señal (best_trade) por debajo de este precio, aunque
+    # sigue apareciendo en el detalle de buckets del reporte para
+    # referencia.
+    WEATHER_MIN_PRICE = _float("WEATHER_MIN_PRICE", 0.01)
+
     # Desvío estándar base (°F) para repartir la masa de probabilidad entre
     # buckets adyacentes — punto de partida de la skill wu-airport-weather
     # ("normalmente ±1-2°F"). Ajustable sin tocar código a medida que se
