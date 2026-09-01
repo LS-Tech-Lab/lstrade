@@ -88,6 +88,23 @@ class PolymarketClient:
             log.warning(f"Error fetching price history: {e}")
             return []
 
+        def fetch_market_by_condition_id(self, condition_id, timeout=15):
+        """Semana 3: Obtiene los datos actuales de un mercado específico para validar su liquidez."""
+        try:
+            resp = self.session.get(
+                f"{GAMMA_API}/markets",
+                params={"condition_id": condition_id, "limit": 1},
+                timeout=timeout
+            )
+            resp.raise_for_status()
+            markets = resp.json()
+            if markets:
+                return self.parse_market_for_analysis(markets[0])
+            return None
+        except Exception as e:
+            log.warning(f"Error fetching market by condition_id {condition_id}: {e}")
+            return None
+
     def fetch_weather_events(self, limit=20, timeout=15, max_pages=6, page_size=100,
                               time_budget_seconds=None):
         """
