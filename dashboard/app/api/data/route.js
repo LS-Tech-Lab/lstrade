@@ -78,6 +78,38 @@ function computePolymarketStatsByCategory(resolvedSignals) {
   return result;
 }
 
+// NUEVO: stats de Clima. A diferencia de Polymarket genérico, acá no hay
+// entry/target/stop — weather_signal_engine.py siempre evalúa comprar el
+// lado YES de un bucket de temperatura (ver el comentario largo en
+// api/weather_track_results.py), así que el retorno se simula como una
+// apuesta de $1 nocional a YES al precio de mercado del momento de la
+// señal: si resuelve 'yes' se cobra $1 (ganancia = 1/precio - 1), si
+// resuelve 'no' se pierde el 100% de lo apostado.
+// Se suma el Brier score porque es la métrica estándar para medir qué tan
+// calibrada está una probabilidad estimada contra el resultado real — la
+// tabla weather_signals se diseñó justo para esto (ver el comentario en
+// schema.sql), pero hasta ahora nada lo calculaba.
+function weatherReturnPct(row) {
+  if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
+  return row.outcome === "yes" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+}
+
+function computeWeatherStats(resolvedSignals) {
+  const valid = (resolvedSignals || []).filter((r) => r.outcome && r.market_price > 0);
+  if (valid.length === 0) return { n: 0, win_rate: null, avg_return_pct: null, brier_score: null };
+  const wins = valid.filter((r) => r.outcome === "yes");
+  const returns = valid.map(weatherReturnPct).filter((r) => r !== null);
+  const brierTerms = valid
+    .filter((r) => r.my_prob !== null && r.my_prob !== undefined)
+    .map((r) => Math.pow(r.my_prob - (r.outcome === "yes" ? 1 : 0), 2));
+  return {
+    n: valid.length,
+    win_rate: (wins.length / valid.length) * 100,
+    avg_return_pct: returns.length > 0 ? returns.reduce((s, r) => s + r, 0) / returns.length : null,
+    brier_score: brierTerms.length > 0 ? brierTerms.reduce((s, b) => s + b, 0) / brierTerms.length : null,
+  };
+}
+
 export async function GET() {
   try {
     const supabase = getClient();
@@ -92,6 +124,8 @@ export async function GET() {
       polymarketOpenRes,
       polymarketResolvedRes,
       indicatorsRes,
+      weatherOpenRes,
+      weatherResolvedRes,
     ] = await Promise.all([
       supabase.from("equity_history").select("ts,equity").order("ts", { ascending: true }).limit(200),
       supabase.from("decisions").select("*").order("ts", { ascending: false }).limit(30),
@@ -109,6 +143,11 @@ export async function GET() {
       // indicator_snapshots en schema.sql) — antes el dashboard solo podía
       // mostrar RSI/tendencia en los raros ciclos donde hubo señal real.
       supabase.from("indicator_snapshots").select("*").order("ts", { ascending: false }).limit(200),
+      // NUEVO: señales de Clima — corrían y se guardaban en weather_signals
+      // desde hace rato, pero el dashboard nunca las consultaba (a
+      // diferencia de Cripto y Polymarket, Clima no tenía ningún tab).
+      supabase.from("weather_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }),
+      supabase.from("weather_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
     ]);
 
     const firstError = [equityRes, decisionsRes, stateRes, pendingRes].find((r) => r.error)?.error;
@@ -126,6 +165,7 @@ export async function GET() {
     }
 
     const resolvedSignals = polymarketResolvedRes.error ? [] : (polymarketResolvedRes.data || []);
+    const weatherResolved = weatherResolvedRes.error ? [] : (weatherResolvedRes.data || []);
 
     return NextResponse.json({
       equity: equityRes.data || [],
@@ -144,6 +184,10 @@ export async function GET() {
       polymarket_open: polymarketOpenRes.error ? [] : (polymarketOpenRes.data || []),
       polymarket_resolved: resolvedSignals.slice(0, 20),
       indicators: indicatorsRes.error ? [] : Object.values(latestIndicatorsBySymbol),
+      weather_open: weatherOpenRes.error ? [] : (weatherOpenRes.data || []),
+      weather_resolved: weatherResolved.slice(0, 20),
+      weather_stats: weatherResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
+        : computeWeatherStats(weatherResolved),
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
