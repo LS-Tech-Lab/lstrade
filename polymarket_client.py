@@ -88,7 +88,7 @@ class PolymarketClient:
             log.warning(f"Error fetching price history: {e}")
             return []
 
-        def fetch_market_by_condition_id(self, condition_id, timeout=15):
+    def fetch_market_by_condition_id(self, condition_id, timeout=15):
         """Semana 3: Obtiene los datos actuales de un mercado específico para validar su liquidez."""
         try:
             resp = self.session.get(
