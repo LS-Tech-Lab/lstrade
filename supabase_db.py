@@ -1,26 +1,30 @@
 """
 Persistencia en Supabase (Postgres vía su API REST), para el modo serverless
-en Vercel. Misma interfaz que db.py (SQLite, modo VPS) más el manejo de
-decisiones pendientes de aprobación por Telegram.
+en Vercel. Misma interfaz que db.py (SQLite, modo VPS).
 """
-import time
 import json
+from datetime import datetime, timezone
 from supabase import create_client
+
+def _now_iso():
+    """Semana 3: Timestamps ISO 8601 nativos de PostgreSQL (timestamptz)."""
+    return datetime.now(timezone.utc).isoformat()
 
 class SupabaseDatabase:
     def __init__(self, url, key):
         self.client = create_client(url, key)
 
     def record_equity(self, equity):
-        self.client.table("equity_history").insert({"ts": time.time(), "equity": equity}).execute()
+        self.client.table("equity_history").insert({"ts": _now_iso(), "equity": equity}).execute()
 
     def peak_equity(self):
         res = self.client.table("equity_history").select("equity").order("equity", desc=True).limit(1).execute()
         return res.data[0]["equity"] if res.data else None
 
     def current_exposure_pct(self, equity):
-        cutoff = time.time() - 24 * 3600
-        res = self.client.table("decisions").select("plan_detail").in_("decision", ["approved", "auto_executed"]).gt("ts", cutoff).execute()
+        # Para consultas de tiempo en timestamptz, usamos el formato ISO de hace 24h
+        cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        res = self.client.table("decisions").select("plan_detail").in_("decision", ["approved", "auto_executed"]).gte("ts", cutoff).execute()
         total_risk = sum((row.get("plan_detail") or {}).get("risk_amount", 0.0) for row in res.data or [])
         return (total_risk / equity) * 100 if equity > 0 else 0.0
 
@@ -33,7 +37,7 @@ class SupabaseDatabase:
 
     def log_decision(self, symbol, signal, risk_report, plan, decision, order_detail=None):
         self.client.table("decisions").insert({
-            "ts": time.time(), "symbol": symbol,
+            "ts": _now_iso(), "symbol": symbol,
             "signal_type": signal.get("type") if signal else None,
             "direction": signal.get("direction") if signal else None,
             "confidence": signal.get("confidence") if signal else None,
@@ -46,7 +50,7 @@ class SupabaseDatabase:
 
     def record_indicator_snapshot(self, symbol, snapshot):
         self.client.table("indicator_snapshots").insert({
-            "symbol": symbol, "ts": time.time(), "price": snapshot.get("price"), "rsi": snapshot.get("rsi"),
+            "symbol": symbol, "ts": _now_iso(), "price": snapshot.get("price"), "rsi": snapshot.get("rsi"),
             "atr_pct": snapshot.get("atr_pct"), "volume_ratio": snapshot.get("volume_ratio"),
             "volatility": snapshot.get("volatility"), "momentum": snapshot.get("momentum"),
             "trend_align": snapshot.get("trend_align"), "trend_bias": snapshot.get("trend_bias"),
@@ -69,7 +73,7 @@ class SupabaseDatabase:
         self.client.table("open_trades").insert({
             "symbol": symbol, "direction": direction, "entry_price": entry_price, "current_stop": stop_price,
             "target_price": target_price, "position_size": position_size, "order_id": order_id,
-            "ts_opened": time.time(), "stop_distance": stop_distance,
+            "ts_opened": _now_iso(), "stop_distance": stop_distance,
         }).execute()
 
     def close_trade_with_outcome(self, trade, exit_price, outcome):
@@ -80,7 +84,7 @@ class SupabaseDatabase:
         r_multiple = ((exit_price - entry) / stop_distance) * (1 if direction == "LONG" else -1) if stop_distance else None
         self.client.table("closed_trades").insert({
             "symbol": trade["symbol"], "direction": direction, "entry_price": entry, "exit_price": exit_price,
-            "outcome": outcome, "r_multiple": r_multiple, "ts_opened": trade["ts_opened"], "ts_closed": time.time(),
+            "outcome": outcome, "r_multiple": r_multiple, "ts_opened": trade["ts_opened"], "ts_closed": _now_iso(),
         }).execute()
         return r_multiple
 
@@ -98,13 +102,13 @@ class SupabaseDatabase:
         return {"n": n, "win_rate": len(wins) / n * 100, "expectancy_r": sum(r["r_multiple"] for r in rows) / n, "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None}
 
     def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop):
-        self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "ts_signaled": time.time()}).execute()
+        self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "ts_signaled": _now_iso()}).execute()
 
     def get_open_polymarket_signals(self):
         return self.client.table("polymarket_signals").select("*").is_("outcome", "null").execute().data or []
 
     def resolve_polymarket_signal(self, signal_id, exit_price, outcome):
-        res = self.client.table("polymarket_signals").update({"outcome": outcome, "exit_price": exit_price, "ts_resolved": time.time()}).eq("id", signal_id).is_("outcome", "null").execute()
+        res = self.client.table("polymarket_signals").update({"outcome": outcome, "exit_price": exit_price, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
         return bool(res.data)
 
     def polymarket_stats_summary(self):
@@ -122,13 +126,13 @@ class SupabaseDatabase:
         return {"n": n, "win_rate": wins / n * 100, "expectancy_r": sum(r_multiples) / len(r_multiples) if r_multiples else None}
 
     def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id):
-        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "ts_signaled": time.time()}).execute()
+        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "ts_signaled": _now_iso()}).execute()
 
     def get_open_weather_signals(self):
         return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
 
     def resolve_weather_signal(self, signal_id, outcome):
-        res = self.client.table("weather_signals").update({"outcome": outcome, "ts_resolved": time.time()}).eq("id", signal_id).is_("outcome", "null").execute()
+        res = self.client.table("weather_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
         return bool(res.data)
 
     def weather_calibration_summary(self, bucket_size=0.1):
@@ -145,7 +149,6 @@ class SupabaseDatabase:
         bucket_rows = [{"range": f"{k*bucket_size*100:.0f}-{(k+1)*bucket_size*100:.0f}%", "n": len(b["predicted"]), "avg_predicted": sum(b["predicted"])/len(b["predicted"]), "actual_freq": sum(b["actual"])/len(b["actual"])} for k, b in sorted(buckets.items())]
         return {"n": n, "brier_score": brier_sum / n, "buckets": bucket_rows}
 
-    # --- NUEVO: Deduplicación de Polymarket para Serverless (Semana 1) ---
     def should_notify_polymarket(self, condition_id, direction, score, resend_cooldown_hours=6.0, min_score_increase_pct=0.20):
         prev_str = self.get_state(f"poly_notify_{condition_id}")
         if prev_str is None: return True
@@ -153,25 +156,37 @@ class SupabaseDatabase:
             prev = json.loads(prev_str)
         except (json.JSONDecodeError, TypeError):
             return True
-        if (time.time() - prev.get("ts", 0)) >= resend_cooldown_hours * 3600: return True
+        # Para compatibilidad con timestamps antiguos (float) y nuevos (ISO)
+        prev_ts = prev.get("ts", 0)
+        if isinstance(prev_ts, str):
+            from datetime import datetime
+            prev_ts = datetime.fromisoformat(prev_ts.replace('Z', '+00:00')).timestamp()
+        if (time.time() - prev_ts) >= resend_cooldown_hours * 3600: return True
         if prev.get("direction") != direction: return True
         prev_score = prev.get("score", 0) or 0
         if prev_score > 0 and score >= prev_score * (1 + min_score_increase_pct): return True
         return False
 
     def record_notified_polymarket(self, condition_id, direction, score):
-        self.set_state(f"poly_notify_{condition_id}", json.dumps({"ts": time.time(), "direction": direction, "score": score}))
+        self.set_state(f"poly_notify_{condition_id}", json.dumps({"ts": _now_iso(), "direction": direction, "score": score}))
 
     def create_pending_decision(self, message_id, symbol, signal, risk_report, plan):
-        self.client.table("pending_decisions").insert({"message_id": message_id, "ts": time.time(), "symbol": symbol, "signal": signal, "risk_report": risk_report, "plan": plan, "resolved": False}).execute()
+        self.client.table("pending_decisions").insert({"message_id": message_id, "ts": _now_iso(), "symbol": symbol, "signal": signal, "risk_report": risk_report, "plan": plan, "resolved": False}).execute()
 
     def get_pending_decision(self, message_id):
         res = self.client.table("pending_decisions").select("*").eq("message_id", message_id).eq("resolved", False).execute()
         return res.data[0] if res.data else None
 
     def expire_stale_pending_decisions(self, older_than_seconds):
-        cutoff = time.time() - older_than_seconds
-        return self.client.table("pending_decisions").update({"resolved": True}).eq("resolved", False).lt("ts", cutoff).execute().data or []
+        cutoff = datetime.now(timezone.utc).timestamp() - older_than_seconds
+        # Para compatibilidad con timestamptz, usamos lt con el timestamp convertido o manejamos en Python
+        # Supabase py permite comparar con strings ISO, pero para simplificar usamos el enfoque de obtener y filtrar
+        res = self.client.table("pending_decisions").select("*").eq("resolved", False).execute()
+        to_expire = [r["message_id"] for r in (res.data or []) if (datetime.fromisoformat(r["ts"].replace('Z', '+00:00')).timestamp() if isinstance(r["ts"], str) else r["ts"]) < cutoff]
+        if to_expire:
+            self.client.table("pending_decisions").update({"resolved": True}).in_("message_id", to_expire).execute()
+            return [r for r in (res.data or []) if r["message_id"] in to_expire]
+        return []
 
     def claim_pending_decision(self, message_id):
         res = self.client.table("pending_decisions").update({"resolved": True}).eq("message_id", message_id).eq("resolved", False).execute()
