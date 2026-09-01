@@ -54,6 +54,29 @@ def handle_update(update):
         order_detail = executor.execute(symbol, plan)
         notifier.answer_callback(cq["id"], "Orden ejecutada")
         notifier.send_message(f"\u2705 Orden ejecutada en {symbol}: {order_detail.get('status')}")
+
+        # FIX: portado de app.py (ver comentario ahí) — sin esto la orden se
+        # ejecuta de verdad en el exchange pero nunca llega a open_trades,
+        # así que api/manage_positions.py no la ve (no la gestiona ni la
+        # cierra nunca), y el chequeo de risk_manager.has_open_trade_for_symbol
+        # tampoco la ve — dejando la puerta abierta a duplicar la misma
+        # posición real en el siguiente escaneo.
+        if order_detail.get("status") in ("filled", "simulated"):
+            stop_order = order_detail.get("stop_order")
+            order_id = (
+                stop_order.get("id") if isinstance(stop_order, dict)
+                else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+            )
+            db.add_open_trade(
+                symbol, signal["direction"], plan["entry"], plan["stop"],
+                plan["target"], plan["position_size"], order_id,
+            )
+            if order_detail.get("stop_order_error"):
+                notifier.send_message(
+                    f"\u26A0\uFE0F {symbol}: la entrada se ejecutó pero el STOP-LOSS real "
+                    f"NO se pudo colocar en el exchange ({order_detail['stop_order_error']}) — "
+                    f"revisar la posición a mano."
+                )
     elif decision == "watchlist":
         notifier.answer_callback(cq["id"], "Agregado a watchlist")
     else:
