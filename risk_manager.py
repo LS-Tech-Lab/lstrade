@@ -117,6 +117,20 @@ class RiskManager:
             "ok": correlated_count < self.config.MAX_CORRELATED_POSITIONS,
         })
 
+        # FIX: faltaba bloquear señales repetidas del MISMO símbolo. El check
+        # de arriba solo cuenta el total de posiciones por dirección, así que
+        # dejaba abrir el mismo símbolo 2-3 veces seguidas (una por cada
+        # escaneo donde la señal seguía activa) antes de que
+        # MAX_CORRELATED_POSITIONS recién ahí bloqueara por volumen, no por
+        # duplicado. Este check es independiente del de correlación: aunque
+        # todavía quede margen de posiciones correlacionadas, una señal sobre
+        # un símbolo que ya tiene posición abierta se bloquea siempre.
+        already_open = self.db.has_open_trade_for_symbol(symbol)
+        checks.append({
+            "label": f"Sin posición abierta ya en {symbol}",
+            "ok": not already_open,
+        })
+
         overall_pass = all(c["ok"] for c in checks)
         return {
             "pass": overall_pass,
