@@ -128,8 +128,8 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     print_memo(best_symbol, best_signal, risk_report, plan)
 
     if not config.LIVE_TRADING:
-        # Mismo fix que app.py/api/cycle.py: mensaje simétrico con el de
-        # cierre en vez de leerse como un memo de decisión pendiente.
+        # Mismo fix que app.py (modo serverless): mensaje simétrico con el
+        # de cierre en vez de leerse como un memo de decisión pendiente.
         notifier.send_message(
             f"\U0001F4C8 *Posición abierta (papel)* — {best_symbol}\n\n"
             + build_memo_text(best_symbol, best_signal, risk_report, plan, markdown=True)

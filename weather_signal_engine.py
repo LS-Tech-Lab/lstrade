@@ -21,8 +21,8 @@ tiene sentido porque hay un humano revisando cada corrida.
 
 Este módulo es puro (sin I/O de Telegram/DB) salvo `WeatherNotifyStateStore`,
 que sí necesita persistencia mínima para deduplicar avisos entre ciclos.
-Los orquestadores (api/weather_cycle.py para serverless, weather_report.py
-para modo manual) importan de acá.
+Los orquestadores (run_weather_cycle() en app.py para serverless,
+weather_report.py para modo manual) importan de acá.
 """
 import logging
 import math

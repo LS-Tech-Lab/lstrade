@@ -105,8 +105,8 @@ class SupabaseDatabase:
     def count_open_trades_by_direction(self, direction):
         """
         Requerido por RiskManager.check() (exposición correlacionada) — sin
-        esto, api/cycle.py rompía al llamar risk_manager.check() en modo
-        serverless, porque este método no existía acá.
+        esto, run_cycle() en app.py rompía al llamar risk_manager.check()
+        en modo serverless, porque este método no existía acá.
         """
         res = (
             self.client.table("open_trades")
@@ -214,10 +214,10 @@ class SupabaseDatabase:
 
     def get_open_polymarket_signals(self):
         """
-        Faltaba en Supabase — sin esto, api/polymarket_track_results.py no
-        tenía forma de saber qué señales de Polymarket seguían pendientes
-        de resultado (existía la escritura vía record_polymarket_signal,
-        pero nunca la lectura del lado "abierto").
+        Faltaba en Supabase — sin esto, run_polymarket_resolve() en app.py
+        no tenía forma de saber qué señales de Polymarket seguían
+        pendientes de resultado (existía la escritura vía
+        record_polymarket_signal, pero nunca la lectura del lado "abierto").
         """
         res = self.client.table("polymarket_signals").select("*").is_("outcome", "null").execute()
         return res.data or []

@@ -105,8 +105,8 @@ class Config:
     # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
     # estimar la distribución de probabilidad de la máxima del día y
     # compararla contra los precios de los buckets de Polymarket. Corre
-    # separado del ciclo de precio/momentum (api/weather_cycle.py, propio
-    # cron externo) porque las llamadas de red que necesita (NWS points +
+    # separado del ciclo de precio/momentum (/api/weather_cycle en app.py,
+    # propio cron externo) porque las llamadas de red que necesita (NWS points +
     # forecast + METAR + TAF por evento) no entran cómodas en el
     # presupuesto de 10s del ciclo principal.
     WEATHER_ANALYSIS_ENABLED = _bool("WEATHER_ANALYSIS_ENABLED", True)

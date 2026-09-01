@@ -4,14 +4,14 @@ Entrypoint único de Vercel Functions (Python runtime 2026+).
 Vercel ya no soporta un archivo = una función por cada módulo dentro de
 `api/`; construye una sola Vercel Function a partir de UN entrypoint
 Python en la raíz (`app.py`, `index.py`, `main.py`, etc.) que exponga
-una variable `app` (ASGI/WSGI). Por eso los 9 endpoints que antes vivían
-como archivos separados en `api/` — cycle, manage_positions, polymarket_cycle,
-polymarket_resolve, polymarket_track_results, weather_cycle,
-weather_track_results, reset_halt y telegram_webhook — se consolidan acá en
-una sola app FastAPI, con las mismas rutas, misma lógica de negocio, misma
-auth y mismas respuestas que antes. Los archivos en `api/` siguen en el repo
-como referencia legible de la misma lógica en aislamiento, pero NO se
-despliegan — Vercel solo construye la función a partir de este archivo.
+una variable `app` (ASGI/WSGI). Por eso los 9 endpoints — cycle,
+manage_positions, polymarket_cycle, polymarket_resolve,
+polymarket_track_results, weather_cycle, weather_track_results,
+reset_halt y telegram_webhook — viven todos acá en una sola app FastAPI.
+La carpeta `api/` que existía como copia de referencia de cada endpoint
+por separado se eliminó del repo (nunca se desplegaba y había quedado
+desincronizada de la lógica real de acá); este archivo es ahora la
+única fuente de verdad.
 
 `main.py` (loop del bot en modo VPS) sigue excluido del build por
 `.vercelignore` — no es una app web y no expone `app`.
@@ -87,7 +87,7 @@ def _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots):
 
 # ────────────────────────────────────────────────────────────────────
 # /api/cycle — un ciclo de escaneo, disparado por cron externo
-# (ver api/cycle.py original / .github/workflows/trigger-cycle.yml)
+# (ver .github/workflows/trigger-cycle.yml)
 # ────────────────────────────────────────────────────────────────────
 
 def build_memo_markdown(symbol, signal, risk_report, plan):
@@ -237,7 +237,7 @@ def run_cycle():
         # aprobación pendiente, no como confirmación de que la posición ya
         # quedó abierta y en seguimiento. Ahora tiene el mismo formato
         # "evento" (emoji + título en negrita) que los mensajes de cierre
-        # (✅/🛑 Posición cerrada de api/manage_positions.py), para que
+        # (✅/🛑 Posición cerrada de /api/manage_positions más abajo), para que
         # abrir y cerrar se lean simétricos en el chat.
         notifier.send_message(
             f"\U0001F4C8 *Posición abierta (papel)* — {best_symbol}\n\n"
@@ -249,7 +249,7 @@ def run_cycle():
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         # Sin esto la señal quedaba en el memo de Telegram y en `decisions`,
         # pero nunca en `open_trades`, así que run_manage_positions() no
-        # tenía nada que cerrar ni medir (ver api/cycle.py, mismo fix).
+        # tenía nada que cerrar ni medir.
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
             plan["target"], plan["position_size"],
@@ -326,10 +326,7 @@ async def cycle_post(request: Request):
 # ────────────────────────────────────────────────────────────────────
 # /api/polymarket_cycle y /api/polymarket_resolve — mismo patrón que
 # /api/cycle de arriba, consolidados acá por la misma razón: Vercel solo
-# construye UNA función a partir de este archivo. api/polymarket_cycle.py
-# y api/polymarket_resolve.py en el repo son referencia legible de la
-# misma lógica, pero NO se despliegan — ver el aviso al inicio de esos
-# archivos.
+# construye UNA función a partir de este archivo.
 # ────────────────────────────────────────────────────────────────────
 
 def run_polymarket_cycle():
@@ -412,17 +409,14 @@ async def polymarket_resolve_post(request: Request):
 # ────────────────────────────────────────────────────────────────────
 # /api/polymarket_track_results — alias de /api/polymarket_resolve.
 #
-# api/polymarket_track_results.py (standalone, no desplegado) implementa
-# EXACTAMENTE la misma lógica que ya vive acá arriba bajo /api/polymarket_resolve
-# (mismo check_open_signals, mismo criterio de target/stop). No son dos
-# pasos distintos del pipeline: son el mismo paso con dos nombres, porque
-# el módulo se escribió dos veces en momentos distintos. Se deja este alias
-# — en vez de una implementación duplicada — para que la URL que ya tiene
-# cargada cron-job.org (VERCEL_POLYMARKET_TRACK_URL) siga funcionando sin
-# tener que tocar la config del cron externo. Si en algún momento se
-# confirma que ningún cron externo apunta ya a esta ruta, se puede borrar
-# este bloque + api/polymarket_track_results.py + trigger-polymarket-track.yml
-# y dejar solo /api/polymarket_resolve.
+# Es el mismo paso del pipeline con dos nombres (mismo check_open_signals,
+# mismo criterio de target/stop) — quedó duplicado porque se escribió dos
+# veces en momentos distintos. Se deja este alias en vez de unificar en
+# una sola ruta para que la URL que ya tiene cargada cron-job.org
+# (VERCEL_POLYMARKET_TRACK_URL) siga funcionando sin tocar la config del
+# cron externo. Si en algún momento se confirma que ningún cron externo
+# apunta ya a esta ruta, se puede borrar este bloque +
+# trigger-polymarket-track.yml y dejar solo /api/polymarket_resolve.
 # ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/polymarket_track_results")
@@ -437,9 +431,7 @@ async def polymarket_track_results_post(request: Request):
 
 # ────────────────────────────────────────────────────────────────────
 # /api/weather_cycle — mismo patrón que polymarket_cycle/polymarket_resolve
-# arriba: api/weather_cycle.py en el repo es referencia legible de la misma
-# lógica, pero NO se despliega (Vercel solo construye la función a partir
-# de este archivo). Corre el análisis de clima (weather_signal_engine.py)
+# arriba. Corre el análisis de clima (weather_signal_engine.py)
 # separado del ciclo de precio/momentum porque un evento de clima necesita
 # varias llamadas de red secuenciales (NWS points + forecast + METAR/TAF)
 # que no entran cómodas en el presupuesto de 10s del ciclo principal.
@@ -633,9 +625,7 @@ async def weather_track_results_post(request: Request):
 
 
 # ────────────────────────────────────────────────────────────────────
-# /api/manage_positions — mismo patrón que polymarket_resolve arriba:
-# api/manage_positions.py en el repo es referencia legible de la misma
-# lógica, pero NO se despliega (Vercel solo construye la función a partir
+# /api/manage_positions — mismo patrón que polymarket_resolve arriba, pero NO se despliega (Vercel solo construye la función a partir
 # de este archivo). Revisa las posiciones cripto abiertas en modo papel y,
 # si el precio actual ya tocó el target o el stop, las cierra y calcula el
 # resultado en R — sin este endpoint corriendo, run_cycle() puede seguir
@@ -742,7 +732,6 @@ async def manage_positions_post(request: Request):
 
 # ────────────────────────────────────────────────────────────────────
 # /api/reset_halt — reinicia manualmente el circuit breaker
-# (ver api/reset_halt.py original)
 # ────────────────────────────────────────────────────────────────────
 
 @app.post("/api/reset_halt")
@@ -764,7 +753,6 @@ async def reset_halt(request: Request):
 # ────────────────────────────────────────────────────────────────────
 # /api/telegram_webhook — resuelve tu click de Telegram (aprobar /
 # watchlist / rechazar) y ejecuta la orden real si corresponde
-# (ver api/telegram_webhook.py original)
 # ────────────────────────────────────────────────────────────────────
 
 DECISION_MAP = {"approve": "approved", "watchlist": "watchlist", "reject": "rejected"}

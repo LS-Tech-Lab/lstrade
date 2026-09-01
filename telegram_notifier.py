@@ -91,7 +91,7 @@ class TelegramNotifier:
         Variante NO bloqueante para entornos serverless (Vercel): manda el memo
         con botones y devuelve el message_id de inmediato, sin esperar respuesta.
         La resolución de la decisión la maneja después un webhook aparte
-        (ver api/telegram_webhook.py) cuando vos tocás un botón.
+        (/api/telegram_webhook en app.py) cuando vos tocás un botón.
         """
         if not self.enabled:
             return None

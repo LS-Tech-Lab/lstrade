@@ -237,8 +237,8 @@ usando el mismo historial que ya se descargaba para generar la señal.
    `/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_track_results`
    (alias de `polymarket_resolve`, ver tabla de Estructura), `/api/manage_positions`, `/api/weather_cycle`,
    `/api/reset_halt` y `/api/telegram_webhook`.
-   Los archivos en `api/*.py` **no se despliegan** — son referencia legible de la misma lógica, mantenida
-   ahí para que cada endpoint se pueda leer aislado sin scrollear todo `app.py`. Toda ruta nueva tiene que
+   Todo vive en `app.py` — no existe una carpeta `api/` separada con copias de cada endpoint (se eliminó
+   porque nunca se desplegaba y quedaba desincronizada de la lógica real). Toda ruta nueva tiene que
    agregarse como endpoint dentro de `app.py` o queda inalcanzable: Vercel la sirve, pero FastAPI le
    devuelve un 404 real (`{"detail":"Not Found"}`) porque nunca la registró — no un 401 de `CRON_SECRET`.
    Un 401 confirma que la ruta existe y pide auth; un 404 significa que falta agregarla a `app.py`.
@@ -372,7 +372,6 @@ de raíz sin depender de VPN en tu propia conexión.
 | `weather_report.py` | Modo manual del análisis de clima — reporte completo para correr vos mismo, sin tocar el ciclo automático |
 | `polymarket_categories.py` | Categorización compartida de mercados de Polymarket por keywords (usada en producción y en el backtest offline) |
 | `app.py` | **Único entrypoint real de Vercel** (FastAPI) — registra las 8 rutas serverless (`/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_track_results`, `/api/manage_positions`, `/api/weather_cycle`, `/api/reset_halt`, `/api/telegram_webhook`) y el heartbeat |
-| `api/*.py` | Referencia legible de cada endpoint — **no se despliegan**; la lógica real vive en `app.py` (ver sección "¿Se puede desplegar en Vercel?") |
 | `dashboard/` | Panel Next.js — bitácora, equity y estado del sistema |
 | `schema.sql` | Tablas de Supabase — correr una vez en el SQL Editor |
 | `deploy/trader-ia.service` | Unidad systemd para correrlo 24/7 en un VPS |
@@ -389,6 +388,20 @@ de raíz sin depender de VPN en tu propia conexión.
 
 ## Cambios recientes
 
+- **Corregido** (`risk_manager.py`, `db.py`, `supabase_db.py`): faltaba un chequeo de "¿ya hay una
+  posición abierta en este símbolo?" antes de abrir una nueva. El único guardrail existente
+  (`MAX_CORRELATED_POSITIONS`) contaba posiciones totales por dirección, sin importar el símbolo —
+  así que una señal que seguía activa en escaneos consecutivos podía abrir el mismo símbolo 2-3 veces
+  antes de que ese límite recién ahí bloqueara, por volumen, no por duplicado. Nuevo método
+  `has_open_trade_for_symbol()` en ambos backends de persistencia, y nuevo check independiente en
+  `risk_manager.check()` que bloquea siempre que el símbolo ya tenga posición abierta, sin importar
+  cuánto margen quede de posiciones correlacionadas.
+- **Eliminada** la carpeta `api/` — eran copias de referencia de cada endpoint (nunca se desplegaban,
+  ver el punto siguiente), y habían quedado desincronizadas de la lógica real en `app.py` en más de un
+  lugar (ej. el registro en `open_trades` tras una orden aprobada por Telegram, ya corregido en `app.py`
+  pero nunca portado a `api/telegram_webhook.py`). `app.py` es ahora la única fuente de verdad para los
+  8 endpoints serverless. `ci.yml` actualizado: se quitó el paso que compilaba `api/*.py` y se agregó
+  `app.py`/`supabase_db.py` al compile check general.
 - **Corregido** (`app.py`, `vercel.json`, `.github/workflows/ci.yml`): `/api/weather_cycle` y
   `/api/polymarket_track_results` estaban en `api/*.py`, en los workflows y en `vercel.json`, pero
   nunca se habían registrado como endpoint dentro de `app.py` — Vercel construye una sola función

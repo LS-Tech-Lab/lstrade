@@ -29,8 +29,8 @@ def format_blocked_message(symbol, signal, failed_checks):
     de un check, y sin contexto de la señal (había que scrollear al mensaje
     anterior de "Señal detectada" para ver dirección/confianza/precio).
     Ahora: un check fallido por línea, más el contexto de la señal arriba.
-    Centralizado acá porque los tres entrypoints (app.py, main.py,
-    api/cycle.py) mandaban este mensaje por separado con el mismo texto.
+    Centralizado acá porque los dos entrypoints (app.py y main.py)
+    mandaban este mensaje por separado con el mismo texto.
     """
     stars = "★" * signal.get("confidence", 0)
     price = signal.get("price")
