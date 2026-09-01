@@ -32,6 +32,7 @@ from signal_engine import compute_indicator_snapshot, generate_signal
 from risk_manager import RiskManager, format_blocked_message
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
+from position_manager import PositionManager
 from polymarket_client import PolymarketClient
 from polymarket_main import SupabaseNotifyStateAdapter, run_polymarket_cycle_serverless
 from polymarket_track_results import check_open_signals
@@ -103,6 +104,7 @@ def run_cycle():
     exchange_client = ExchangeClient(config)
     risk_manager = RiskManager(config, db)
     notifier = TelegramNotifier(config)
+    position_manager = PositionManager(config, db, exchange_client, notifier)
 
     # NUEVO (Semana 1): Health Check del Exchange antes de iniciar cualquier ciclo.
     # Si la API del exchange está caída, en mantenimiento o la clave fue revocada,
@@ -122,6 +124,16 @@ def run_cycle():
             db.set_state("halt_notified", "1")
             _touch_notification(db)
         return {"status": "halted", "reason": reason}
+
+    # FIX: acá faltaba gestionar las posiciones abiertas (Trailing Stop y
+    # detección de target/stop) — main.py (modo VPS) sí lo hacía, pero
+    # app.py (el entrypoint que realmente corre en Vercel vía cron-job.org)
+    # nunca importaba ni llamaba a PositionManager. Resultado real en la
+    # base de datos: open_trades acumulaba posiciones (incluso duplicadas
+    # del mismo símbolo) que nunca se cerraban, closed_trades se quedó en 0
+    # filas siempre, y no había forma de calcular win rate/expectancy real
+    # ni de mover el stop a breakeven/trailing en producción.
+    position_manager.manage_open_positions()
 
     if db.has_open_pending_decision():
         expired = db.expire_stale_pending_decisions(config.PENDING_DECISION_EXPIRY_SECONDS)
