@@ -125,7 +125,7 @@ class SupabaseDatabase:
             if r["outcome"] == "target": wins += 1
         return {"n": n, "win_rate": wins / n * 100, "expectancy_r": sum(r_multiples) / len(r_multiples) if r_multiples else None}
 
-     def polymarket_recent_history(self, limit=20):
+    def polymarket_recent_history(self, limit=20):
         """
         Semana 3.5: Historial detallado de señales de Polymarket con métricas
         de rendimiento real (ganancias/pérdidas, R-múltiple, tiempo de resolución).
