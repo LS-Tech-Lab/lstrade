@@ -1,8 +1,10 @@
 """
-Capa de conexión real al exchange vía ccxt.
+Cliente único para interactuar con el exchange vía ccxt.
+Centraliza la conexión, el manejo de rate limits y los timeouts.
 """
-import ccxt
 import logging
+import ccxt
+from config import Config
 
 log = logging.getLogger("exchange_client")
 
@@ -14,20 +16,7 @@ class ExchangeClient:
             "apiKey": config.API_KEY,
             "secret": config.API_SECRET,
             "enableRateLimit": True,
-            # NUEVO: sin esto, ccxt espera hasta su default (10s) por cada
-            # request HTTP — ver el comentario largo en config.py
-            # (EXCHANGE_TIMEOUT_MS) sobre por qué eso importa en serverless.
             "timeout": config.EXCHANGE_TIMEOUT_MS,
-            # NUEVO: ccxt llama automáticamente a fetch_currencies() dentro
-            # de load_markets() (que a su vez dispara fetch_ohlcv() en el
-            # primer uso) CUANDO hay API keys configuradas — sin importar
-            # que no las necesitemos para leer velas públicas. En Binance
-            # eso pega contra el endpoint privado sapi/v1/capital/config/getall,
-            # que Binance bloquea con 451 "restricted location" según la
-            # región del servidor (confirmado en logs reales: pasa desde
-            # Vercel aunque las velas públicas sí son accesibles). Esto
-            # apaga esa llamada puntual sin tocar fetch_ohlcv/fetch_ticker,
-            # que usan endpoints públicos y no se ven afectados.
             "options": {"fetchCurrencies": False},
         }
         if config.API_PASSWORD:
@@ -44,8 +33,12 @@ class ExchangeClient:
         ]
 
     def fetch_ticker(self, symbol):
-        """Obtiene bid/ask para calcular el spread."""
         return self.exchange.fetch_ticker(symbol)
+
+    # NUEVO (Semana 1): Permite verificar el estado real de una orden recién creada
+    # para detectar y gestionar llenados parciales (Partial Fills).
+    def fetch_order(self, order_id, symbol):
+        return self.exchange.fetch_order(order_id, symbol)
 
     def fetch_equity(self, quote_currency="USDT"):
         balance = self.exchange.fetch_balance()
@@ -71,11 +64,8 @@ class ExchangeClient:
         else:
             return self.exchange.create_order(symbol, order_type, side, amount, price)
 
-    # NUEVO: Para Trailing Stop
     def create_stop_order(self, symbol, side, amount, stop_price):
-        """Crea una orden de stop market/limit para proteger la posición."""
         log.info(f"[STOP ORDER] {side.upper()} {amount} {symbol} @ stop {stop_price}")
-        # Binance spot soporta 'stop_loss' o 'stop' como order_type en ccxt
         return self.exchange.create_order(symbol, "stop_loss", side, amount, None, {"stopPrice": stop_price})
 
     def cancel_order(self, symbol, order_id):
