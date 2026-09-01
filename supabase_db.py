@@ -3,11 +3,12 @@ Persistencia en Supabase (Postgres vía su API REST), para el modo serverless
 en Vercel. Misma interfaz que db.py (SQLite, modo VPS).
 """
 import json
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timezone, timedelta
 from supabase import create_client
 
 def _now_iso():
-    """Semana 3: Timestamps ISO 8601 nativos de PostgreSQL (timestamptz)."""
+    """Timestamps ISO 8601 nativos de PostgreSQL (timestamptz)."""
     return datetime.now(timezone.utc).isoformat()
 
 class SupabaseDatabase:
@@ -22,7 +23,6 @@ class SupabaseDatabase:
         return res.data[0]["equity"] if res.data else None
 
     def current_exposure_pct(self, equity):
-        # Para consultas de tiempo en timestamptz, usamos el formato ISO de hace 24h
         cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         res = self.client.table("decisions").select("plan_detail").in_("decision", ["approved", "auto_executed"]).gte("ts", cutoff).execute()
         total_risk = sum((row.get("plan_detail") or {}).get("risk_amount", 0.0) for row in res.data or [])
@@ -149,26 +149,60 @@ class SupabaseDatabase:
         bucket_rows = [{"range": f"{k*bucket_size*100:.0f}-{(k+1)*bucket_size*100:.0f}%", "n": len(b["predicted"]), "avg_predicted": sum(b["predicted"])/len(b["predicted"]), "actual_freq": sum(b["actual"])/len(b["actual"])} for k, b in sorted(buckets.items())]
         return {"n": n, "brier_score": brier_sum / n, "buckets": bucket_rows}
 
+    # =========================================================================
+    # SEMANA 3.5: FIX CRÍTICO ANTI-DUPLICADOS EN POLYMARKET
+    # =========================================================================
+    
+    def has_recent_polymarket_signal(self, condition_id, direction, hours=6.0):
+        """
+        Fuente de verdad absoluta: revisa la tabla directamente para evitar
+        condiciones de carrera (race conditions) entre múltiples instancias de Vercel.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        res = self.client.table("polymarket_signals").select("id").eq("condition_id", condition_id).eq("direction", direction).is_("outcome", "null").gte("ts_signaled", cutoff).limit(1).execute()
+        return bool(res.data)
+
     def should_notify_polymarket(self, condition_id, direction, score, resend_cooldown_hours=6.0, min_score_increase_pct=0.20):
-        prev_str = self.get_state(f"poly_notify_{condition_id}")
-        if prev_str is None: return True
+        # 1. Bloqueo primario: ¿Ya existe una señal ABIERTA reciente para esta dirección?
+        if self.has_recent_polymarket_signal(condition_id, direction, resend_cooldown_hours):
+            return False
+        
+        # 2. Bloqueo anti-flip-flop: ¿Se notificó la dirección OPUESTA recientemente?
+        # (Evita que el bot mande YES y luego NO para el mismo mercado en poco tiempo)
+        opposite = "YES" if direction == "NO" else "NO"
+        if self.has_recent_polymarket_signal(condition_id, opposite, resend_cooldown_hours):
+            return False
+
+        # 3. Chequeo secundario de estado en caché (para lógica de score y compatibilidad)
+        # FIX: Ahora la clave INCLUYE la dirección para evitar colisiones YES/NO.
+        state_key = f"poly_notify_{condition_id}_{direction}"
+        prev_str = self.get_state(state_key)
+        if prev_str is None:
+            return True
         try:
             prev = json.loads(prev_str)
         except (json.JSONDecodeError, TypeError):
             return True
-        # Para compatibilidad con timestamps antiguos (float) y nuevos (ISO)
+        
         prev_ts = prev.get("ts", 0)
         if isinstance(prev_ts, str):
-            from datetime import datetime
             prev_ts = datetime.fromisoformat(prev_ts.replace('Z', '+00:00')).timestamp()
-        if (time.time() - prev_ts) >= resend_cooldown_hours * 3600: return True
-        if prev.get("direction") != direction: return True
+        
+        if (time.time() - prev_ts) >= resend_cooldown_hours * 3600:
+            return True
+            
         prev_score = prev.get("score", 0) or 0
-        if prev_score > 0 and score >= prev_score * (1 + min_score_increase_pct): return True
+        if prev_score > 0 and score >= prev_score * (1 + min_score_increase_pct):
+            return True
+            
         return False
 
     def record_notified_polymarket(self, condition_id, direction, score):
-        self.set_state(f"poly_notify_{condition_id}", json.dumps({"ts": _now_iso(), "direction": direction, "score": score}))
+        # FIX: La clave ahora incluye la dirección para un aislamiento correcto.
+        state_key = f"poly_notify_{condition_id}_{direction}"
+        self.set_state(state_key, json.dumps({"ts": _now_iso(), "direction": direction, "score": score}))
+
+    # =========================================================================
 
     def create_pending_decision(self, message_id, symbol, signal, risk_report, plan):
         self.client.table("pending_decisions").insert({"message_id": message_id, "ts": _now_iso(), "symbol": symbol, "signal": signal, "risk_report": risk_report, "plan": plan, "resolved": False}).execute()
@@ -179,8 +213,6 @@ class SupabaseDatabase:
 
     def expire_stale_pending_decisions(self, older_than_seconds):
         cutoff = datetime.now(timezone.utc).timestamp() - older_than_seconds
-        # Para compatibilidad con timestamptz, usamos lt con el timestamp convertido o manejamos en Python
-        # Supabase py permite comparar con strings ISO, pero para simplificar usamos el enfoque de obtener y filtrar
         res = self.client.table("pending_decisions").select("*").eq("resolved", False).execute()
         to_expire = [r["message_id"] for r in (res.data or []) if (datetime.fromisoformat(r["ts"].replace('Z', '+00:00')).timestamp() if isinstance(r["ts"], str) else r["ts"]) < cutoff]
         if to_expire:
