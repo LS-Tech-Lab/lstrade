@@ -431,7 +431,9 @@ def run_weather_cycle():
             break
         scanned += 1
         try:
-            signal = generate_weather_signal(event, config, min_ev=config.WEATHER_MIN_EV)
+            signal = generate_weather_signal(
+                event, config, min_ev=config.WEATHER_MIN_EV, min_price=config.WEATHER_MIN_PRICE
+            )
         except Exception as e:
             detail.append({"title": event["title"], "status": "error", "error": str(e)})
             continue
