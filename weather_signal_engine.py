@@ -530,6 +530,22 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
 # STEP 4 — Formato de reporte (versión compacta para Telegram)
 # ---------------------------------------------------------------------------
 def build_weather_memo(signal, markdown=True):
+    """
+    Versión compacta: solo lo necesario para decidir (estimación, mejor
+    oportunidad, link). El desglose completo por bucket y la física del día
+    siguen disponibles corriendo weather_report.py a mano.
+
+    FIX: la versión anterior envolvía DISCLAIMER en asteriscos/guiones bajos
+    para itálica (`_{disclaimer}_`), pero el texto del disclaimer contiene
+    "weather_report.py" — el guion bajo de ahí adentro rompe el conteo de
+    pares que necesita el parser de Markdown de Telegram (parse_mode
+    "Markdown" en telegram_notifier.py), lo que corrompía el parseo de todo
+    el mensaje y arruinaba el link de arriba. Se saca el disclaimer del
+    mensaje en vez de escapar el guion bajo, porque además es ruido para
+    decidir en el momento — cualquier texto con guion bajo/asterisco que se
+    interpole en un mensaje Markdown puede repetir este bug si se
+    reintroduce texto libre acá.
+    """
     if not signal or signal.get("status") != "ok":
         return None
     st = signal["station"]
@@ -538,34 +554,21 @@ def build_weather_memo(signal, markdown=True):
     lines.append(f"🌡️ *ANÁLISIS DE CLIMA* — {title_txt}" if markdown else f"🌡️ ANÁLISIS DE CLIMA — {title_txt}")
     lines.append("")
     verified_flag = "✅ verificada" if signal["settlement_verified"] else "⚠️ SIN VERIFICAR — revisar manualmente"
-    lines.append(f"⚖️ Estación: {st.get('name', st.get('icao'))} ({verified_flag})")
-    if st.get("note"):
-        lines.append(f"   ℹ️ {st['note']}")
-    lines.append(f"📈 Estimación de máxima: {signal['center_estimate_f']}°F (±{signal['sigma']:.1f}°F, penalización de confianza {signal['confidence_penalty']:.2f})")
-    lines.append("")
-    lines.append("📊 Buckets (mi prob. vs mercado):")
-    for row in signal["buckets"][:6]:
-        ev_txt = f"{row['ev']*100:+.1f}%" if row["ev"] is not None else "N/A"
-        q = row["question"][:45]
-        lines.append(f"  • {q}: yo {row['my_prob']*100:.1f}% | mkt ${row['market_price']:.3f} | EV {ev_txt}")
-    lines.append("")
-    lines.append("🌦️ Física del día:")
-    for note in signal["physics_notes"][:4]:
-        lines.append(f"  • {note}")
+    lines.append(f"📍 Estación: {st.get('name', st.get('icao'))} ({verified_flag})")
+    lines.append(f"📈 Estimación de máxima: {signal['center_estimate_f']}°F (±{signal['sigma']:.1f}°F)")
     lines.append("")
     if signal["best_trade"]:
         bt = signal["best_trade"]
-        lines.append(f"🎯 Mejor EV: {bt['question'][:60]}")
-        lines.append(f"   EV {bt['ev']*100:+.1f}% @ ${bt['market_price']:.3f} | mi prob {bt['my_prob']*100:.1f}%")
+        lines.append(f"🎯 {bt['question'][:70]}")
+        lines.append(f"   Mi prob: {bt['my_prob']*100:.0f}% | Precio mercado: ${bt['market_price']:.3f} | EV {bt['ev']*100:+.0f}%")
         if bt.get("url"):
-            lines.append(f"🔗 {bt['url']}")
+            link_text = "Ver en Polymarket"
+            lines.append(f"🔗 [{link_text}]({bt['url']})" if markdown else bt["url"])
     else:
         lines.append("🎯 Sin edge suficiente hoy — pasar es la disciplina correcta.")
         if signal.get("url"):
-            lines.append(f"🔗 {signal['url']}")
-    lines.append("")
-    disclaimer = signal["disclaimer"]
-    lines.append(f"_{disclaimer}_" if markdown else disclaimer)
+            link_text = "Ver evento en Polymarket"
+            lines.append(f"🔗 [{link_text}]({signal['url']})" if markdown else signal["url"])
     return "\n".join(lines)
 
 
