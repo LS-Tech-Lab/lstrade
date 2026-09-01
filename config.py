@@ -160,6 +160,10 @@ class Config:
     # llegar a generar señales nuevas O al heartbeat).
     PENDING_DECISION_EXPIRY_SECONDS = _int("PENDING_DECISION_EXPIRY_SECONDS", 3600)
 
+    # Semana 3: Liquidez mínima requerida para marcar una señal de Polymarket como "resuelta" (target/stop).
+    # Evita falsos positivos donde el precio "mid" toca el nivel pero no hay profundidad de libro para ejecutar.
+    POLYMARKET_MIN_EXIT_LIQUIDITY = _float("POLYMARKET_MIN_EXIT_LIQUIDITY", 500.0)
+
     @classmethod
     def validate(cls):
         problems = []
