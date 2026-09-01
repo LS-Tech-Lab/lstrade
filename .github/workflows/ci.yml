@@ -21,7 +21,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Compile check (sin conectar a ningún exchange)
-        run: python -m py_compile config.py db.py exchange_client.py indicators.py signal_engine.py risk_manager.py trade_planner.py executor.py telegram_notifier.py main.py
+        run: python -m py_compile config.py db.py supabase_db.py exchange_client.py indicators.py signal_engine.py risk_manager.py trade_planner.py executor.py telegram_notifier.py main.py app.py
 
       - name: Test de lógica con datos sintéticos (sin red)
         run: |
@@ -66,9 +66,6 @@ jobs:
           print('CI OK')
           "
 
-      - name: Compile check de las funciones serverless (api/)
-        run: python -m py_compile api/cycle.py api/manage_positions.py api/polymarket_cycle.py api/polymarket_track_results.py api/telegram_webhook.py api/weather_cycle.py supabase_db.py
-
       - name: Compile check del módulo de clima
         run: python -m py_compile weather_signal_engine.py weather_report.py polymarket_client.py polymarket_categories.py
 
@@ -89,8 +86,7 @@ jobs:
           missing = expected - registered
           assert not missing, (
               f'Rutas usadas por cron-job.org/GitHub Actions pero NO registradas '
-              f'en app.py (van a devolver 404 real de FastAPI aunque el archivo '
-              f'exista en api/): {missing}'
+              f'en app.py (van a devolver 404 real de FastAPI): {missing}'
           )
           print('OK — todas las rutas esperadas están registradas en app.py:', sorted(registered & expected))
           "
