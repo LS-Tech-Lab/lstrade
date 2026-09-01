@@ -8,8 +8,8 @@ service_role key, no la anon key — esto corre del lado del servidor).
 Correr antes schema.sql en el SQL Editor de tu proyecto de Supabase.
 """
 import time
+import json
 from supabase import create_client
-
 
 class SupabaseDatabase:
     def __init__(self, url, key):
@@ -309,6 +309,45 @@ class SupabaseDatabase:
             })
 
         return {"n": n, "brier_score": brier_sum / n, "buckets": bucket_rows}
+
+    # --- estado de notificaciones de Polymarket (paridad con PolymarketStateStore) ---
+    # FIX: estos dos métodos faltaban en SupabaseDatabase. Sin ellos, el
+    # SupabaseNotifyStateAdapter de polymarket_main.py rompía con
+    # AttributeError al intentar deduplicar señales en modo serverless,
+    # y el cron /api/polymarket_cycle devolvía 500 Internal Server Error.
+    # Reutilizan la tabla bot_state para persistir el estado entre
+    # invocaciones (el filesystem de Vercel no persiste entre ejecuciones).
+    def should_notify_polymarket(self, condition_id, direction, score,
+                                 resend_cooldown_hours=6.0, min_score_increase_pct=0.20):
+        prev_str = self.get_state(f"poly_notify_{condition_id}")
+        if prev_str is None:
+            return True
+
+        try:
+            prev = json.loads(prev_str)
+        except (json.JSONDecodeError, TypeError):
+            return True
+
+        elapsed = time.time() - prev.get("ts", 0)
+        if elapsed >= resend_cooldown_hours * 3600:
+            return True
+
+        if prev.get("direction") != direction:
+            return True
+
+        prev_score = prev.get("score", 0) or 0
+        if prev_score > 0 and score >= prev_score * (1 + min_score_increase_pct):
+            return True
+
+        return False
+
+    def record_notified_polymarket(self, condition_id, direction, score):
+        state = {
+            "ts": time.time(),
+            "direction": direction,
+            "score": score,
+        }
+        self.set_state(f"poly_notify_{condition_id}", json.dumps(state))
 
     # --- decisiones pendientes de aprobación por Telegram (solo modo serverless) ---
     def create_pending_decision(self, message_id, symbol, signal, risk_report, plan):
