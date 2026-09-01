@@ -625,8 +625,8 @@ async def weather_track_results_post(request: Request):
 
 
 # ────────────────────────────────────────────────────────────────────
-# /api/manage_positions — mismo patrón que polymarket_resolve arriba, pero NO se despliega (Vercel solo construye la función a partir
-# de este archivo). Revisa las posiciones cripto abiertas en modo papel y,
+# /api/manage_positions — mismo patrón que polymarket_resolve arriba.
+# Revisa las posiciones cripto abiertas en modo papel y,
 # si el precio actual ya tocó el target o el stop, las cierra y calcula el
 # resultado en R — sin este endpoint corriendo, run_cycle() puede seguir
 # llamando a add_open_trade() pero esas posiciones nunca se cierran ni se
