@@ -26,13 +26,17 @@ function computeStats(rows) {
 // (Python) y el otro solo para agrupar en el dashboard (JS).
 const CATEGORY_RULES = [
   ["Clima", /temperature|hottest|coldest|rain|snow|hurricane|heat wave|weather|degrees?\b|Fahrenheit|Celsius/i],
+  ["Esports", /Counter-Strike|CS:?GO|\bCS2\b|League of Legends|\bLoL\b|\bDota ?2?\b|Valorant|\bBO[135]\b|Cyber Games/i],
+  ["Deportes", /\bvs\.?\b|\bwin on \d{4}-\d{2}-\d{2}\b|O\/U \d|\bwin\b.*\b(Open|Championship|Cup|Series|League|Bowl|Final|Wimbledon)\b|\bATP\b|\bUFC\b|\bfight\b/i],
   ["Lanzamientos / FDV", /\bFDV\b|one day after launch|launch a token/i],
   ["Valuaciones privadas", /valuation hit|\(HIGH\)|\(LOW\)/i],
-  ["Objetivo de precio cripto", /\breach \$|\bdip to \$|market cap/i],
-  ["Política / elecciones", /election|senat|vote|president|confirm|governor|congress|by-election/i],
-  ["Deportes / vanity", /\bfight\b|attend|wedding|\bwin\b.*(match|game|fight)|UFC/i],
-  ["Macro / eventos", /bank failure|hack over|open interest/i],
+  ["Cripto — objetivo de precio", /\bprice of (bitcoin|ethereum|btc|eth|solana|sol|xrp|doge)\b|\b(bitcoin|ethereum|btc|eth)\b.*\b(up or down|above \$|below \$)|reach \$|dip to \$|market cap/i],
+  ["Macro / tasas de interés", /\bFed\b|interest rate|\bbps\b|inflation|\bGDP\b|jobs report|rate hike|rate cut/i],
+  ["Macro / eventos cripto", /bank failure|hack over|open interest/i],
+  ["Política / geopolítica", /election|senat|vote|president|confirm|governor|congress|by-election|invade|ceasefire|\bwar\b/i],
+  ["Redes sociales / figuras públicas", /\btweets?\b|\bpost(?:ed)? \d|Elon Musk|\bX posts?\b|Instagram|TikTok/i],
   ["IA / tech", /Claude|OpenAI|Anthropic|GPT|Frontier Math|Opus|Gemini/i],
+  ["Entretenimiento / vanity", /attend|wedding/i],
 ];
 const FALLBACK_CATEGORY = "Otros / sin clasificar";
 
@@ -192,4 +196,4 @@ export async function GET() {
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
-}
+      }
