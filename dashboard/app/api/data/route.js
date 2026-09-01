@@ -48,6 +48,17 @@ function categorize(question) {
   return FALLBACK_CATEGORY;
 }
 
+// Mismo default que config.POLYMARKET_EXCLUDED_CATEGORIES (Python) — no
+// comparten código (uno corre en el motor de señales, este en el dashboard
+// serverless), así que si se toca uno hay que tocar el otro. Se usa para
+// que el indicador principal (win rate/expectancy/PF de arriba) no quede
+// arrastrado por categorías ya identificadas como perdedoras — el
+// historial completo sigue disponible sin filtrar en polymarket_resolved
+// y en la tabla por categoría, esto solo afecta el resumen agregado.
+const EXCLUDED_CATEGORIES = (
+  process.env.POLYMARKET_EXCLUDED_CATEGORIES || "Política / geopolítica,Redes sociales / figuras públicas"
+).split(",").map((c) => c.trim()).filter(Boolean);
+
 function computePolymarketStats(rows) {
   const resolved = (rows || []).filter((r) => r.outcome);
   if (resolved.length === 0) return { n: 0, win_rate: null };
@@ -170,6 +181,10 @@ export async function GET() {
 
     const resolvedSignals = polymarketResolvedRes.error ? [] : (polymarketResolvedRes.data || []);
     const weatherResolved = weatherResolvedRes.error ? [] : (weatherResolvedRes.data || []);
+    // "Core" = sin las categorías excluidas (ver EXCLUDED_CATEGORIES) — es
+    // lo que se muestra como indicador principal para que una categoría ya
+    // identificada como mala no tape el desempeño real del resto.
+    const resolvedSignalsCore = resolvedSignals.filter((r) => !EXCLUDED_CATEGORIES.includes(categorize(r.question)));
 
     return NextResponse.json({
       equity: equityRes.data || [],
@@ -183,7 +198,10 @@ export async function GET() {
       stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null }
         : computeStats(closedTradesRes.data),
       polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null }
+        : computePolymarketStats(resolvedSignalsCore),
+      polymarket_stats_all_categories: polymarketResolvedRes.error ? { n: 0, win_rate: null }
         : computePolymarketStats(resolvedSignals),
+      polymarket_excluded_categories: EXCLUDED_CATEGORIES,
       polymarket_stats_by_category: computePolymarketStatsByCategory(resolvedSignals),
       polymarket_open: polymarketOpenRes.error ? [] : (polymarketOpenRes.data || []),
       polymarket_resolved: resolvedSignals.slice(0, 20),
