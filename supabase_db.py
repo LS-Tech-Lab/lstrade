@@ -135,6 +135,59 @@ class SupabaseDatabase:
         res = self.client.table("weather_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
         return bool(res.data)
 
+        def polymarket_recent_history(self, limit=20):
+        """
+        Semana 3.5: Historial detallado de señales de Polymarket con métricas
+        de rendimiento real (ganancias/pérdidas, R-múltiple, tiempo de resolución).
+        """
+        rows = self.client.table("polymarket_signals").select(
+            "condition_id,question,direction,entry,target,stop,outcome,exit_price,ts_signaled,ts_resolved"
+        ).not_.is_("outcome", "null").order("ts_resolved", desc=True).limit(limit).execute().data or []
+        
+        history = []
+        for r in rows:
+            stop_distance = abs(r["entry"] - r["stop"])
+            r_multiple = None
+            profit_loss = None
+            profit_pct = None
+            
+            if stop_distance > 0 and r["exit_price"] is not None:
+                sign = 1 if r["direction"] == "YES" else -1
+                r_multiple = ((r["exit_price"] - r["entry"]) / stop_distance) * sign
+                
+                # Calcular ganancia/pérdida en USD (asumiendo $100 de riesgo base)
+                base_risk = 100.0  # Puedes ajustar esto según tu tamaño de posición real
+                profit_loss = r_multiple * base_risk
+                profit_pct = r_multiple * 100
+            
+            # Calcular tiempo hasta resolución
+            time_to_resolve = None
+            if r["ts_signaled"] and r["ts_resolved"]:
+                try:
+                    from datetime import datetime
+                    ts_sig = datetime.fromisoformat(r["ts_signaled"].replace('Z', '+00:00'))
+                    ts_res = datetime.fromisoformat(r["ts_resolved"].replace('Z', '+00:00'))
+                    time_to_resolve = (ts_res - ts_sig).total_seconds() / 3600  # horas
+                except:
+                    pass
+            
+            history.append({
+                "question": r["question"][:80] if r["question"] else "Sin pregunta",
+                "direction": r["direction"],
+                "outcome": r["outcome"],
+                "entry": r["entry"],
+                "exit_price": r["exit_price"],
+                "target": r["target"],
+                "stop": r["stop"],
+                "r_multiple": r_multiple,
+                "profit_loss": profit_loss,
+                "profit_pct": profit_pct,
+                "time_to_resolve_hours": time_to_resolve,
+                "ts_resolved": r["ts_resolved"],
+            })
+        
+        return history
+
     def weather_calibration_summary(self, bucket_size=0.1):
         rows = self.client.table("weather_signals").select("my_prob,outcome").not_.is_("outcome", "null").execute().data or []
         n = len(rows)
