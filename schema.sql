@@ -107,6 +107,28 @@ create table if not exists weather_signals (
     ts_resolved timestamptz
 );
 
+create table if not exists indicator_snapshots (
+    id bigserial primary key,
+    symbol text not null,
+    ts timestamptz not null,
+    price double precision,
+    rsi double precision,
+    atr_pct double precision,
+    volume_ratio double precision,
+    volatility double precision,
+    momentum double precision,
+    trend_align double precision,
+    trend_bias text
+);
+
+create table if not exists polymarket_notify_state (
+    condition_id text primary key,
+    direction text not null,
+    score double precision not null,
+    ts timestamptz not null
+);
+
 create index if not exists idx_closed_trades_ts on closed_trades (ts_closed desc);
 create index if not exists idx_polymarket_signals_outcome on polymarket_signals (outcome);
 create index if not exists idx_weather_signals_outcome on weather_signals (outcome);
+create index if not exists idx_indicator_snapshots_symbol_ts on indicator_snapshots (symbol, ts desc);
