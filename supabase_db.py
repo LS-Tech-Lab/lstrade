@@ -125,17 +125,7 @@ class SupabaseDatabase:
             if r["outcome"] == "target": wins += 1
         return {"n": n, "win_rate": wins / n * 100, "expectancy_r": sum(r_multiples) / len(r_multiples) if r_multiples else None}
 
-    def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id):
-        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "ts_signaled": _now_iso()}).execute()
-
-    def get_open_weather_signals(self):
-        return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
-
-    def resolve_weather_signal(self, signal_id, outcome):
-        res = self.client.table("weather_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
-        return bool(res.data)
-
-        def polymarket_recent_history(self, limit=20):
+     def polymarket_recent_history(self, limit=20):
         """
         Semana 3.5: Historial detallado de señales de Polymarket con métricas
         de rendimiento real (ganancias/pérdidas, R-múltiple, tiempo de resolución).
@@ -188,6 +178,17 @@ class SupabaseDatabase:
         
         return history
 
+
+    def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id):
+        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "ts_signaled": _now_iso()}).execute()
+
+    def get_open_weather_signals(self):
+        return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
+
+    def resolve_weather_signal(self, signal_id, outcome):
+        res = self.client.table("weather_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
+        return bool(res.data)
+       
     def weather_calibration_summary(self, bucket_size=0.1):
         rows = self.client.table("weather_signals").select("my_prob,outcome").not_.is_("outcome", "null").execute().data or []
         n = len(rows)
