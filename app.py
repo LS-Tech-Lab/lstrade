@@ -348,6 +348,20 @@ async def polymarket_resolve_get(request: Request):
 @app.post("/api/polymarket_resolve")
 async def polymarket_resolve_post(request: Request):
     return await _polymarket_resolve_endpoint(request)
+    
+@app.get("/api/polymarket_history")
+async def polymarket_history(request: Request):
+    """Historial detallado de señales de Polymarket con métricas de rendimiento."""
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+        history = db.polymarket_recent_history(limit=20)
+        return JSONResponse({"status": "ok", "history": history}, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
 
 # ────────────────────────────────────────────────────────────────────
 # /api/polymarket_track_results — alias de /api/polymarket_resolve
