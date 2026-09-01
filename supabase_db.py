@@ -120,6 +120,27 @@ class SupabaseDatabase:
         res = self.client.table("open_trades").select("*").execute()
         return res.data or []
 
+    def has_open_trade_for_symbol(self, symbol):
+        """
+        FIX: faltaba este chequeo — count_open_trades_by_direction() solo
+        contaba cuántas posiciones había en total por dirección (LONG/SHORT),
+        sin importar el símbolo. Eso permitía que un mismo símbolo se
+        abriera 2-3 veces seguidas (una por cada escaneo donde la señal
+        seguía activa) antes de que MAX_CORRELATED_POSITIONS por fin
+        bloqueara por volumen total, no por duplicado. Ahora risk_manager
+        bloquea explícitamente una señal si YA hay una posición abierta en
+        ese símbolo, sin importar cuántas posiciones correlacionadas queden
+        de margen.
+        """
+        res = (
+            self.client.table("open_trades")
+            .select("id", count="exact")
+            .eq("symbol", symbol)
+            .limit(1)
+            .execute()
+        )
+        return (res.count or 0) > 0
+
     def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
                         order_id=None, stop_distance=None):
         if stop_distance is None:
