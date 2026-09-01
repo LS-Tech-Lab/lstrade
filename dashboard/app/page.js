@@ -73,7 +73,7 @@ const FRESHNESS_FAIL_MINUTES = 60;   // 6x — casi seguro que el cron dejó de 
 
 function freshnessState(ts) {
   if (!ts) return { minutes: null, text: "Sin datos", tone: "" };
-  const minutes = (Date.now() / 1000 - ts) / 60;
+  const minutes = (Date.now() - parseTs(ts).getTime()) / 60000;
   if (minutes >= FRESHNESS_FAIL_MINUTES) {
     return { minutes, text: `Sin actualizar hace ${Math.round(minutes)} min — revisá el cron`, tone: "fail" };
   }
@@ -93,10 +93,22 @@ function Info({ text }) {
   );
 }
 
-// Formatea un timestamp unix (segundos) en fecha corta, para el tooltip
+// NUEVO: desde el commit "Change timestamps to ISO 8601 format in Supabase
+// DB" (1 sep), supabase_db.py guarda los ts nuevos como string ISO 8601
+// (timestamptz nativo de Postgres) en vez de segundos unix. Pero las filas
+// más viejas en la base todavía tienen el formato anterior (número). Este
+// helper soporta los dos: string → new Date() lo parsea directo; número →
+// se asume que sigue siendo segundos unix, así que se multiplica por 1000.
+// Todo el dashboard debe usar esto en vez de `new Date(x * 1000)` a mano.
+function parseTs(ts) {
+  if (ts === null || ts === undefined) return null;
+  return typeof ts === "string" ? new Date(ts) : new Date(ts * 1000);
+}
+
+// Formatea un timestamp (ver parseTs) en fecha corta, para el tooltip
 // del gráfico de equity.
 function formatChartDate(ts) {
-  return new Date(ts * 1000).toLocaleString(undefined, {
+  return parseTs(ts).toLocaleString(undefined, {
     day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
   });
 }
@@ -345,7 +357,7 @@ function IndicatorCard({ symbol, snapshot }) {
         <span className={`freshness-dot ${freshness.tone}`} />
         <span className={freshness.tone === "" ? "" : freshness.tone}>{freshness.text}</span>
         <span className="indicator-ts-sep">·</span>
-        {new Date(snapshot.ts * 1000).toLocaleTimeString()}
+        {parseTs(snapshot.ts).toLocaleTimeString()}
       </div>
     </div>
   );
@@ -506,7 +518,7 @@ function CryptoOpenTable({ rows }) {
             />
             <RowField label="Ratio R:B" value={rrStats?.rr ? `1 : ${rrStats.rr.toFixed(2)}` : "—"} />
             <RowField label="Tamaño" value={r.position_size?.toFixed(6)} />
-            <RowField label="Abierta" value={new Date(r.ts_opened * 1000).toLocaleString()} />
+            <RowField label="Abierta" value={parseTs(r.ts_opened).toLocaleString()} />
           </>
         );
       }}
@@ -573,7 +585,7 @@ function PolymarketOpenTable({ rows }) {
           <RowField label="Entrada" value={r.entry?.toFixed(3)} />
           <RowField label="Target" value={r.target?.toFixed(3)} tone="ok" />
           <RowField label="Stop" value={r.stop?.toFixed(3)} tone="fail" />
-          <RowField label="Enviada" value={new Date(r.ts_signaled * 1000).toLocaleString()} />
+          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
         </>
       )}
     />
@@ -603,8 +615,8 @@ function PolymarketResolvedTable({ rows }) {
       ? ((r.exit_price - r.entry) / r.entry) * 100
       : null;
     
-    const tsSignaled = r.ts_signaled ? new Date(r.ts_signaled * 1000) : null;
-    const tsResolved = r.ts_resolved ? new Date(r.ts_resolved * 1000) : null;
+    const tsSignaled = r.ts_signaled ? parseTs(r.ts_signaled) : null;
+    const tsResolved = r.ts_resolved ? parseTs(r.ts_resolved) : null;
     const timeToResolve = tsSignaled && tsResolved
       ? (tsResolved.getTime() - tsSignaled.getTime()) / (1000 * 60 * 60) // horas
       : null;
@@ -712,7 +724,7 @@ function WeatherOpenTable({ rows }) {
               <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
               <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
               <td data-label="EV" className={r.ev >= 0 ? "ok" : "fail"}>{r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"}</td>
-              <td data-label="Enviada">{new Date(r.ts_signaled * 1000).toLocaleString()}</td>
+              <td data-label="Enviada">{parseTs(r.ts_signaled).toLocaleString()}</td>
             </tr>
           ))}
         </tbody>
@@ -748,7 +760,7 @@ function WeatherResolvedTable({ rows }) {
                 <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
                 <td data-label="Resultado" className={r.outcome === "yes" ? "ok" : "fail"}>{r.outcome === "yes" ? "SI OCURRIÓ" : "NO OCURRIÓ"}</td>
                 <td data-label="Retorno" className={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}>{ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"}</td>
-                <td data-label="Resuelta">{r.ts_resolved ? new Date(r.ts_resolved * 1000).toLocaleString() : "—"}</td>
+                <td data-label="Resuelta">{r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"}</td>
               </tr>
             );
           })}
@@ -866,7 +878,7 @@ function CriptoTab({ data }) {
           maxDots={8}
           renderFields={(d) => (
             <>
-              <RowField label="Fecha" value={new Date(d.ts * 1000).toLocaleString()} />
+              <RowField label="Fecha" value={parseTs(d.ts).toLocaleString()} />
               <RowField label="Símbolo" value={d.symbol} />
               <RowField label="Señal" value={d.signal_type || "—"} />
               <RowField label="Dirección" value={directionLabel(d.direction)} />
