@@ -188,6 +188,16 @@ def _headers(config):
     # acá para que un typo al configurar el contacto no tumbe el módulo
     # entero — si hay caracteres no soportados se descartan y se loguea un
     # aviso, en vez de fallar en silencio.
+    #
+    # Segundo bug (01/09/2026): la env var WEATHER_USER_AGENT en Vercel quedó
+    # cargada con espacios en blanco al inicio (probablemente por un
+    # copy-paste con indentación). Los headers HTTP no toleran whitespace
+    # inicial/final ni CR/LF embebidos — el cliente HTTP lo rechaza con
+    # ValueError ANTES de la conexión ("Invalid leading whitespace, reserved
+    # character(s), or return character(s) in header value"), que tampoco
+    # es un UnicodeEncodeError, así que el chequeo de arriba no lo agarraba.
+    # Se sanea acá con strip() + remoción de CR/LF, sea cual sea la causa.
+    ua = re.sub(r"[\r\n]", "", ua).strip() or "lstrade-weather-bot/1.0"
     try:
         ua.encode("latin-1")
     except UnicodeEncodeError:
