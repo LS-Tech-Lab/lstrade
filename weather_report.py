@@ -1,7 +1,7 @@
 """
 Modo manual del análisis de clima — reporte completo para correr vos mismo
 antes de decidir una operación, sin tocar el ciclo automático (que vive en
-api/weather_cycle.py y solo usa fuentes oficiales con API estable).
+/api/weather_cycle dentro de app.py y solo usa fuentes oficiales con API estable).
 
 Uso:
     python weather_report.py                    # analiza todos los eventos
