@@ -530,7 +530,7 @@ function CryptoOpenTable({ rows }) {
 // lenguaje visual que los indicadores en vivo de cripto (una tarjeta por
 // categoría, flechas y puntos para navegar) en vez de una tabla ancha que
 // en mobile achicaba el texto o forzaba scroll lateral.
-function PolymarketCategoryTable({ byCategory }) {
+function PolymarketCategoryTable({ byCategory, excludedCategories = [] }) {
   const rows = Object.entries(byCategory || {}).sort((a, b) => b[1].total_r - a[1].total_r);
   if (rows.length === 0) {
     return <p className="empty">Todavía no hay señales resueltas para desglosar por categoría.</p>;
@@ -544,9 +544,10 @@ function PolymarketCategoryTable({ byCategory }) {
       renderFields={([cat, s]) => {
         const tone = s.total_r >= 0 ? "ok" : "fail";
         const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
+        const isExcluded = excludedCategories.includes(cat);
         return (
           <>
-            <RowField label="Categoría" value={`${cat}${s.n < 5 ? " ⚠️" : ""}`} />
+            <RowField label="Categoría" value={`${isExcluded ? "🚫 " : ""}${cat}${s.n < 5 ? " ⚠️" : ""}`} />
             <RowField label="n" value={s.n} />
             <RowField label="Win%" value={`${s.win_rate.toFixed(0)}%`} />
             <RowField label="Expectancy" value={`${s.expectancy_r >= 0 ? "+ " : ""}${s.expectancy_r.toFixed(2)}R`} tone={tone} />
@@ -896,15 +897,25 @@ function CriptoTab({ data }) {
 }
 
 function PolymarketTab({ data }) {
+  const excluded = data.polymarket_excluded_categories || [];
   return (
     <>
       <PlainSummary halted={false} stats={data.polymarket_stats} label="Polymarket" />
-      <StatsRow title="Performance — Polymarket (señales resueltas)" stats={data.polymarket_stats}
+      <StatsRow title="Performance — Polymarket (sin categorías excluidas)" stats={data.polymarket_stats}
         emptyMessage="Sin señales resueltas todavía — las métricas aparecen cuando el motor encuentre y cierre alguna." />
+      {excluded.length > 0 && (
+        <p className="card-subtitle">
+          Excluidas del indicador de arriba por bajo desempeño: {excluded.join(", ")}.{" "}
+          {data.polymarket_stats_all_categories?.n > 0 && (
+            <>Con esas categorías incluidas, el win rate real es {data.polymarket_stats_all_categories.win_rate.toFixed(1)}%
+            {" "}sobre {data.polymarket_stats_all_categories.n} señales.</>
+          )}
+        </p>
+      )}
       <div className="card">
         <h2>Performance por categoría</h2>
-        <p className="card-subtitle">Mismo desempeño de arriba, pero desglosado por el tema del mercado (clima, política, cripto, etc.).</p>
-        <PolymarketCategoryTable byCategory={data.polymarket_stats_by_category} />
+        <p className="card-subtitle">Desglose completo, categorías excluidas incluidas (marcadas con 🚫) — para decidir si sacar o meter alguna del filtro.</p>
+        <PolymarketCategoryTable byCategory={data.polymarket_stats_by_category} excludedCategories={excluded} />
       </div>
       <div className="card">
         <h2>Señales abiertas ({data.polymarket_open?.length || 0})</h2>
