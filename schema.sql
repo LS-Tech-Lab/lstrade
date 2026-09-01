@@ -3,13 +3,13 @@
 
 create table if not exists equity_history (
     id bigserial primary key,
-    ts double precision not null,
+    ts timestamptz not null,
     equity double precision not null
 );
 
 create table if not exists decisions (
     id bigserial primary key,
-    ts double precision not null,
+    ts timestamptz not null,
     symbol text not null,
     signal_type text,
     direction text,
@@ -31,7 +31,7 @@ create table if not exists bot_state (
 -- webhook sabe a qué operación corresponde tu respuesta.
 create table if not exists pending_decisions (
     message_id bigint primary key,
-    ts double precision not null,
+    ts timestamptz not null,
     symbol text not null,
     signal jsonb not null,
     risk_report jsonb not null,
@@ -55,7 +55,7 @@ create table if not exists open_trades (
     target_price double precision not null,
     position_size double precision not null,
     order_id text,
-    ts_opened double precision not null,
+    ts_opened timestamptz not null,
     stop_distance double precision
 );
 
@@ -67,8 +67,8 @@ create table if not exists closed_trades (
     exit_price double precision not null,
     outcome text not null,
     r_multiple double precision,
-    ts_opened double precision not null,
-    ts_closed double precision not null
+    ts_opened timestamptz not null,
+    ts_closed timestamptz not null
 );
 
 create table if not exists polymarket_signals (
@@ -80,10 +80,10 @@ create table if not exists polymarket_signals (
     entry double precision not null,
     target double precision not null,
     stop double precision not null,
-    ts_signaled double precision not null,
+    ts_signaled timestamptz not null,
     outcome text,
     exit_price double precision,
-    ts_resolved double precision
+    ts_resolved timestamptz
 );
 
 -- Señales de clima con la probabilidad estimada por el modelo (my_prob) —
@@ -102,9 +102,9 @@ create table if not exists weather_signals (
     center_estimate_f double precision,
     sigma double precision,
     yes_token_id text,
-    ts_signaled double precision not null,
+    ts_signaled timestamptz not null,
     outcome text,
-    ts_resolved double precision
+    ts_resolved timestamptz
 );
 
 create index if not exists idx_closed_trades_ts on closed_trades (ts_closed desc);
