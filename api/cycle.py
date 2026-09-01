@@ -120,6 +120,28 @@ def run_cycle():
         order_detail = executor.execute(best_symbol, plan)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
         notifier.send_message(f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}")
+
+        # FIX: mismo problema que en api/telegram_webhook.py (ver comentario
+        # ahí) — sin esto, AUTO_EXECUTE=true ejecuta la orden real pero nunca
+        # la registra en open_trades, quedando invisible para
+        # api/manage_positions.py y para el chequeo de risk_manager que evita
+        # duplicar posición en el mismo símbolo.
+        if order_detail.get("status") in ("filled", "simulated"):
+            stop_order = order_detail.get("stop_order")
+            order_id = (
+                stop_order.get("id") if isinstance(stop_order, dict)
+                else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
+            )
+            db.add_open_trade(
+                best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
+                plan["target"], plan["position_size"], order_id,
+            )
+            if order_detail.get("stop_order_error"):
+                notifier.send_message(
+                    f"\u26A0\uFE0F {best_symbol}: la entrada se ejecutó pero el STOP-LOSS real "
+                    f"NO se pudo colocar en el exchange ({order_detail['stop_order_error']}) — "
+                    f"revisar la posición a mano."
+                )
         return {"status": "auto_executed", "symbol": best_symbol, "order": order_detail}
 
     # AUTO_EXECUTE=false → aprobación humana NO bloqueante (webhook la resuelve)
