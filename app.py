@@ -333,7 +333,7 @@ def run_polymarket_resolve():
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
     open_before = db.get_open_polymarket_signals()
-    check_open_signals(db, client, notifier)
+    check_open_signals(db, client, notifier, config)
     open_after = db.get_open_polymarket_signals()
     return {
         "status": "ok",
