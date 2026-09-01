@@ -17,6 +17,10 @@ const GLOSSARY = [
   ["ATR", "Rango de movimiento típico de cada vela, en porcentaje del precio. Sirve como referencia de qué tan \"ancho\" se mueve el mercado ahora mismo."],
   ["Vol. ratio", "Actividad de compra/venta comparada con lo normal. 1.0x = actividad normal, 2.0x = el doble de lo habitual."],
   ["Tendencia (bias)", "Hacia dónde apunta el precio en el mediano plazo, comparando dos promedios móviles. Alcista = viene subiendo, bajista = viene bajando."],
+  ["Mi probabilidad", "Qué probabilidad le calcula el modelo del bot a que un bucket de temperatura ocurra, en base a los pronósticos (NWS, METAR, TAF) de la estación. Se compara contra el precio de mercado para ver si hay ventaja."],
+  ["EV (valor esperado)", "La ventaja que ve el bot entre su probabilidad estimada y el precio de mercado, antes de tomar la señal. EV +15% significa que el bot cree que el mercado está subvalorando ese resultado en un 15%."],
+  ["Retorno promedio (clima)", "Ganancia o pérdida promedio por señal de clima resuelta, si se hubiera apostado $1 a \"SI\" al precio de mercado del momento. -100% significa perder toda la apuesta."],
+  ["Brier score", "Qué tan calibrada estuvo la probabilidad del modelo contra lo que realmente pasó, en cada señal de clima resuelta. 0 = predicciones perfectas, 0.25 = tan bueno como tirar una moneda, 1 = siempre confiado y siempre equivocado."],
 ];
 
 // Traduce los códigos internos (los mismos que usa el motor en Python) a
@@ -271,6 +275,9 @@ function Tabs({ active, onChange }) {
       </button>
       <button className={`tab ${active === "polymarket" ? "active" : ""}`} onClick={() => onChange("polymarket")}>
         Polymarket
+      </button>
+      <button className={`tab ${active === "clima" ? "active" : ""}`} onClick={() => onChange("clima")}>
+        Clima
       </button>
     </div>
   );
@@ -629,6 +636,140 @@ function PolymarketResolvedTable({ rows }) {
   );
 }
 
+// NUEVO: retorno simulado por señal de clima resuelta — mismo cálculo que
+// weatherReturnPct() en api/data/route.js (no comparten código porque uno
+// corre en el servidor y este en el cliente, mismo patrón que
+// CATEGORY_RULES/categorize más arriba). Comprar "SI" a market_price:
+// si resuelve 'yes' se cobra $1 (retorno = 1/precio - 1), si resuelve
+// 'no' se pierde toda la apuesta (-100%).
+function weatherReturnPct(row) {
+  if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
+  return row.outcome === "yes" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+}
+
+function WeatherStatsRow({ stats }) {
+  if (!stats || stats.n === 0) {
+    return (
+      <div className="card">
+        <h2>Performance — Clima (señales resueltas)</h2>
+        <p className="empty">Sin señales de clima resueltas todavía — las métricas aparecen cuando el mercado cierre y se pueda comparar con el resultado real.</p>
+      </div>
+    );
+  }
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
+  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
+  return (
+    <div className="card">
+      <h2>Performance — Clima (señales resueltas)</h2>
+      <p className="card-subtitle">Simulando comprar "SI" al precio de mercado del momento de la señal, $1 nocional por operación.</p>
+      <div className="stats-grid">
+        <StatCard label="Señales resueltas" value={stats.n} />
+        <StatCard label="Acertadas (SI)" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone} barPct={stats.win_rate}
+          info="Porcentaje de buckets de temperatura que efectivamente ocurrieron." />
+        <StatCard label="Retorno promedio" value={stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null}
+          suffix="%" tone={retTone} info={GLOSSARY.find(([k]) => k === "Retorno promedio (clima)")[1]} />
+        <StatCard label="Brier score" value={stats.brier_score !== null ? stats.brier_score.toFixed(3) : null} tone={brierTone}
+          info={GLOSSARY.find(([k]) => k === "Brier score")[1]} />
+      </div>
+    </div>
+  );
+}
+
+function WeatherOpenTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Sin señales de clima abiertas ahora mismo.</p>;
+  }
+  return (
+    <TableScroll>
+    <table>
+      <thead>
+        <tr>
+          <th>Mercado</th>
+          <th>Estación</th>
+          <th>Mi prob.</th>
+          <th>Precio mkt</th>
+          <th>EV</th>
+          <th>Enviada</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.id}>
+            <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
+            <td data-label="Estación">{r.station_icao || "—"}</td>
+            <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
+            <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
+            <td data-label="EV" className={r.ev >= 0 ? "ok" : "fail"}>{r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"}</td>
+            <td data-label="Enviada">{new Date(r.ts_signaled * 1000).toLocaleString()}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    </TableScroll>
+  );
+}
+
+function WeatherResolvedTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Todavía no hay señales de clima resueltas.</p>;
+  }
+  return (
+    <TableScroll>
+    <table>
+      <thead>
+        <tr>
+          <th>Mercado</th>
+          <th>Mi prob.</th>
+          <th>Precio mkt</th>
+          <th>Resultado</th>
+          <th>Retorno</th>
+          <th>Resuelta</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => {
+          const ret = weatherReturnPct(r);
+          return (
+            <tr key={r.id}>
+              <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
+              <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
+              <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
+              <td data-label="Resultado" className={r.outcome === "yes" ? "ok" : "fail"}>{r.outcome === "yes" ? "SI OCURRIÓ" : "NO OCURRIÓ"}</td>
+              <td data-label="Retorno" className={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}>{ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"}</td>
+              <td data-label="Resuelta">{r.ts_resolved ? new Date(r.ts_resolved * 1000).toLocaleString() : "—"}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+    </TableScroll>
+  );
+}
+
+function WeatherTab({ data }) {
+  return (
+    <>
+      <PlainSummary halted={false} stats={data.weather_stats} label="clima" />
+
+      <WeatherStatsRow stats={data.weather_stats} />
+
+      <div className="card">
+        <h2>Señales abiertas ({data.weather_open?.length || 0})</h2>
+        <p className="card-subtitle">Buckets de temperatura que el bot encontró con ventaja y todavía no se resolvieron.</p>
+        <WeatherOpenTable rows={data.weather_open} />
+      </div>
+
+      <div className="card">
+        <h2>Historial reciente</h2>
+        <WeatherResolvedTable rows={data.weather_resolved} />
+      </div>
+
+      <Glossary />
+    </>
+  );
+}
+
 function Glossary() {
   return (
     <details className="glossary card">
@@ -831,7 +972,9 @@ export default function Dashboard() {
 
       <Tabs active={tab} onChange={setTab} />
 
-      {tab === "cripto" ? <CriptoTab data={data} /> : <PolymarketTab data={data} />}
+      {tab === "cripto" && <CriptoTab data={data} />}
+      {tab === "polymarket" && <PolymarketTab data={data} />}
+      {tab === "clima" && <WeatherTab data={data} />}
     </div>
   );
 }
