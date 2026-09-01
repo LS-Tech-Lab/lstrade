@@ -236,7 +236,7 @@ class SupabaseNotifyStateAdapter:
     Mismo interfaz que PolymarketStateStore (should_notify/record_notified),
     pero respaldado en la tabla polymarket_notify_state de Supabase en vez
     de un JSON en disco — necesario en serverless porque el filesystem no
-    persiste entre invocaciones. Vive acá (no en app.py ni en api/) porque
+    persiste entre invocaciones. Vive acá (no en app.py) porque
     es la pieza de pegamento entre run_polymarket_cycle_serverless (de este
     mismo módulo) y el backend de turno (Supabase); cualquier entrypoint
     que quiera correr el ciclo serverless la importa desde acá.
