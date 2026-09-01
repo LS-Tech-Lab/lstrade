@@ -92,13 +92,28 @@ class Config:
 
     # NUEVO: categorías de mercado (ver polymarket_categories.py) que no se
     # avisan más — basado en polymarket_backtest.py + analyze_polymarket_categories.py
-    # sobre 216 trades reales: "Política / elecciones" dio profit factor 0.80
+    # sobre 216 trades reales: "Política / geopolítica" dio profit factor 0.80
     # con n=41 (pierde plata en promedio, muestra suficiente para no ser
     # ruido). El resto de categorías con muestra chica (Deportes/vanity,
     # Macro, IA/tech) todavía no tienen evidencia suficiente para excluirlas
     # — se dejan corriendo para seguir juntando datos.
+    #
+    # FIX: el string por defecto decía "Política / elecciones", que no
+    # coincide con ningún nombre real de polymarket_categories.py (la
+    # categoría se llama "Política / geopolítica") — el filtro nunca
+    # excluyó nada en producción pese al comentario de arriba.
+    #
+    # 2026-09-01: agregada "Redes sociales / figuras públicas" — sobre 47
+    # señales resueltas en polymarket_signals (Supabase, proyecto lstrade),
+    # esa categoría dio 0% win rate y -5.00R en n=5 (todas perdedoras).
+    # Muestra chica — sigue siendo la peor categoría del corte por lejos,
+    # pero conviene revalidar cuando haya más señales antes de darla por
+    # sentado como edge negativo estructural.
     POLYMARKET_EXCLUDED_CATEGORIES = [
-        c.strip() for c in os.getenv("POLYMARKET_EXCLUDED_CATEGORIES", "Política / elecciones").split(",") if c.strip()
+        c.strip() for c in os.getenv(
+            "POLYMARKET_EXCLUDED_CATEGORIES",
+            "Política / geopolítica,Redes sociales / figuras públicas",
+        ).split(",") if c.strip()
     ]
 
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
