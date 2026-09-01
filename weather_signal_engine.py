@@ -311,6 +311,32 @@ def _station_local_hour(station):
         return 12
 
 
+def _expected_offset_from_high(hour):
+    """Cuántos °F suelen faltar para la máxima del día, según la hora local.
+
+    Hallazgo 01/09/2026: la versión anterior usaba un offset fijo (-6°F) y
+    solo comparaba la trayectoria real (METAR) contra el pronóstico entre
+    las 9am y las 2pm. Eso deja sin chequear justo la ventana de pico de
+    calor real (~2-5pm en la mayoría de estaciones) — si la tarde ya
+    contradice el pronóstico matutino de NWS, el modelo dejaba de
+    enterarse pasadas las 2pm, mientras que el precio de mercado sí lo
+    refleja en tiempo real (así se explicó el desacuerdo grande en la
+    señal de KDFW: 35% del modelo vs. <1% del mercado, generada a las
+    ~2:30pm hora local). La curva diurna real sube rápido a media mañana y
+    se aplana cerca del pico, así que un offset fijo tampoco sería correcto
+    al extender la ventana sin más — cerca del pico ya debería faltar poco.
+    """
+    if hour < 9:
+        return None  # muy temprano — la trayectoria matutina todavía no dice nada útil
+    if hour < 12:
+        return 6.0   # media mañana — normalmente faltan ~5-8°F para la máxima
+    if hour < 15:
+        return 3.0   # primera hora de la tarde — se va cerrando la brecha
+    if hour <= 18:
+        return 0.5   # ventana de pico / post-pico — la máxima ya debería estar casi alcanzada
+    return None      # noche — la trayectoria del día ya no es informativa
+
+
 def estimate_adjusted_high(nws, metar, taf, station):
     """Parte de la guía de NWS como centro de masa y ajusta con la
     trayectoria matutina (METAR vs. lo esperado a esta hora) y el timing de
@@ -331,15 +357,16 @@ def estimate_adjusted_high(nws, metar, taf, station):
     adjustment = 0.0
     hour = _station_local_hour(station)
 
-    if metar and metar.get("temp_f") is not None and 9 <= hour <= 14:
+    offset = _expected_offset_from_high(hour)
+    if metar and metar.get("temp_f") is not None and offset is not None:
         current = metar["temp_f"]
         six_hr_max = metar.get("six_hr_max_f")
         reference = max(current, six_hr_max) if six_hr_max else current
-        expected_at_this_hour = base - 6  # normalmente faltan ~5-8°F para la máxima a media mañana
+        expected_at_this_hour = base - offset
         delta = reference - expected_at_this_hour
         if abs(delta) >= 2:
             adjustment += max(-3.0, min(3.0, delta * 0.4))
-            notes.append(f"Trayectoria matutina {delta:+.1f}°F vs. lo esperado a esta hora — ajuste {adjustment:+.1f}°F.")
+            notes.append(f"Trayectoria del día {delta:+.1f}°F vs. lo esperado a las {hour}h — ajuste {adjustment:+.1f}°F.")
 
     if taf and taf.get("storm_signal") and hour < 16:
         adjustment -= 1.5
@@ -411,7 +438,7 @@ DISCLAIMER = (
 )
 
 
-def generate_weather_signal(event, config, min_ev=0.15):
+def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
     """
     Genera una señal de clima para un evento de Polymarket agrupado por
     buckets (mercados YES/NO por rango de temperatura del mismo día/estación).
@@ -470,7 +497,11 @@ def generate_weather_signal(event, config, min_ev=0.15):
             "url": m.get("url") or event.get("url"),
         }
         rows.append(row)
-        if ev is not None and ev >= min_ev and (best is None or ev > best["ev"]):
+        # min_price descarta buckets pegados al piso de Polymarket como
+        # candidatos a "mejor señal": ahí el EV se dispara por dividir casi
+        # entre cero, no por ventaja real, y casi nunca hay book detrás para
+        # ejecutar. Igual quedan en `rows` para el detalle del reporte.
+        if ev is not None and ev >= min_ev and price >= min_price and (best is None or ev > best["ev"]):
             best = row
 
     rows.sort(key=lambda r: (r["ev"] if r["ev"] is not None else -999), reverse=True)
