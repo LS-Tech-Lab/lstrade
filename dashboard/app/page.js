@@ -514,6 +514,10 @@ function CryptoOpenTable({ rows }) {
   );
 }
 
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// lenguaje visual que los indicadores en vivo de cripto (una tarjeta por
+// categoría, flechas y puntos para navegar) en vez de una tabla ancha que
+// en mobile achicaba el texto o forzaba scroll lateral.
 function PolymarketCategoryTable({ byCategory }) {
   const rows = Object.entries(byCategory || {}).sort((a, b) => b[1].total_r - a[1].total_r);
   if (rows.length === 0) {
@@ -521,77 +525,58 @@ function PolymarketCategoryTable({ byCategory }) {
   }
   const maxAbs = Math.max(...rows.map(([, s]) => Math.abs(s.total_r)), 0.01);
   return (
-    <TableScroll>
-      <table>
-        <thead>
-          <tr>
-            <th>Categoría</th>
-            <th>n</th>
-            <th>Win%</th>
-            <th>Expectancy</th>
-            <th>PF</th>
-            <th>Total R</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([cat, s]) => {
-            const tone = s.total_r >= 0 ? "ok" : "fail";
-            const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
-            return (
-              <tr key={cat}>
-                <td data-label="Categoría">{cat}{s.n < 5 ? " ⚠️" : ""}</td>
-                <td data-label="n">{s.n}</td>
-                <td data-label="Win%">{s.win_rate.toFixed(0)}%</td>
-                <td data-label="Expectancy" className={tone}>{s.expectancy_r >= 0 ? "+ " : ""}{s.expectancy_r.toFixed(2)}R</td>
-                <td data-label="PF">{s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"}</td>
-                <td data-label="Total R" className={tone}>
-                  <div className="cell-bar-wrap">
-                    <span>{s.total_r >= 0 ? "+ " : ""}{s.total_r.toFixed(2)}R</span>
-                    <div className="cell-bar-track">
-                      <div className={`cell-bar-fill ${tone}`} style={{ width: `${barPct}%` }} />
-                    </div>
+    <RowCarousel
+      items={rows}
+      keyExtractor={([cat]) => cat}
+      emptyMessage="Todavía no hay señales resueltas para desglosar por categoría."
+      renderFields={([cat, s]) => {
+        const tone = s.total_r >= 0 ? "ok" : "fail";
+        const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
+        return (
+          <>
+            <RowField label="Categoría" value={`${cat}${s.n < 5 ? " ⚠️" : ""}`} />
+            <RowField label="n" value={s.n} />
+            <RowField label="Win%" value={`${s.win_rate.toFixed(0)}%`} />
+            <RowField label="Expectancy" value={`${s.expectancy_r >= 0 ? "+ " : ""}${s.expectancy_r.toFixed(2)}R`} tone={tone} />
+            <RowField label="PF" value={s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"} />
+            <RowField
+              label="Total R"
+              value={
+                <div className="cell-bar-wrap">
+                  <span>{s.total_r >= 0 ? "+ " : ""}{s.total_r.toFixed(2)}R</span>
+                  <div className="cell-bar-track">
+                    <div className={`cell-bar-fill ${tone}`} style={{ width: `${barPct}%` }} />
                   </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </TableScroll>
+                </div>
+              }
+              tone={tone}
+            />
+          </>
+        );
+      }}
+    />
   );
 }
 
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// patrón que CryptoOpenTable (posiciones cripto abiertas).
 function PolymarketOpenTable({ rows }) {
-  if (!rows || rows.length === 0) {
-    return <p className="empty">Sin señales de Polymarket abiertas ahora mismo.</p>;
-  }
   return (
-    <TableScroll>
-      <table>
-        <thead>
-          <tr>
-            <th>Mercado</th>
-            <th>Dirección</th>
-            <th>Entrada</th>
-            <th>Target</th>
-            <th>Stop</th>
-            <th>Enviada</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
-              <td data-label="Dirección">{directionLabel(r.direction)}</td>
-              <td data-label="Entrada">{r.entry?.toFixed(3)}</td>
-              <td data-label="Target">{r.target?.toFixed(3)}</td>
-              <td data-label="Stop">{r.stop?.toFixed(3)}</td>
-              <td data-label="Enviada">{new Date(r.ts_signaled * 1000).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </TableScroll>
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin señales de Polymarket abiertas ahora mismo."
+      renderFields={(r) => (
+        <>
+          <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+          <RowField label="Dirección" value={directionLabel(r.direction)} />
+          <RowField label="Entrada" value={r.entry?.toFixed(3)} />
+          <RowField label="Target" value={r.target?.toFixed(3)} tone="ok" />
+          <RowField label="Stop" value={r.stop?.toFixed(3)} tone="fail" />
+          <RowField label="Enviada" value={new Date(r.ts_signaled * 1000).toLocaleString()} />
+        </>
+      )}
+    />
   );
 }
 
@@ -600,6 +585,8 @@ function PolymarketOpenTable({ rows }) {
 // con métricas de rendimiento detalladas: R-múltiple, retorno %, tiempo
 // hasta resolución, precios de entrada/salida.
 // ────────────────────────────────────────────────────────────────────
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// patrón que el resto de los carruseles (indicadores, posiciones, bitácora).
 function PolymarketResolvedTable({ rows }) {
   if (!rows || rows.length === 0) {
     return <p className="empty">Todavía no hay señales resueltas.</p>;
@@ -626,56 +613,37 @@ function PolymarketResolvedTable({ rows }) {
   });
 
   return (
-    <TableScroll>
-      <table>
-        <thead>
-          <tr>
-            <th>Mercado</th>
-            <th>Dirección</th>
-            <th>Entrada</th>
-            <th>Salida</th>
-            <th>R-Múltiple</th>
-            <th>Retorno</th>
-            <th>Tiempo</th>
-            <th>Resultado</th>
-          </tr>
-        </thead>
-        <tbody>
-          {enrichedRows.map((r) => {
-            const isWin = r.outcome === "target";
-            const rTone = r.rMultiple !== null ? (r.rMultiple >= 0 ? "ok" : "fail") : "";
-            const retTone = r.returnPct !== null ? (r.returnPct >= 0 ? "ok" : "fail") : "";
-            
-            return (
-              <tr key={r.id}>
-                <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
-                <td data-label="Dirección">{directionLabel(r.direction)}</td>
-                <td data-label="Entrada">{r.entry?.toFixed(3)}</td>
-                <td data-label="Salida">{r.exit_price?.toFixed(3)}</td>
-                <td data-label="R-Múltiple" className={rTone}>
-                  {r.rMultiple !== null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"}
-                </td>
-                <td data-label="Retorno" className={retTone}>
-                  {r.returnPct !== null ? `${r.returnPct >= 0 ? "+" : ""}${r.returnPct.toFixed(1)}%` : "—"}
-                </td>
-                <td data-label="Tiempo">
-                  {r.timeToResolve !== null 
-                    ? (r.timeToResolve < 24 
-                        ? `${r.timeToResolve.toFixed(1)}h` 
-                        : `${(r.timeToResolve / 24).toFixed(1)}d`)
-                    : "—"}
-                </td>
-                <td data-label="Resultado" className={isWin ? "ok" : "fail"}>
-                  <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
-                    {isWin ? "✅ GANADA" : "❌ PERDIDA"}
-                  </span>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </TableScroll>
+    <RowCarousel
+      items={enrichedRows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Todavía no hay señales resueltas."
+      renderFields={(r) => {
+        const isWin = r.outcome === "target";
+        const rTone = r.rMultiple !== null ? (r.rMultiple >= 0 ? "ok" : "fail") : "";
+        const retTone = r.returnPct !== null ? (r.returnPct >= 0 ? "ok" : "fail") : "";
+        return (
+          <>
+            <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+            <RowField label="Dirección" value={directionLabel(r.direction)} />
+            <RowField label="Entrada" value={r.entry?.toFixed(3)} />
+            <RowField label="Salida" value={r.exit_price?.toFixed(3)} />
+            <RowField label="R-Múltiple" tone={rTone}
+              value={r.rMultiple !== null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"} />
+            <RowField label="Retorno" tone={retTone}
+              value={r.returnPct !== null ? `${r.returnPct >= 0 ? "+" : ""}${r.returnPct.toFixed(1)}%` : "—"} />
+            <RowField label="Tiempo"
+              value={r.timeToResolve !== null
+                ? (r.timeToResolve < 24 ? `${r.timeToResolve.toFixed(1)}h` : `${(r.timeToResolve / 24).toFixed(1)}d`)
+                : "—"} />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+              <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
+                {isWin ? "✅ GANADA" : "❌ PERDIDA"}
+              </span>
+            } />
+          </>
+        );
+      }}
+    />
   );
 }
 
