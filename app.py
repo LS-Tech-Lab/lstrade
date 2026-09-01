@@ -491,7 +491,10 @@ def run_weather_cycle():
             detail.append({"title": event["title"], "status": "error", "error": str(e)})
             continue
 
-        detail.append({"title": event["title"], "status": signal.get("status")})
+        detail_entry = {"title": event["title"], "status": signal.get("status")}
+        if signal.get("reason"):
+            detail_entry["reason"] = signal["reason"]
+        detail.append(detail_entry)
         if signal.get("status") != "ok" or not signal.get("best_trade"):
             continue
 
