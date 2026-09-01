@@ -21,8 +21,8 @@ tiene sentido porque hay un humano revisando cada corrida.
 
 Este módulo es puro (sin I/O de Telegram/DB) salvo `WeatherNotifyStateStore`,
 que sí necesita persistencia mínima para deduplicar avisos entre ciclos.
-Los orquestadores (run_weather_cycle() en app.py para serverless,
-weather_report.py para modo manual) importan de acá.
+Los orquestadores (api/weather_cycle.py para serverless, weather_report.py
+para modo manual) importan de acá.
 """
 import logging
 import math
@@ -176,6 +176,27 @@ def parse_bucket(question):
 # ---------------------------------------------------------------------------
 def _headers(config):
     ua = getattr(config, "WEATHER_USER_AGENT", None) or "lstrade-weather-bot/1.0"
+    # Los headers HTTP viajan en latin-1 — un guión largo "—", comillas
+    # tipográficas “ ”, o una tilde mal copiada al pegar el contacto en la
+    # env var de Vercel hacen que `requests` lance UnicodeEncodeError ANTES
+    # de intentar la conexión (ni DNS llega a resolver). Eso lo atrapaba el
+    # except Exception de cada fetch_* de abajo y se veía como "no_data" sin
+    # ningún rastro del motivo real — pasaba en los 3 fetches, en cada
+    # evento, por eso weather_signals nunca se pobló pese a que el cronjob
+    # corría bien (confirmado: la ejecución tardaba ~1.5s, muy poco para
+    # llegar a hacer las llamadas reales a NWS/aviationweather.gov). Se sanea
+    # acá para que un typo al configurar el contacto no tumbe el módulo
+    # entero — si hay caracteres no soportados se descartan y se loguea un
+    # aviso, en vez de fallar en silencio.
+    try:
+        ua.encode("latin-1")
+    except UnicodeEncodeError:
+        sanitized = ua.encode("ascii", "ignore").decode("ascii").strip() or "lstrade-weather-bot/1.0"
+        log.warning(
+            f"WEATHER_USER_AGENT tiene caracteres no soportados en headers HTTP "
+            f"(ej. guión largo, comillas curvas) — usando versión saneada: {sanitized!r}"
+        )
+        ua = sanitized
     return {"User-Agent": ua, "Accept": "application/json"}
 
 
@@ -183,46 +204,27 @@ def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT):
     """Guía de pronóstico oficial de NWS para el punto de la estación.
     api.weather.gov exige un User-Agent identificable (no un navegador
     genérico) — configurar WEATHER_USER_AGENT con un contacto real o NWS
-    puede empezar a bloquear las requests.
-
-    Devuelve (data, error) — error es None si data se obtuvo bien, o un
-    string corto describiendo la causa del fallo si data es None. Así
-    generate_weather_signal puede subir el motivo real hasta el JSON del
-    endpoint en vez de dejarlo solo en los logs de Vercel."""
+    puede empezar a bloquear las requests."""
     if station.get("lat") is None:
-        return None, "estación sin lat/lon (override manual sin geocodificar)"
+        return None
     try:
         headers = _headers(config)
-        points_resp = requests.get(
+        points = requests.get(
             f"{NWS_API}/points/{station['lat']},{station['lon']}",
             headers=headers, timeout=timeout,
-        )
-        points_resp.raise_for_status()
-        points = points_resp.json()
+        ).json()
         forecast_url = points["properties"]["forecast"]
-        forecast_resp = requests.get(forecast_url, headers=headers, timeout=timeout)
-        forecast_resp.raise_for_status()
-        forecast = forecast_resp.json()
+        forecast = requests.get(forecast_url, headers=headers, timeout=timeout).json()
         periods = forecast["properties"]["periods"]
         today_day = next((p for p in periods if p.get("isDaytime")), periods[0])
         return {
             "forecast_high_f": today_day.get("temperature"),
             "short_forecast": today_day.get("shortForecast"),
             "issued": forecast["properties"].get("updated"),
-        }, None
-    except requests.exceptions.Timeout:
-        reason = f"timeout ({timeout}s) llamando a NWS"
-        log.warning(f"NWS guidance falló para {station.get('icao')}: {reason}")
-        return None, reason
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code if e.response is not None else "?"
-        reason = f"NWS respondió HTTP {status}"
-        log.warning(f"NWS guidance falló para {station.get('icao')}: {reason}")
-        return None, reason
+        }
     except Exception as e:
-        reason = f"{type(e).__name__}: {e}"
-        log.warning(f"NWS guidance falló para {station.get('icao')}: {reason}")
-        return None, reason
+        log.warning(f"NWS guidance falló para {station.get('icao')}: {e}")
+        return None
 
 
 def _parse_six_hour_max_f(raw_ob):
@@ -241,9 +243,7 @@ def _parse_six_hour_max_f(raw_ob):
 
 def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT):
     """Observación en vivo + máxima de 6h de los remarks, tal como pide
-    STEP 1 de la skill (watch the 6-hour max temperature group).
-
-    Devuelve (data, error) — ver docstring de fetch_nws_guidance."""
+    STEP 1 de la skill (watch the 6-hour max temperature group)."""
     try:
         headers = _headers(config)
         resp = requests.get(
@@ -254,9 +254,7 @@ def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT):
         resp.raise_for_status()
         obs = resp.json()
         if not obs:
-            reason = f"sin observaciones METAR en las últimas {hours}h para {icao}"
-            log.warning(reason)
-            return None, reason
+            return None
         latest = obs[0]
         temp_c = latest.get("temp")
         return {
@@ -264,27 +262,15 @@ def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT):
             "obs_time": latest.get("obsTime") or latest.get("reportTime"),
             "raw": latest.get("rawOb"),
             "six_hr_max_f": _parse_six_hour_max_f(latest.get("rawOb", "")),
-        }, None
-    except requests.exceptions.Timeout:
-        reason = f"timeout ({timeout}s) llamando a METAR"
-        log.warning(f"METAR falló para {icao}: {reason}")
-        return None, reason
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code if e.response is not None else "?"
-        reason = f"METAR respondió HTTP {status}"
-        log.warning(f"METAR falló para {icao}: {reason}")
-        return None, reason
+        }
     except Exception as e:
-        reason = f"{type(e).__name__}: {e}"
-        log.warning(f"METAR falló para {icao}: {reason}")
-        return None, reason
+        log.warning(f"METAR falló para {icao}: {e}")
+        return None
 
 
 def fetch_taf(icao, config, timeout=DEFAULT_TIMEOUT):
     """TAF para timing de nubes/tormenta — lo que realmente topea la
-    máxima del día (STEP 1/2 de la skill).
-
-    Devuelve (data, error) — ver docstring de fetch_nws_guidance."""
+    máxima del día (STEP 1/2 de la skill)."""
     try:
         headers = _headers(config)
         resp = requests.get(
@@ -295,26 +281,14 @@ def fetch_taf(icao, config, timeout=DEFAULT_TIMEOUT):
         resp.raise_for_status()
         data = resp.json()
         if not data:
-            reason = f"sin TAF disponible para {icao}"
-            log.warning(reason)
-            return None, reason
+            return None
         taf = data[0]
         raw = taf.get("rawTAF") or taf.get("raw_text") or ""
         storm_signal = bool(re.search(r"\b(TS|SH|VCTS|VCSH)\w*", raw))
-        return {"raw": raw, "issue_time": taf.get("issueTime"), "storm_signal": storm_signal}, None
-    except requests.exceptions.Timeout:
-        reason = f"timeout ({timeout}s) llamando a TAF"
-        log.warning(f"TAF falló para {icao}: {reason}")
-        return None, reason
-    except requests.exceptions.HTTPError as e:
-        status = e.response.status_code if e.response is not None else "?"
-        reason = f"TAF respondió HTTP {status}"
-        log.warning(f"TAF falló para {icao}: {reason}")
-        return None, reason
+        return {"raw": raw, "issue_time": taf.get("issueTime"), "storm_signal": storm_signal}
     except Exception as e:
-        reason = f"{type(e).__name__}: {e}"
-        log.warning(f"TAF falló para {icao}: {reason}")
-        return None, reason
+        log.warning(f"TAF falló para {icao}: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -455,26 +429,13 @@ def generate_weather_signal(event, config, min_ev=0.15):
     if not buckets:
         return {"status": "no_buckets", "title": title, "station": station}
 
-    nws, nws_err = fetch_nws_guidance(station, config)
-    metar, metar_err = fetch_metar(station["icao"], config)
-    taf, taf_err = fetch_taf(station["icao"], config)
+    nws = fetch_nws_guidance(station, config)
+    metar = fetch_metar(station["icao"], config)
+    taf = fetch_taf(station["icao"], config)
 
     center, notes, penalty = estimate_adjusted_high(nws, metar, taf, station)
     if center is None:
-        # NUEVO: antes esto solo quedaba en log.warning() de cada fetch_*,
-        # invisible en la respuesta del endpoint — para depurar un no_data
-        # había que ir a buscar logs de Vercel. Ahora el motivo real (NWS
-        # y METAR, las dos fuentes que puede usar estimate_adjusted_high
-        # como base) viaja hasta el JSON que devuelve /api/weather_cycle.
-        reasons = []
-        if nws_err:
-            reasons.append(f"NWS: {nws_err}")
-        if metar_err:
-            reasons.append(f"METAR: {metar_err}")
-        return {
-            "status": "no_data", "title": title, "station": station,
-            "reason": "; ".join(reasons) if reasons else "sin causa registrada",
-        }
+        return {"status": "no_data", "title": title, "station": station}
 
     base_sigma = getattr(config, "WEATHER_BASE_SIGMA_F", 1.6)
     distribution, sigma = build_bucket_distribution(center, buckets, base_sigma=base_sigma, confidence_penalty=penalty)
