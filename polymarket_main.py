@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 import time
+import concurrent.futures  # NUEVO (Semana 2): Para concurrencia en descargas de red
 from config import Config
 from db import Database
 from polymarket_categories import categorize
@@ -18,14 +19,7 @@ from telegram_notifier import TelegramNotifier
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("polymarket_main")
 
-# NUEVO: en el loop local el Market Watch (top 5 por volumen) se mandaba en
-# CADA ciclo porque no había límite de tiempo real entre corridas. En
-# serverless el cron externo dispara cada ~10-15 min, así que mandarlo cada
-# vez serían decenas de mensajes por día solo de este aviso — se limita a
-# un máximo de una vez por MARKET_WATCH_INTERVAL_SECONDS, usando el mismo
-# patrón de reloj en bot_state que el heartbeat de cripto (ver app.py).
 MARKET_WATCH_INTERVAL_SECONDS = 6 * 3600  # 6 horas
-
 
 def build_market_watch_text(parsed_markets, markdown=False):
     """Construye el resumen de los top 5 mercados por volumen."""
@@ -42,7 +36,6 @@ def build_market_watch_text(parsed_markets, markdown=False):
         lines.append("")
     
     return "\n".join(lines)
-
 
 def build_polymarket_memo(signal, markdown=False):
     """Construye el memo de decisión para un mercado de Polymarket."""
@@ -87,9 +80,8 @@ def build_polymarket_memo(signal, markdown=False):
     
     return "\n".join(lines)
 
-
 def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=None):
-    """Ejecuta un ciclo de análisis de mercados de Polymarket."""
+    """Ejecuta un ciclo de análisis de mercados de Polymarket (modo local/VPS)."""
     log.info("Escaneando mercados de Polymarket...")
     
     limit = top_n or 50
@@ -117,14 +109,6 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         if market["liquidity"] < 1000:
             continue
 
-        # NUEVO: filtro por categoría — polymarket_backtest.py sobre 216
-        # trades reales mostró que "Política / elecciones" tiene profit
-        # factor 0.80 (pierde plata en promedio, no es ruido de muestra
-        # chica con n=41), mientras que el resto de categorías con muestra
-        # suficiente están parejas o positivas. Se saltea ANTES de pedir el
-        # historial de precios — ahorra la llamada a la API además de no
-        # mandar el aviso. Configurable por si se quiere ajustar sin tocar
-        # código a medida que se junte más muestra por categoría.
         category = categorize(market["question"])
         if category in config.POLYMARKET_EXCLUDED_CATEGORIES:
             continue
@@ -133,17 +117,6 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
             log.warning(f"Sin clobTokenId resuelto para '{market['question'][:50]}', se omite el historial de precios.")
             price_history = []
         else:
-            # `interval` en /prices-history de CLOB NO es "tamaño de vela" —
-            # es la VENTANA de tiempo hacia atrás (enum: max/all/1m/1w/1d/6h/1h),
-            # y `fidelity` (minutos) es lo que sí controla el tamaño de cada
-            # punto. interval="1h" pedía "la última 1 hora de historial" con
-            # velas de 60 min → como mucho 1-2 puntos, nunca los 12+ que pide
-            # analyze_probability_momentum(window=12) — por eso momentum_data
-            # daba None siempre y ninguna señal pasaba jamás el filtro de
-            # dirección (confirmado: 0 filas en polymarket_signals desde
-            # siempre, pese a que el escaneo y el Market Watch sí funcionan).
-            # interval="1d" + fidelity=60 trae ~24 puntos (uno por hora del
-            # último día) — suficiente para la ventana de 12.
             price_history = client.fetch_price_history(market["yes_token_id"], interval="1d", fidelity=60)
         time.sleep(0.2)
         price_history_by_condition_id[market["condition_id"]] = price_history
@@ -156,7 +129,6 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         if signal:
             signals.append(signal)
     
-    # 🚨 NUEVO: Enviar Market Watch a Telegram (y también mostrar en consola)
     if parsed_markets:
         mw_console = build_market_watch_text(parsed_markets, markdown=False)
         print("\n" + "=" * 70)
@@ -166,7 +138,7 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         if notifier.enabled:
             mw_telegram = build_market_watch_text(parsed_markets, markdown=True)
             notifier.send_message(mw_telegram)
-            time.sleep(0.5)  # Pausa para no saturar la API de Telegram
+            time.sleep(0.5)
     
     signals.sort(key=lambda s: s["score"], reverse=True)
     
@@ -176,7 +148,6 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
     
     log.info(f"🎯 {len(signals)} señales detectadas en Polymarket este ciclo.")
 
-    # Filtrar las que ya se avisaron recientemente sin cambios relevantes
     new_signals = [
         s for s in signals
         if state_store.should_notify(s["market"]["condition_id"], s["direction"], s["score"])
@@ -188,7 +159,6 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
 
     log.info(f"Enviando {len(new_signals[:3])} señal(es) nueva(s) o actualizada(s) a Telegram...")
 
-    # Enviar máximo 3 señales por ciclo para no saturar
     for i, signal in enumerate(new_signals[:3], 1):
         memo_console = build_polymarket_memo(signal, markdown=False)
         print("\n" + "=" * 70)
@@ -200,9 +170,6 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         notifier.send_message(memo_telegram)
         state_store.record_notified(signal["market"]["condition_id"], signal["direction"], signal["score"])
 
-        # NUEVO: gráfico de la curva de probabilidad con entrada/target/stop
-        # marcados — antes la señal de Polymarket era pura data en texto a
-        # pesar de tener un historial de precios ideal para visualizar.
         if signal.get("trade_plan"):
             history = price_history_by_condition_id.get(signal["market"]["condition_id"])
             if history and len(history) >= 5:
@@ -212,8 +179,6 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
                 except Exception as e:
                     log.warning(f"No se pudo generar/enviar el gráfico de la señal: {e}")
 
-        # NUEVO: registrar la señal con plan de salida para poder medir
-        # después si ganó o perdió (ver polymarket_track_results.py).
         if db is not None and signal.get("trade_plan"):
             condition_id = signal["market"]["condition_id"]
             original_market = market_by_condition_id.get(condition_id, {})
@@ -230,16 +195,11 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
     
     return signals
 
-
 class SupabaseNotifyStateAdapter:
     """
     Mismo interfaz que PolymarketStateStore (should_notify/record_notified),
-    pero respaldado en la tabla polymarket_notify_state de Supabase en vez
-    de un JSON en disco — necesario en serverless porque el filesystem no
-    persiste entre invocaciones. Vive acá (no en app.py) porque
-    es la pieza de pegamento entre run_polymarket_cycle_serverless (de este
-    mismo módulo) y el backend de turno (Supabase); cualquier entrypoint
-    que quiera correr el ciclo serverless la importa desde acá.
+    pero respaldado en Supabase en vez de un JSON en disco — necesario en 
+    serverless porque el filesystem no persiste entre invocaciones.
     """
     def __init__(self, db, resend_cooldown_hours=6.0, min_score_increase_pct=0.20):
         self.db = db
@@ -255,31 +215,13 @@ class SupabaseNotifyStateAdapter:
     def record_notified(self, condition_id, direction, score):
         self.db.record_notified_polymarket(condition_id, direction, score)
 
-
 def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
                                      top_n=15, time_budget_seconds=7.5,
                                      request_timeout=5):
     """
-    Ciclo de Polymarket para correr como función serverless (Vercel Hobby:
-    10s de presupuesto total). A diferencia de run_polymarket_cycle (loop
-    local, sin límite de tiempo), acá:
-
-      - Se arranca un reloj (time.monotonic) y se corta el análisis antes
-        de acercarse al límite, devolviendo lo que se haya alcanzado a
-        procesar — mejor una respuesta parcial que una función matada a
-        mitad de camino por Vercel sin haber guardado nada.
-      - La ineficiencia de precio (suma YES+NO != 1.00) es gratis: no
-        necesita historial de precios, solo el snapshot que ya vino en
-        fetch_active_markets. Se usa para priorizar QUÉ mercados merecen
-        la llamada cara (fetch_price_history) en vez de pedirla para los
-        primeros N por volumen como hace el loop local, donde el tiempo no
-        es la restricción.
-      - Sin sleep() entre requests: el loop local lo usa para no golpear
-        la API muy seguido en un while True de larga duración; acá es una
-        invocación puntual cada ~10 min, no hace falta.
-      - Sin envío de gráficos (matplotlib): consume presupuesto de tiempo
-        que en este modo es escaso. El memo de texto por Telegram alcanza;
-        los gráficos siguen disponibles corriendo polymarket_main.py local.
+    Ciclo de Polymarket para correr como función serverless (Vercel Hobby).
+    Actualizado con concurrencia (Semana 2) para descargar historiales de precios
+    en paralelo y evitar el timeout de 25s de Vercel.
     """
     started = time.monotonic()
 
@@ -292,7 +234,7 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
         return {"status": "no_markets"}
 
     parsed_markets = []
-    candidates = []  # (inefficiency, market) — se ordena y se corta antes de gastar red
+    candidates = []
     for market_raw in markets_raw:
         market = client.parse_market_for_analysis(market_raw)
         if not market:
@@ -315,12 +257,6 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
     candidates.sort(key=lambda c: c[0], reverse=True)
     candidates = candidates[:top_n]
 
-    # NUEVO: Market Watch — restaura el aviso que existía en el loop local
-    # (build_market_watch_text) y que se había quedado afuera de la versión
-    # serverless. Se manda ANTES de gastar presupuesto de tiempo en el
-    # historial de precios de los candidatos, para que no dependa de que
-    # sobre tiempo al final del ciclo — es la parte más importante para
-    # saber "el bot sigue vivo", así que tiene prioridad sobre el análisis.
     if parsed_markets and notifier.enabled and db is not None:
         now = time.time()
         last_watch = float(db.get_state("last_market_watch_ts", "0") or 0)
@@ -334,22 +270,45 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
     signals = []
     market_by_condition_id = {}
     analyzed = 0
+    
+    # NUEVO (Semana 2): Concurrencia para descarga de historiales de precios.
+    # Antes se hacía en secuencia (14 candidatos * ~1.5s = 21s), acercando
+    # peligrosamente el ciclo al límite de 25s de Vercel. Con ThreadPoolExecutor,
+    # las llamadas de red se ejecutan en paralelo, reduciendo el tiempo a ~2-3s.
+    def fetch_history_for_market(market):
+        if not market.get("yes_token_id"):
+            return market["condition_id"], []
+        try:
+            history = client.fetch_price_history(
+                market["yes_token_id"], interval="1d", fidelity=60, timeout=request_timeout
+            )
+            return market["condition_id"], history
+        except Exception as e:
+            log.warning(f"Error fetching history for {market['condition_id']}: {e}")
+            return market["condition_id"], []
+
+    history_results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_market = {
+            executor.submit(fetch_history_for_market, market): market
+            for _, market in candidates
+        }
+        for future in concurrent.futures.as_completed(future_to_market):
+            if time_left() < 1.0:
+                log.warning("Presupuesto de tiempo agotado durante la descarga de historiales.")
+                break
+            condition_id, price_history = future.result()
+            history_results[condition_id] = price_history
+
     for _, market in candidates:
         if time_left() < 1.0:
             log.warning(
                 f"Presupuesto de tiempo agotado — analizados {analyzed}/{len(candidates)} candidatos."
             )
             break
+        
         market_by_condition_id[market["condition_id"]] = market
-        if not market.get("yes_token_id"):
-            price_history = []
-        else:
-            # Ver nota en run_polymarket_cycle (loop local) más arriba: interval
-            # es una ventana de tiempo, no un tamaño de vela — "1h" dejaba
-            # momentum_data en None siempre. "1d" trae ~24 puntos (1 por hora).
-            price_history = client.fetch_price_history(
-                market["yes_token_id"], interval="1d", fidelity=60, timeout=request_timeout
-            )
+        price_history = history_results.get(market["condition_id"], [])
         analyzed += 1
 
         signal = generate_polymarket_signal(
@@ -404,7 +363,6 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
         "signals_sent": sent,
     }
 
-
 def main():
     parser = argparse.ArgumentParser(description="Trader IA para Polymarket")
     parser.add_argument("--once", action="store_true", help="corre un solo ciclo")
@@ -455,7 +413,6 @@ def main():
         
         log.info(f"Próximo ciclo en {args.loop_interval} segundos...")
         time.sleep(args.loop_interval)
-
 
 if __name__ == "__main__":
     main()
