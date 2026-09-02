@@ -124,7 +124,8 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         signal = generate_polymarket_signal(
             market, price_history,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
-            target_rr=config.POLYMARKET_TARGET_RR,
+            target_pct_min=config.POLYMARKET_TARGET_PCT_MIN,
+            target_pct_max=config.POLYMARKET_TARGET_PCT_MAX,
         )
         if signal:
             signals.append(signal)
@@ -314,7 +315,8 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
         signal = generate_polymarket_signal(
             market, price_history,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
-            target_rr=config.POLYMARKET_TARGET_RR,
+            target_pct_min=config.POLYMARKET_TARGET_PCT_MIN,
+            target_pct_max=config.POLYMARKET_TARGET_PCT_MAX,
         )
         if signal:
             signals.append(signal)
