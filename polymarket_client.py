@@ -91,20 +91,17 @@ class PolymarketClient:
     def fetch_market_by_condition_id(self, condition_id, timeout=15):
         """Semana 3: Obtiene los datos actuales de un mercado específico para validar su liquidez.
 
-        FIX (02/09/2026): el filtro se mandaba como `condition_id` (snake_case),
-        pero la Gamma API usa camelCase en TODOS sus query params y campos
-        (conditionId, outcomePrices, clobTokenIds, tagId...) -- de hecho la
-        documentación oficial ni siquiera lista un filtro por condition id en
-        /markets, así que un nombre de parámetro no reconocido simplemente se
-        ignora en silencio (sin 400, sin error) y la API devuelve el primer
-        mercado del listado por defecto en vez de lanzar excepción o vacío.
-        Con `limit=1` eso significa: SIEMPRE devuelve *un* mercado, pero casi
-        nunca el correcto -- por eso nunca traía `closed: true` para la señal
-        real y las señales de weather_track_results/polymarket_track_results
-        se quedaban abiertas indefinidamente pese a que el cron corría bien.
-        Se valida además que el conditionId del mercado devuelto matchee el
-        pedido, por las dudas de que algún día la API sí soporte el filtro
-        pero devuelva más de un resultado ambiguo."""
+        NOTA (02/09/2026): la Gamma API NO soporta filtrar /markets por condition
+        id -- ni condition_id ni conditionId están documentados como filtro
+        (docs.polymarket.com/api-reference/markets/get-markets solo lista
+        id/slug directo, o filtros como tagId/closed/active). Un parámetro no
+        reconocido se ignora en silencio (sin 400) y la API devuelve el primer
+        mercado del listado por defecto -- por eso este método casi nunca
+        traía el mercado real pedido. Se deja la validación de conditionId
+        para que al menos falle de forma segura (devuelve None) en vez de
+        devolver un mercado equivocado. Para resolver señales por condition_id
+        de forma confiable, usar fetch_clob_market() más abajo, que sí soporta
+        la búsqueda directa vía la CLOB API."""
         try:
             resp = self.session.get(
                 f"{GAMMA_API}/markets",
@@ -125,6 +122,46 @@ class PolymarketClient:
             return None
         except Exception as e:
             log.warning(f"Error fetching market by condition_id {condition_id}: {e}")
+            return None
+
+    def fetch_clob_market(self, condition_id, timeout=15):
+        """Busca un mercado directo por condition_id vía la CLOB API.
+
+        A diferencia de fetch_market_by_condition_id() (Gamma, ver nota arriba),
+        acá el condition_id va en el PATH, no como query filter, y sí está
+        documentado: GET https://clob.polymarket.com/markets/{condition_id}
+        (docs.polymarket.com/developers/CLOB/markets/get-market). Devuelve el
+        campo `closed` real y el precio del token YES -- lo mínimo que necesita
+        run_weather_track_results() para saber si una señal ya resolvió de
+        verdad. El esquema de la CLOB API es distinto al de Gamma (tokens es
+        una lista de {token_id, outcome, price, winner}, no hay `liquidity` ni
+        `outcomePrices` como en Gamma), así que este método devuelve un dict
+        chico propio en vez de reusar parse_market_for_analysis()."""
+        try:
+            resp = self.session.get(f"{CLOB_API}/markets/{condition_id}", timeout=timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("condition_id") != condition_id:
+                log.warning(
+                    f"fetch_clob_market: condition_id devuelto no matchea "
+                    f"({data.get('condition_id')} != {condition_id})"
+                )
+                return None
+
+            yes_price = 0.0
+            for token in data.get("tokens", []):
+                if str(token.get("outcome", "")).upper() == "YES":
+                    yes_price = float(token.get("price", 0) or 0)
+                    break
+
+            return {
+                "condition_id": data.get("condition_id"),
+                "closed": bool(data.get("closed", False)),
+                "active": bool(data.get("active", False)),
+                "yes_price": yes_price,
+            }
+        except Exception as e:
+            log.warning(f"Error fetching CLOB market {condition_id}: {e}")
             return None
 
     def fetch_weather_events(self, limit=20, timeout=15, max_pages=6, page_size=100,
