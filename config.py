@@ -83,12 +83,17 @@ class Config:
     # de dirección ni subió de score de forma relevante (evita spam en Telegram)
     POLYMARKET_RESEND_COOLDOWN_HOURS = _float("POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
 
-    # Plan de salida sugerido para señales de Polymarket: mismo principio que
-    # ATR_STOP_MULT/MIN_RR del módulo cripto, pero usando la volatilidad del
-    # historial de precios de Polymarket en vez de ATR. Sin validar todavía
-    # contra resultados reales — punto de partida, no un valor probado.
+    # Plan de salida sugerido para señales de Polymarket: el STOP usa la
+    # volatilidad del historial de precios (mismo principio que
+    # ATR_STOP_MULT del módulo cripto). El TARGET (a partir de qué % de
+    # recorrido se toma ganancia, sin esperar la resolución) se calcula en
+    # polymarket_signal_engine.py combinando el precio de entrada
+    # (probabilidad implícita del mercado) con la confianza interna del bot,
+    # e interpolando entre estos dos límites según qué tan "segura" resulte
+    # la selección — 5 escalones: 10/15/20/25/30%.
     POLYMARKET_STOP_VOL_MULT = _float("POLYMARKET_STOP_VOL_MULT", 3.0)
-    POLYMARKET_TARGET_RR = _float("POLYMARKET_TARGET_RR", 1.5)
+    POLYMARKET_TARGET_PCT_MIN = _float("POLYMARKET_TARGET_PCT_MIN", 0.10)
+    POLYMARKET_TARGET_PCT_MAX = _float("POLYMARKET_TARGET_PCT_MAX", 0.30)
 
     # NUEVO: categorías de mercado (ver polymarket_categories.py) que no se
     # avisan más — basado en polymarket_backtest.py + analyze_polymarket_categories.py
