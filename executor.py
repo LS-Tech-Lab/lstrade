@@ -36,7 +36,21 @@ class Executor:
                 try:
                     order_status = self.exchange_client.fetch_order(order["id"], symbol)
                     actual_filled = float(order_status.get("filled", 0) or 0)
-                    if actual_filled > 0 and actual_filled < amount * 0.95:
+                    # FIX (auditoría 02/09/2026): la condición anterior era
+                    # `actual_filled > 0 and actual_filled < amount * 0.95`,
+                    # así que si la orden todavía tenía CERO llenado (ej.
+                    # ORDER_TYPE=limit que no tocó precio todavía),
+                    # effective_amount se quedaba en el `amount` original y
+                    # más abajo se colocaba un stop-loss real por el tamaño
+                    # completo sin tener NADA abierto en el exchange. Con
+                    # ORDER_TYPE=market (default) casi nunca se daba porque
+                    # el llenado es inmediato, pero es un stop huérfano
+                    # garantizado apenas se use una orden límite.
+                    if actual_filled == 0:
+                        log.warning(f"Orden {symbol} sin llenar todavía (filled=0). Cancelando antes de colocar stop-loss.")
+                        self.exchange_client.cancel_order(symbol, order["id"])
+                        return {"mode": "live", "status": "unfilled_cancelled", "order": order}
+                    if actual_filled < amount * 0.95:
                         log.warning(f"ALERTA: Llenado parcial en {symbol}. Esperado: {amount}, Llenado: {actual_filled}. Cancelando remanente.")
                         self.exchange_client.cancel_order(symbol, order["id"])
                         effective_amount = actual_filled

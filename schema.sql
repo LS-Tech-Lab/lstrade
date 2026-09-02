@@ -42,10 +42,26 @@ create table if not exists pending_decisions (
 create index if not exists idx_decisions_ts on decisions (ts desc);
 create index if not exists idx_equity_ts on equity_history (ts desc);
 
--- Posiciones abiertas y su cierre (paper trading en modo serverless).
--- api/manage_positions.py cierra las que tocan target/stop; no incluye
--- trailing stop dinámico (eso vive solo en el modo VPS/local,
--- position_manager.py) para mantener la función rápida y simple.
+-- Posiciones abiertas y su cierre.
+-- ACTUALIZADO (auditoría 02/09/2026): este comentario decía que
+-- /api/manage_positions cerraba por target/stop fijo y que el trailing
+-- stop dinámico solo vivía en modo VPS/local -- eso quedó desactualizado
+-- cuando run_cycle() (app.py) empezó a llamar también a
+-- position_manager.manage_open_positions() en modo serverless. Ahora
+-- /api/manage_positions delega en el mismo PositionManager (ver app.py),
+-- así que hay UNA sola implementación de la lógica de cierre/trailing
+-- stop compartida entre los dos triggers (cron-job.org → /api/cycle y
+-- GitHub Actions → /api/manage_positions), no dos independientes.
+--
+-- uq_open_trades_symbol: constraint de unicidad a nivel DB, de refuerzo.
+-- has_open_trade_for_symbol() en supabase_db.py ya bloquea a nivel
+-- aplicación abrir una segunda posición del mismo símbolo, pero es un
+-- SELECT-then-INSERT sin lock: dos invocaciones casi simultáneas de
+-- /api/cycle (ej. cron-job.org + un workflow_dispatch manual) podrían
+-- ambas pasar el chequeo antes de que cualquiera inserte. El índice
+-- único convierte ese caso en un error de INSERT explícito en vez de
+-- una duplicación silenciosa; supabase_db.py lo atrapa y lo trata como
+-- "ya hay posición abierta" (ver add_open_trade()).
 create table if not exists open_trades (
     id bigserial primary key,
     symbol text not null,
@@ -58,6 +74,8 @@ create table if not exists open_trades (
     ts_opened timestamptz not null,
     stop_distance double precision
 );
+
+create unique index if not exists uq_open_trades_symbol on open_trades (symbol);
 
 create table if not exists closed_trades (
     id bigserial primary key,

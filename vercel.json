@@ -4,5 +4,6 @@
   },
   "crons": [
     { "path": "/api/cycle", "schedule": "0 12 * * *" }
-  ]
+  ],
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- app.py config.py db.py supabase_db.py exchange_client.py indicators.py signal_engine.py risk_manager.py trade_planner.py executor.py telegram_notifier.py position_manager.py polymarket_client.py polymarket_main.py polymarket_track_results.py polymarket_categories.py polymarket_state.py weather_signal_engine.py schema.sql vercel.json requirements.txt"
 }

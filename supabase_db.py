@@ -76,11 +76,28 @@ class SupabaseDatabase:
     def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size, order_id=None, stop_distance=None):
         if stop_distance is None:
             stop_distance = abs(entry_price - stop_price)
-        self.client.table("open_trades").insert({
-            "symbol": symbol, "direction": direction, "entry_price": entry_price, "current_stop": stop_price,
-            "target_price": target_price, "position_size": position_size, "order_id": order_id,
-            "ts_opened": _now_iso(), "stop_distance": stop_distance,
-        }).execute()
+        try:
+            self.client.table("open_trades").insert({
+                "symbol": symbol, "direction": direction, "entry_price": entry_price, "current_stop": stop_price,
+                "target_price": target_price, "position_size": position_size, "order_id": order_id,
+                "ts_opened": _now_iso(), "stop_distance": stop_distance,
+            }).execute()
+            return True
+        except Exception as e:
+            # FIX (auditoría 02/09/2026): uq_open_trades_symbol (schema.sql)
+            # es el refuerzo a nivel DB de has_open_trade_for_symbol() -- ese
+            # chequeo es un SELECT-then-INSERT sin lock, así que dos
+            # invocaciones casi simultáneas de /api/cycle podrían ambas
+            # pasarlo antes de insertar. Si la causa del error es justo la
+            # violación de unicidad (código 23505 de Postgres), es el caso
+            # esperado de "otra invocación ya abrió esto" -- se traga acá en
+            # vez de devolver un 500, porque la posición real ya quedó
+            # registrada por la otra invocación. Cualquier otro error de
+            # inserción sí se re-lanza.
+            code = getattr(e, "code", None) or (e.args[0].get("code") if e.args and isinstance(e.args[0], dict) else None)
+            if code == "23505" or "duplicate key" in str(e).lower() or "uq_open_trades_symbol" in str(e).lower():
+                return False
+            raise
 
     def update_trade_stop(self, trade_id, new_stop_price, new_order_id=None):
         update = {"current_stop": new_stop_price}

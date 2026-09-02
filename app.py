@@ -180,9 +180,37 @@ def run_cycle():
 
     dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
 
+    # FIX (auditoría 02/09/2026): generate_signal() soporta un filtro MTF
+    # (higher_tf_candles, tendencia de 4H) y un filtro de sesgo de BTC
+    # (btc_bias) que main.py (modo VPS) sí usa -- pero este run_cycle()
+    # (el que realmente corre en producción vía Vercel/cron-job.org) llamaba
+    # a generate_signal(candles) sin pasarlos, así que en producción esos
+    # dos filtros de riesgo estaban muertos silenciosamente: una señal podía
+    # pasar contra la tendencia de 4H o contra el sesgo de BTC sin que nada
+    # lo bloqueara. Se replica acá la misma lógica de btc_bias que main.py
+    # (una sola vez por ciclo, no por símbolo) y se agrega el fetch de
+    # higher_tf_candles por símbolo. Ambos respetan time_left(): si el
+    # presupuesto ya está corto, se sigue escaneando SIN esos dos filtros
+    # extra en vez de cortar todo el ciclo -- degradar el filtrado es mejor
+    # que perder el escaneo completo por un 504.
     best_signal, best_symbol = None, None
     errors = []
     snapshots = []
+
+    btc_bias = None
+    if "BTC/USDT" in config.SYMBOLS and time_left() > 2.0:
+        try:
+            btc_candles = exchange_client.fetch_ohlcv("BTC/USDT", timeframe="4h", limit=50)
+            if btc_candles and len(btc_candles) >= 6:
+                btc_momentum = (btc_candles[-1]["c"] - btc_candles[-6]["c"]) / btc_candles[-6]["c"]
+                if btc_momentum > 0.015:
+                    btc_bias = {"direction": "LONG"}
+                elif btc_momentum < -0.015:
+                    btc_bias = {"direction": "SHORT"}
+                else:
+                    btc_bias = {"direction": "NEUTRAL"}
+        except Exception as e:
+            errors.append(f"btc_bias: {e}")
     for symbol in config.SYMBOLS:
         if time_left() < 1.0:
             errors.append(f"{symbol}: sin tiempo — se cortó el escaneo (quedaban {len(config.SYMBOLS) - config.SYMBOLS.index(symbol)} símbolo(s))")
@@ -201,7 +229,14 @@ def run_cycle():
         except Exception as e:
             errors.append(f"{symbol} snapshot: {e}")
 
-        signal = generate_signal(candles)
+        higher_tf_candles = None
+        if time_left() > 2.0:
+            try:
+                higher_tf_candles = exchange_client.fetch_ohlcv(symbol, timeframe="4h", limit=50)
+            except Exception as e:
+                errors.append(f"{symbol} 4h: {e}")
+
+        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias)
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol
 
@@ -641,10 +676,22 @@ async def weather_track_results_post(request: Request):
 # ────────────────────────────────────────────────────────────────────
 
 def run_manage_positions():
+    """FIX (auditoría 02/09/2026): esta función reimplementaba su propia
+    lógica de cierre por target/stop, en paralelo a PositionManager (que
+    corre dentro de run_cycle() y SÍ tiene trailing stop). Dos handlers
+    independientes cerrando las mismas posiciones, disparados por triggers
+    distintos (cron-job.org vs GitHub Actions) que pueden solaparse, era la
+    causa de una carrera real: ambos podían detectar el mismo hit_target/
+    hit_stop y competir por cerrarlo primero, y esta versión nunca aplicaba
+    trailing stop (dejaba la posición sin proteger ganancias entre corridas
+    de /api/cycle). Ahora delega 100% en PositionManager — una sola
+    implementación de la lógica de cierre, con el guard de carrera ya
+    aplicado ahí (ver position_manager.py)."""
     config = Config
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     exchange_client = ExchangeClient(config)
     notifier = TelegramNotifier(config)
+    position_manager = PositionManager(config, db, exchange_client, notifier)
 
     # NUEVO (Semana 1): Health Check antes de intentar cerrar posiciones reales.
     if config.LIVE_TRADING:
@@ -655,61 +702,11 @@ def run_manage_positions():
             notifier.send_message(f"🚨 ALERTA CRÍTICA: Fallo de conexión con el exchange al gestionar posiciones. Error: {e}")
             return {"status": "exchange_error", "detail": str(e)}
 
-    open_trades = db.get_open_trades()
-    if not open_trades:
+    if not db.get_open_trades():
         return {"status": "no_open_trades"}
 
-    closed = []
-    errors = []
-    for trade in open_trades:
-        symbol = trade["symbol"]
-        try:
-            ticker = exchange_client.fetch_ticker(symbol)
-            current_price = ticker["last"]
-        except Exception as e:
-            errors.append(f"{symbol}: {e}")
-            continue
-
-        direction = trade["direction"]
-        target_price = trade["target_price"]
-        current_stop = trade["current_stop"]
-
-        hit_target = (current_price >= target_price) if direction == "LONG" else (current_price <= target_price)
-        hit_stop = (current_price <= current_stop) if direction == "LONG" else (current_price >= current_stop)
-
-        if not (hit_target or hit_stop):
-            continue
-
-        outcome = "target" if hit_target else "stop"
-        exit_price = target_price if hit_target else current_stop
-        r_multiple = db.close_trade_with_outcome(trade, exit_price, outcome)
-        if r_multiple is False:
-            continue
-
-        if Config.LIVE_TRADING and trade.get("order_id"):
-            try:
-                exchange_client.cancel_order(symbol, trade["order_id"])
-            except Exception:
-                pass
-            side = "sell" if direction == "LONG" else "buy"
-            try:
-                exchange_client.create_order(symbol, side, trade["position_size"], order_type="market")
-            except Exception as e:
-                errors.append(f"{symbol}: no se pudo forzar el cierre a mercado tras {outcome}: {e}")
-                notifier.send_message(
-                    f"\u26A0\uFE0F {symbol}: {outcome} detectado pero el cierre real en el exchange "
-                    f"FALLÓ ({e}) — revisar la posición a mano."
-                )
-
-        emoji = "\u2705" if outcome == "target" else "\U0001F6D1"
-        r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
-        notifier.send_message(
-            f"{emoji} *Posición cerrada* — {symbol} {direction}\n"
-            f"Resultado: {outcome.upper()}{r_text}\nSalida: `{exit_price:.6f}`"
-        )
-        closed.append({"symbol": symbol, "outcome": outcome, "r_multiple": r_multiple})
-
-    return {"status": "ok", "closed": closed, "still_open": len(open_trades) - len(closed), "errors": errors}
+    position_manager.manage_open_positions()
+    return {"status": "ok"}
 
 async def _manage_positions_endpoint(request: Request):
     expected = os.environ.get("CRON_SECRET")

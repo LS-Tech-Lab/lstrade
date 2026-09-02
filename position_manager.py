@@ -126,6 +126,29 @@ class PositionManager:
                     outcome = "target" if hit_target else "stop"
                     exit_price = target_price if hit_target else current_stop
 
+                    # FIX (carrera con /api/manage_positions): este método y
+                    # run_manage_positions() en app.py son dos handlers
+                    # independientes que pueden correr solapados (cron-job.org
+                    # pega a /api/cycle mientras GitHub Actions dispara
+                    # /api/manage_positions). Ambos leen open_trades y pueden
+                    # detectar el mismo hit_target/hit_stop. close_trade_with_
+                    # outcome() hace un DELETE ... y devuelve False si la fila
+                    # ya no estaba (el otro handler la cerró primero) — hay
+                    # que consultarlo ANTES de tocar el exchange o mandar
+                    # Telegram, si no, este handler intenta cerrar a mercado
+                    # una posición que el otro ya cerró (orden real duplicada
+                    # / apertura accidental en el lado contrario) y manda un
+                    # segundo aviso de "posición cerrada" con un r_multiple
+                    # falso. Antes esto se llamaba DESPUÉS del bloque del
+                    # exchange, así que nunca evitaba nada.
+                    r_multiple = self.db.close_trade_with_outcome(trade, exit_price, outcome)
+                    if r_multiple is False:
+                        log.info(
+                            f"[CIERRE] {symbol}: ya resuelto por otro handler "
+                            f"(carrera con /api/manage_positions) — se omite duplicado."
+                        )
+                        continue
+
                     # NUEVO: antes esto solo cerraba a mercado en el exchange
                     # cuando outcome=="target" — si tocaba el STOP, la
                     # posición real quedaba abierta y desprotegida (la DB
@@ -150,7 +173,6 @@ class PositionManager:
                                 f"exchange FALLÓ ({e}) — revisar la posición a mano."
                             )
 
-                    r_multiple = self.db.close_trade_with_outcome(trade, exit_price, outcome)
                     emoji = "✅" if outcome == "target" else "🛑"
                     r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
                     log.info(f"[CIERRE] {symbol} {direction}: {outcome} @ {exit_price:.6f}{r_text}")
