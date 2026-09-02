@@ -38,46 +38,59 @@ def build_market_watch_text(parsed_markets, markdown=False):
     return "\n".join(lines)
 
 def build_polymarket_memo(signal, markdown=False):
-    """Construye el memo de decisión para un mercado de Polymarket."""
+    """
+    Construye el memo de decisión para un mercado de Polymarket.
+
+    FIX: el link nunca aparecía porque generate_polymarket_signal() arma
+    signal["market"] a mano en polymarket_signal_engine.py y no copiaba
+    "url" del dict original — el dato existía, se perdía en el camino.
+    De paso se agregan yes_label/no_label (mismo origen): en mercados
+    "A vs B" las opciones en Polymarket son los nombres de los dos lados,
+    no "Yes"/"No" — mostrar solo la dirección interna sin el nombre real
+    no le decía al usuario qué tocar en la página.
+    """
     m = signal["market"]
     lines = []
     title = f"🎯 *SEÑAL POLYMARKET* — {m['question'][:70]}" if markdown else f"🎯 SEÑAL POLYMARKET — {m['question'][:70]}"
     lines.append(title)
     lines.append("")
-    lines.append(f"📊 Dirección: {signal['direction']} (confianza {signal['confidence']}/5)")
-    lines.append(f"💰 Precio YES: ${m['yes_price']:.3f} | NO: ${m['no_price']:.3f}")
-    lines.append(f"📈 Volumen 24h: ${m['volume_24h']:,.2f}")
-    lines.append(f"💧 Liquidez: ${m['liquidity']:,.2f}")
-    
-    if m.get("days_to_resolution") is not None:
-        lines.append(f"⏳ Resolución en: {m['days_to_resolution']:.1f} días")
-    
-    if signal.get("momentum"):
-        mom = signal["momentum"]
-        lines.append(f"🚀 Momentum: {mom['momentum']*100:+.2f}% | Volatilidad: {mom['volatility']:.4f}")
-    
-    if signal.get("inefficiency"):
-        ineff = signal["inefficiency"]
-        lines.append(f"⚖️ Prob. implícita total: {ineff['total_implied_prob']:.3f} (ineficiencia: {ineff['inefficiency']:.3f})")
+
+    direction = signal["direction"]
+    pick_label = m.get("yes_label", "Sí") if direction == "YES" else m.get("no_label", "No")
+    other_label = m.get("no_label", "No") if direction == "YES" else m.get("yes_label", "Sí")
+    pick_price = m["yes_price"] if direction == "YES" else m["no_price"]
+    other_price = m["no_price"] if direction == "YES" else m["yes_price"]
+    lines.append(f"📌 Comprar: \"{pick_label}\" @ ${pick_price:.3f} (confianza {signal['confidence']}/5)")
+    lines.append(f"   (la otra opción, \"{other_label}\", está a ${other_price:.3f})")
 
     if signal.get("trade_plan"):
         tp = signal["trade_plan"]
         lines.append("")
-        lines.append(f"🎯 Plan sugerido (no hace falta esperar la resolución):")
-        lines.append(f"   Entrada: ${tp['entry']:.3f} | Toma de ganancia: ${tp['target']:.3f} | Salida por pérdida: ${tp['stop']:.3f}")
-    
+        lines.append("🎯 Plan sugerido (podés vender antes, no hace falta esperar a que se resuelva):")
+        lines.append(f"   Entrada: ${tp['entry']:.3f} | Vender con ganancia en: ${tp['target']:.3f} | Salir con pérdida en: ${tp['stop']:.3f}")
+
     lines.append("")
-    lines.append("🔍 Razones:")
-    for r in signal.get("reasons", []):
-        lines.append(f"  • {r}")
-    
+    lines.append(f"💧 Liquidez: ${m['liquidity']:,.0f} | Volumen 24h: ${m['volume_24h']:,.0f}")
+    if m.get("days_to_resolution") is not None:
+        lines.append(
+            f"📅 El mercado cierra en {m['days_to_resolution']:.1f} días "
+            f"(fecha límite de Polymarket para resolverlo, no cuándo termina el partido/evento)"
+        )
+
+    if signal.get("reasons"):
+        lines.append("")
+        lines.append("🔍 Por qué salió esta señal:")
+        for r in signal["reasons"]:
+            lines.append(f"  • {r}")
+
     lines.append("")
-    lines.append(f"🆔 Condition ID: `{m['condition_id']}`")
     if m.get("url"):
-        lines.append(f"🔗 {m['url']}")
+        link_text = "Ver en Polymarket"
+        lines.append(f"🔗 [{link_text}]({m['url']})" if markdown else m["url"])
+
     lines.append("")
-    lines.append("_⚠️ MODO LECTURA — No se ejecutó ninguna operación real._")
-    
+    lines.append("_⚠️ MODO LECTURA — No se ejecutó ninguna operación real._" if markdown else "⚠️ MODO LECTURA — No se ejecutó ninguna operación real.")
+
     return "\n".join(lines)
 
 def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=None):
@@ -124,8 +137,7 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         signal = generate_polymarket_signal(
             market, price_history,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
-            target_pct_min=config.POLYMARKET_TARGET_PCT_MIN,
-            target_pct_max=config.POLYMARKET_TARGET_PCT_MAX,
+            target_rr=config.POLYMARKET_TARGET_RR,
         )
         if signal:
             signals.append(signal)
@@ -315,8 +327,7 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
         signal = generate_polymarket_signal(
             market, price_history,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
-            target_pct_min=config.POLYMARKET_TARGET_PCT_MIN,
-            target_pct_max=config.POLYMARKET_TARGET_PCT_MAX,
+            target_rr=config.POLYMARKET_TARGET_RR,
         )
         if signal:
             signals.append(signal)
