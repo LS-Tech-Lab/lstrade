@@ -7,11 +7,6 @@ bucket de temperatura, comparación contra precio de mercado y EV) usando
 ÚNICAMENTE fuentes con API oficial, gratuita y estable:
 
   - NWS (api.weather.gov)          → guía de pronóstico oficial
-  - Open-Meteo (api.open-meteo.com) → segunda fuente de pronóstico
-                                      independiente (mezcla GFS/ECMWF),
-                                      gratis y sin API key — agregada
-                                      01/09/2026 para no depender de un
-                                      solo modelo
   - aviationweather.gov            → METAR (observación en vivo + máxima
                                       de 6h en remarks) y TAF (timing de
                                       tormenta/nubes)
@@ -42,7 +37,6 @@ log = logging.getLogger("weather_signal_engine")
 
 NWS_API = "https://api.weather.gov"
 AWC_API = "https://aviationweather.gov/api/data"
-OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 
 DEFAULT_TIMEOUT = 6
 
@@ -63,26 +57,18 @@ STATION_MAP = {
     },
     "new york": {
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
-        "verified": True,
-        "note": ("Confirmado 01/09/2026 revisando las reglas de resolución "
-                 "reales de Polymarket en varios mercados de distintas fechas "
-                 "(abr/jul/ago/nov): la plantilla fija dice explícitamente "
-                 "'highest temperature recorded at the LaGuardia Airport "
-                 "Station', con Wunderground (wunderground.com/history/daily/"
-                 "us/ny/new-york-city/KLGA) como fuente de resolución oficial "
-                 "— NO Central Park, como asumía la nota anterior de este "
-                 "mapeo (sin fuente verificada, quedó corregida). Wunderground "
-                 "republica los mismos datos ASOS/NWS de KLGA que ya usa "
-                 "nuestro METAR/TAF de aviationweather.gov, así que en "
-                 "condiciones normales deberían coincidir — pero ante "
-                 "cualquier discrepancia puntual, Wunderground es la fuente "
-                 "que manda para el settlement real, no nuestro METAR."),
+        "tz": "America/New_York", "name": "LaGuardia (KLGA) — proxy de Central Park",
+        "verified": False,
+        "note": ("Muchos mercados de 'NYC' asientan sobre el CLI report de "
+                 "Central Park, que no tiene METAR/TAF propio en vivo. Se usa "
+                 "KLGA como proxy de observación — CONFIRMAR la estación real "
+                 "en las reglas del mercado antes de operar; puede diferir "
+                 "varios grados de Central Park algunos días."),
     },
     "nyc": {  # alias
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
-        "verified": True,
+        "tz": "America/New_York", "name": "LaGuardia (KLGA) — proxy de Central Park",
+        "verified": False,
         "note": "Ver nota de 'new york'.",
     },
     "chicago": {
@@ -351,92 +337,18 @@ def _expected_offset_from_high(hour):
     return None      # noche — la trayectoria del día ya no es informativa
 
 
-def fetch_open_meteo(station, config, timeout=DEFAULT_TIMEOUT):
-    """Segunda fuente de pronóstico, independiente de NWS (Open-Meteo mezcla
-    modelos GFS/ECMWF) — gratis, sin API key, sin límite de uso publicado
-    para volumen bajo. Sirve de contraste: si el pronóstico puntual de NWS
-    se desvía un día dado, promediarlo contra un segundo modelo reduce el
-    riesgo de construir toda la señal sobre una sola fuente equivocada."""
-    if station.get("lat") is None:
-        return None
-    try:
-        resp = requests.get(
-            OPEN_METEO_API,
-            params={
-                "latitude": station["lat"],
-                "longitude": station["lon"],
-                "daily": "temperature_2m_max",
-                "temperature_unit": "fahrenheit",
-                "timezone": "auto",
-                "forecast_days": 1,
-            },
-            headers=_headers(config),
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        highs = (data.get("daily") or {}).get("temperature_2m_max") or []
-        if not highs or highs[0] is None:
-            return None
-        return {"forecast_high_f": highs[0]}
-    except Exception as e:
-        log.warning(f"Open-Meteo falló para {station.get('icao')}: {e}")
-        return None
-
-
-def _blend_forecast_highs(nws, open_meteo):
-    """Combina las fuentes de pronóstico disponibles (NWS + Open-Meteo) en
-    un único centro base, en vez de depender de una sola. Si ambas están
-    disponibles y discrepan mucho, ensancha la confianza en vez de promediar
-    ciegamente — un desacuerdo grande entre dos modelos es información
-    (el día es menos predecible de lo normal), no ruido a ignorar."""
-    sources = []
-    if nws and nws.get("forecast_high_f") is not None:
-        sources.append(("NWS", nws["forecast_high_f"]))
-    if open_meteo and open_meteo.get("forecast_high_f") is not None:
-        sources.append(("Open-Meteo", open_meteo["forecast_high_f"]))
-
-    if not sources:
-        return None, [], 0.0
-
-    values = [v for _, v in sources]
-    blended = sum(values) / len(values)
-    notes = []
-    penalty = 0.0
-
-    if len(sources) == 2:
-        spread = abs(values[0] - values[1])
-        notes.append(
-            f"Pronóstico: {sources[0][0]} {sources[0][1]:.1f}°F vs. "
-            f"{sources[1][0]} {sources[1][1]:.1f}°F — promedio {blended:.1f}°F "
-            f"(spread {spread:.1f}°F)."
-        )
-        if spread >= 4:
-            penalty = 0.3
-            notes.append(f"Los modelos discrepan {spread:.1f}°F — se ensancha la distribución por baja confianza.")
-        elif spread >= 2:
-            penalty = 0.15
-    else:
-        notes.append(f"Solo una fuente de pronóstico disponible ({sources[0][0]}: {sources[0][1]:.1f}°F).")
-        penalty = 0.15
-
-    return round(blended, 1), notes, penalty
-
-
-def estimate_adjusted_high(nws, metar, taf, station, open_meteo=None):
+def estimate_adjusted_high(nws, metar, taf, station):
     """Parte de la guía de NWS como centro de masa y ajusta con la
     trayectoria matutina (METAR vs. lo esperado a esta hora) y el timing de
     tormenta (TAF) — mismo criterio que STEP 2 de la skill. Devuelve
     (estimación_f, notas[], penalización_de_confianza)."""
     notes = []
     penalty = 0.0
-    base, blend_notes, blend_penalty = _blend_forecast_highs(nws, open_meteo)
-    notes.extend(blend_notes)
-    penalty += blend_penalty
+    base = nws["forecast_high_f"] if nws and nws.get("forecast_high_f") is not None else None
 
     if base is None and metar and metar.get("temp_f") is not None:
         base = metar["temp_f"] + 5
-        notes.append("Sin guía NWS ni Open-Meteo disponibles — estimación gruesa desde METAR actual +5°F.")
+        notes.append("Sin guía NWS disponible — estimación gruesa desde METAR actual +5°F.")
         penalty += 0.3
 
     if base is None:
@@ -461,8 +373,10 @@ def estimate_adjusted_high(nws, metar, taf, station, open_meteo=None):
         notes.append("TAF muestra tormenta/chubascos antes de cerrar la ventana de pico de calor (1-4pm) — techo a la baja (-1.5°F).")
 
     if not notes:
-        notes.append("Sin ajustes intradía significativos — se mantiene la guía de pronóstico.")
+        notes.append("Sin ajustes intradía significativos — se mantiene la guía de NWS.")
 
+    if nws is None:
+        penalty += 0.15
     if metar is None:
         penalty += 0.15
         notes.append("Sin observación METAR — no se pudo chequear trayectoria matutina, se ensancha la distribución.")
@@ -552,13 +466,11 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
     if not buckets:
         return {"status": "no_buckets", "title": title, "station": station}
 
-    http_timeout = getattr(config, "WEATHER_HTTP_TIMEOUT_SECONDS", DEFAULT_TIMEOUT)
-    nws = fetch_nws_guidance(station, config, timeout=http_timeout)
-    open_meteo = fetch_open_meteo(station, config, timeout=http_timeout)
-    metar = fetch_metar(station["icao"], config, timeout=http_timeout)
-    taf = fetch_taf(station["icao"], config, timeout=http_timeout)
+    nws = fetch_nws_guidance(station, config)
+    metar = fetch_metar(station["icao"], config)
+    taf = fetch_taf(station["icao"], config)
 
-    center, notes, penalty = estimate_adjusted_high(nws, metar, taf, station, open_meteo=open_meteo)
+    center, notes, penalty = estimate_adjusted_high(nws, metar, taf, station)
     if center is None:
         return {"status": "no_data", "title": title, "station": station}
 
@@ -605,7 +517,6 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
         "confidence_penalty": penalty,
         "physics_notes": notes,
         "nws": nws,
-        "open_meteo": open_meteo,
         "metar": metar,
         "taf": taf,
         "buckets": rows,
@@ -619,6 +530,22 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
 # STEP 4 — Formato de reporte (versión compacta para Telegram)
 # ---------------------------------------------------------------------------
 def build_weather_memo(signal, markdown=True):
+    """
+    Versión compacta: solo lo necesario para decidir (estimación, mejor
+    oportunidad, link). El desglose completo por bucket y la física del día
+    siguen disponibles corriendo weather_report.py a mano.
+
+    FIX: la versión anterior envolvía DISCLAIMER en asteriscos/guiones bajos
+    para itálica (`_{disclaimer}_`), pero el texto del disclaimer contiene
+    "weather_report.py" — el guion bajo de ahí adentro rompe el conteo de
+    pares que necesita el parser de Markdown de Telegram (parse_mode
+    "Markdown" en telegram_notifier.py), lo que corrompía el parseo de todo
+    el mensaje y arruinaba el link de arriba. Se saca el disclaimer del
+    mensaje en vez de escapar el guion bajo, porque además es ruido para
+    decidir en el momento — cualquier texto con guion bajo/asterisco que se
+    interpole en un mensaje Markdown puede repetir este bug si se
+    reintroduce texto libre acá.
+    """
     if not signal or signal.get("status") != "ok":
         return None
     st = signal["station"]
@@ -627,34 +554,21 @@ def build_weather_memo(signal, markdown=True):
     lines.append(f"🌡️ *ANÁLISIS DE CLIMA* — {title_txt}" if markdown else f"🌡️ ANÁLISIS DE CLIMA — {title_txt}")
     lines.append("")
     verified_flag = "✅ verificada" if signal["settlement_verified"] else "⚠️ SIN VERIFICAR — revisar manualmente"
-    lines.append(f"⚖️ Estación: {st.get('name', st.get('icao'))} ({verified_flag})")
-    if st.get("note"):
-        lines.append(f"   ℹ️ {st['note']}")
-    lines.append(f"📈 Estimación de máxima: {signal['center_estimate_f']}°F (±{signal['sigma']:.1f}°F, penalización de confianza {signal['confidence_penalty']:.2f})")
-    lines.append("")
-    lines.append("📊 Buckets (mi prob. vs mercado):")
-    for row in signal["buckets"][:6]:
-        ev_txt = f"{row['ev']*100:+.1f}%" if row["ev"] is not None else "N/A"
-        q = row["question"][:45]
-        lines.append(f"  • {q}: yo {row['my_prob']*100:.1f}% | mkt ${row['market_price']:.3f} | EV {ev_txt}")
-    lines.append("")
-    lines.append("🌦️ Física del día:")
-    for note in signal["physics_notes"][:4]:
-        lines.append(f"  • {note}")
+    lines.append(f"📍 Estación: {st.get('name', st.get('icao'))} ({verified_flag})")
+    lines.append(f"📈 Estimación de máxima: {signal['center_estimate_f']}°F (±{signal['sigma']:.1f}°F)")
     lines.append("")
     if signal["best_trade"]:
         bt = signal["best_trade"]
-        lines.append(f"🎯 Mejor EV: {bt['question'][:60]}")
-        lines.append(f"   EV {bt['ev']*100:+.1f}% @ ${bt['market_price']:.3f} | mi prob {bt['my_prob']*100:.1f}%")
+        lines.append(f"🎯 {bt['question'][:70]}")
+        lines.append(f"   Mi prob: {bt['my_prob']*100:.0f}% | Precio mercado: ${bt['market_price']:.3f} | EV {bt['ev']*100:+.0f}%")
         if bt.get("url"):
-            lines.append(f"🔗 {bt['url']}")
+            link_text = "Ver en Polymarket"
+            lines.append(f"🔗 [{link_text}]({bt['url']})" if markdown else bt["url"])
     else:
         lines.append("🎯 Sin edge suficiente hoy — pasar es la disciplina correcta.")
         if signal.get("url"):
-            lines.append(f"🔗 {signal['url']}")
-    lines.append("")
-    disclaimer = signal["disclaimer"]
-    lines.append(f"_{disclaimer}_" if markdown else disclaimer)
+            link_text = "Ver evento en Polymarket"
+            lines.append(f"🔗 [{link_text}]({signal['url']})" if markdown else signal["url"])
     return "\n".join(lines)
 
 
