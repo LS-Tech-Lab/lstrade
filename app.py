@@ -568,7 +568,12 @@ def run_weather_track_results():
         condition_id = sig.get("condition_id")
         if not condition_id:
             continue
-        market = client.fetch_market_by_condition_id(condition_id)
+        # FIX (02/09/2026): fetch_market_by_condition_id() pega a la Gamma API
+        # con un filtro que Gamma no soporta (ver nota en polymarket_client.py)
+        # y nunca traía el mercado real -- se usa fetch_clob_market(), que
+        # busca por condition_id vía la CLOB API (donde sí es un path param
+        # válido) y por eso resuelve de verdad.
+        market = client.fetch_clob_market(condition_id)
         if not market or not market.get("closed"):
             continue  # todavía no resolvió de verdad -- se revisa en el próximo ciclo
 
