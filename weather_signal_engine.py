@@ -63,18 +63,26 @@ STATION_MAP = {
     },
     "new york": {
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA) — proxy de Central Park",
-        "verified": False,
-        "note": ("Muchos mercados de 'NYC' asientan sobre el CLI report de "
-                 "Central Park, que no tiene METAR/TAF propio en vivo. Se usa "
-                 "KLGA como proxy de observación — CONFIRMAR la estación real "
-                 "en las reglas del mercado antes de operar; puede diferir "
-                 "varios grados de Central Park algunos días."),
+        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
+        "verified": True,
+        "note": ("Confirmado 01/09/2026 revisando las reglas de resolución "
+                 "reales de Polymarket en varios mercados de distintas fechas "
+                 "(abr/jul/ago/nov): la plantilla fija dice explícitamente "
+                 "'highest temperature recorded at the LaGuardia Airport "
+                 "Station', con Wunderground (wunderground.com/history/daily/"
+                 "us/ny/new-york-city/KLGA) como fuente de resolución oficial "
+                 "— NO Central Park, como asumía la nota anterior de este "
+                 "mapeo (sin fuente verificada, quedó corregida). Wunderground "
+                 "republica los mismos datos ASOS/NWS de KLGA que ya usa "
+                 "nuestro METAR/TAF de aviationweather.gov, así que en "
+                 "condiciones normales deberían coincidir — pero ante "
+                 "cualquier discrepancia puntual, Wunderground es la fuente "
+                 "que manda para el settlement real, no nuestro METAR."),
     },
     "nyc": {  # alias
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA) — proxy de Central Park",
-        "verified": False,
+        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
+        "verified": True,
         "note": "Ver nota de 'new york'.",
     },
     "chicago": {
