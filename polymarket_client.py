@@ -282,22 +282,34 @@ class PolymarketClient:
             no_price = 0.0
             yes_token_id = None
             no_token_id = None
+            yes_label = "Sí"
+            no_label = "No"
 
             # Buscar explícitamente YES y NO
+            is_literal_yes_no = False
             for i, outcome in enumerate(outcomes):
                 price = float(outcome_prices[i]) if i < len(outcome_prices) else 0.0
                 token_id = token_ids[i] if i < len(token_ids) else None
                 if outcome.upper() == "YES":
                     yes_price = price
                     yes_token_id = token_id
+                    is_literal_yes_no = True
                 elif outcome.upper() == "NO":
                     no_price = price
                     no_token_id = token_id
+                    is_literal_yes_no = True
 
-            # Fallback si el mercado no es Yes/No (ej: Over/Under o equipos)
-            if yes_price == 0.0 and no_price == 0.0 and len(outcome_prices) >= 2:
+            # Fallback si el mercado no es Yes/No (ej: Over/Under o equipos) —
+            # acá "YES"/"NO" son etiquetas internas nuestras, no lo que dice
+            # la página: el outcome real es el nombre del equipo/jugador
+            # (outcomes[0]/outcomes[1]), que es lo que hay que mostrarle al
+            # usuario para que sepa qué opción tocar en Polymarket.
+            if not is_literal_yes_no and len(outcome_prices) >= 2:
                 yes_price = float(outcome_prices[0])
                 no_price = float(outcome_prices[1])
+                if len(outcomes) >= 2:
+                    yes_label = outcomes[0]
+                    no_label = outcomes[1]
                 if not yes_token_id and len(token_ids) >= 2:
                     yes_token_id, no_token_id = token_ids[0], token_ids[1]
 
@@ -308,6 +320,11 @@ class PolymarketClient:
                 "yes_token_id": yes_token_id,
                 "no_token_id": no_token_id,
                 "question": market.get("question", "Sin pregunta"),
+                # Qué significa realmente comprar "YES" o "NO" en este mercado —
+                # "Sí"/"No" en mercados binarios reales, o el nombre del
+                # equipo/jugador en mercados tipo "A vs B" (ver arriba).
+                "yes_label": yes_label,
+                "no_label": no_label,
                 "end_date": market.get("endDate"),
                 "volume_24h": float(market.get("volume24hr", 0) or 0),
                 "volume_total": float(market.get("volume", 0) or 0),
