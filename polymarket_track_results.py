@@ -25,13 +25,17 @@ def check_open_signals(db, client, notifier, config):
     min_liquidity = getattr(config, "POLYMARKET_MIN_EXIT_LIQUIDITY", 500.0)
     
     for sig in open_signals:
-        # NUEVO (Semana 3): Validar liquidez antes de marcar como resuelto.
-        market = client.fetch_market_by_condition_id(sig["condition_id"])
-        if not market:
-            log.warning(f"[SIN DATOS] No se pudo obtener el mercado para {sig['question'][:60]}")
+        # FIX (02/09/2026): antes se pedía `liquidity` a fetch_market_by_condition_id()
+        # (Gamma) — que nunca traía el mercado real (ver nota en polymarket_client.py) y
+        # por eso "if not market: continue" se disparaba siempre, bloqueando la resolución
+        # de las 70 señales abiertas antes de que llegaran a chequear el precio. Se
+        # reemplaza por la liquidez real del order book del token vía CLOB, que además es
+        # más precisa que el agregado de Gamma.
+        current_liquidity = client.fetch_order_book_liquidity(sig["token_id"])
+        if current_liquidity is None:
+            log.warning(f"[SIN DATOS] No se pudo obtener el order book para {sig['question'][:60]}")
             continue
-        
-        current_liquidity = market.get("liquidity", 0)
+
         if current_liquidity < min_liquidity:
             log.warning(f"[LIQUIDEZ BAJA] {sig['question'][:60]} - Liquidez: ${current_liquidity:.0f} < ${min_liquidity:.0f}. Se pospone resolución.")
             continue
