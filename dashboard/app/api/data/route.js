@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import categorySpec from "../../../polymarket_categories.json";
 
 function getClient() {
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -20,25 +21,13 @@ function computeStats(rows) {
   };
 }
 
-// Categorías por keywords — mismas reglas que polymarket_categories.py
-// (Python). Si se agrega/cambia una categoría ahí, hay que reflejarlo acá
-// también: no comparten código porque uno corre en el motor de señales
-// (Python) y el otro solo para agrupar en el dashboard (JS).
-const CATEGORY_RULES = [
-  ["Clima", /temperature|hottest|coldest|rain|snow|hurricane|heat wave|weather|degrees?\b|Fahrenheit|Celsius/i],
-  ["Esports", /Counter-Strike|CS:?GO|\bCS2\b|League of Legends|\bLoL\b|\bDota ?2?\b|Valorant|\bBO[135]\b|Cyber Games/i],
-  ["Deportes", /\bvs\.?\b|\bwin on \d{4}-\d{2}-\d{2}\b|O\/U \d|\bwin\b.*\b(Open|Championship|Cup|Series|League|Bowl|Final|Wimbledon)\b|\bATP\b|\bUFC\b|\bfight\b/i],
-  ["Lanzamientos / FDV", /\bFDV\b|one day after launch|launch a token/i],
-  ["Valuaciones privadas", /valuation hit|\(HIGH\)|\(LOW\)/i],
-  ["Cripto — objetivo de precio", /\bprice of (bitcoin|ethereum|btc|eth|solana|sol|xrp|doge)\b|\b(bitcoin|ethereum|btc|eth)\b.*\b(up or down|above \$|below \$)|reach \$|dip to \$|market cap/i],
-  ["Macro / tasas de interés", /\bFed\b|interest rate|\bbps\b|inflation|\bGDP\b|jobs report|rate hike|rate cut/i],
-  ["Macro / eventos cripto", /bank failure|hack over|open interest/i],
-  ["Política / geopolítica", /election|senat|vote|president|confirm|governor|congress|by-election|invade|ceasefire|\bwar\b/i],
-  ["Redes sociales / figuras públicas", /\btweets?\b|\bpost(?:ed)? \d|Elon Musk|\bX posts?\b|Instagram|TikTok/i],
-  ["IA / tech", /Claude|OpenAI|Anthropic|GPT|Frontier Math|Opus|Gemini/i],
-  ["Entretenimiento / vanity", /attend|wedding/i],
-];
-const FALLBACK_CATEGORY = "Otros / sin clasificar";
+// Categorías por keywords — leídas de polymarket_categories.json (fuente
+// única compartida con polymarket_categories.py). Antes esto era un
+// array hardcodeado en paralelo al de Python, con el riesgo de que se
+// desincronizaran si alguien tocaba solo un lado; ahora ambos leen el
+// mismo JSON y cambiar una regla es un solo edit.
+const CATEGORY_RULES = categorySpec.rules.map((r) => [r.name, new RegExp(r.pattern, "i")]);
+const FALLBACK_CATEGORY = categorySpec.fallback;
 
 function categorize(question) {
   if (!question) return FALLBACK_CATEGORY;
@@ -170,6 +159,29 @@ export async function GET() {
       return NextResponse.json({ error: firstError.message }, { status: 500 });
     }
 
+    // Estas 7 consultas no cortan la respuesta si fallan (a diferencia de
+    // las 4 de firstError) para que un error puntual en, por ejemplo,
+    // weather_signals no tumbe todo el panel — pero antes esa sección
+    // quedaba mostrada como "vacía" sin ninguna forma de distinguirlo de
+    // que realmente no hay datos. Ahora se listan acá y el frontend puede
+    // avisar cuál sección no cargó en vez de mostrarla como si no hubiera
+    // nada que mostrar.
+    const namedResults = {
+      crypto_open: openTradesRes,
+      crypto_stats: closedTradesRes,
+      polymarket_open: polymarketOpenRes,
+      polymarket_resolved: polymarketResolvedRes,
+      indicators: indicatorsRes,
+      weather_open: weatherOpenRes,
+      weather_resolved: weatherResolvedRes,
+    };
+    const failedSections = Object.entries(namedResults)
+      .filter(([, res]) => res.error)
+      .map(([name, res]) => {
+        console.error(`[api/data] fallo cargando "${name}":`, res.error.message);
+        return name;
+      });
+
     const stateMap = Object.fromEntries((stateRes.data || []).map((r) => [r.key, r.value]));
 
     // Un snapshot por símbolo (el más reciente) — la tabla puede tener
@@ -192,6 +204,11 @@ export async function GET() {
       halted: stateMap.trading_halted === "1",
       halt_reason: stateMap.halt_reason || null,
       pending: pendingRes.data || [],
+      // Nombres de las secciones que fallaron al cargar (ver namedResults
+      // arriba) — vacío no dice "no hay datos", significa "sí cargó y
+      // está vacío". El frontend usa esto para avisar cuáles secciones
+      // están mostrando datos viejos/incompletos en vez de "sin datos".
+      failed_sections: failedSections,
       // Si las tablas todavía no existen (schema.sql viejo sin correr de
       // nuevo), no rompemos el dashboard — se muestran vacías.
       crypto_open: openTradesRes.error ? [] : (openTradesRes.data || []),
@@ -214,4 +231,4 @@ export async function GET() {
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
-      }
+          }
