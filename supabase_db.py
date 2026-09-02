@@ -22,6 +22,12 @@ class SupabaseDatabase:
         res = self.client.table("equity_history").select("equity").order("equity", desc=True).limit(1).execute()
         return res.data[0]["equity"] if res.data else None
 
+    def last_equity(self):
+        """Último equity registrado (no el pico histórico). Es el que hay que
+        usar como base para aplicar el P&L de un trade que se acaba de cerrar."""
+        res = self.client.table("equity_history").select("equity").order("ts", desc=True).limit(1).execute()
+        return res.data[0]["equity"] if res.data else None
+
     def current_exposure_pct(self, equity):
         cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         res = self.client.table("decisions").select("plan_detail").in_("decision", ["approved", "auto_executed"]).gte("ts", cutoff).execute()
@@ -92,6 +98,19 @@ class SupabaseDatabase:
             "symbol": trade["symbol"], "direction": direction, "entry_price": entry, "exit_price": exit_price,
             "outcome": outcome, "r_multiple": r_multiple, "ts_opened": trade["ts_opened"], "ts_closed": _now_iso(),
         }).execute()
+
+        # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
+        # equity de modo papel se quedaba pegado en el pico histórico sin
+        # importar el resultado de los trades cerrados (ver auditoría).
+        position_size = trade.get("position_size")
+        if position_size:
+            sign = 1 if direction == "LONG" else -1
+            pnl_dollars = (exit_price - entry) * position_size * sign
+            base_equity = self.last_equity()
+            if base_equity is None:
+                base_equity = 10000.0
+            self.record_equity(base_equity + pnl_dollars)
+
         return r_multiple
 
     def stats_summary(self, since_ts=None):
