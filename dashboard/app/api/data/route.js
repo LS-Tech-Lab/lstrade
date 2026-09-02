@@ -140,7 +140,13 @@ export async function GET() {
       weatherOpenRes,
       weatherResolvedRes,
     ] = await Promise.all([
-      supabase.from("equity_history").select("ts,equity").order("ts", { ascending: true }).limit(200),
+      // FIX: antes traía las 200 filas MÁS VIEJAS (ascending + limit sin
+      // order by desc primero) — con 600+ filas acumuladas, esa ventana
+      // nunca llegaba a los datos recientes y el gráfico de equity se veía
+      // eternamente clavado en el valor inicial. Se pide descendente (las
+      // últimas 200) y se revierte abajo para mantener el orden cronológico
+      // ascendente que espera el frontend.
+      supabase.from("equity_history").select("ts,equity").order("ts", { ascending: false }).limit(200),
       supabase.from("decisions").select("*").order("ts", { ascending: false }).limit(30),
       supabase.from("bot_state").select("*"),
       supabase.from("pending_decisions").select("*").eq("resolved", false),
@@ -208,7 +214,7 @@ export async function GET() {
     const resolvedSignalsCore = resolvedSignals.filter((r) => !EXCLUDED_CATEGORIES.includes(categorize(r.question)));
 
     return NextResponse.json({
-      equity: equityRes.data || [],
+      equity: (equityRes.data || []).slice().reverse(),
       decisions: decisionsRes.data || [],
       halted: stateMap.trading_halted === "1",
       halt_reason: stateMap.halt_reason || null,
