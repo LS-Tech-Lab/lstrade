@@ -83,37 +83,36 @@ class Config:
     # de dirección ni subió de score de forma relevante (evita spam en Telegram)
     POLYMARKET_RESEND_COOLDOWN_HOURS = _float("POLYMARKET_RESEND_COOLDOWN_HOURS", 6.0)
 
-    # Plan de salida sugerido para señales de Polymarket: el STOP usa la
-    # volatilidad del historial de precios (mismo principio que
-    # ATR_STOP_MULT del módulo cripto). El TARGET (a partir de qué % de
-    # recorrido se toma ganancia, sin esperar la resolución) se calcula en
-    # polymarket_signal_engine.py combinando el precio de entrada
-    # (probabilidad implícita del mercado) con la confianza interna del bot,
-    # e interpolando entre estos dos límites según qué tan "segura" resulte
-    # la selección — 5 escalones: 10/15/20/25/30%.
+    # Plan de salida sugerido para señales de Polymarket: mismo principio que
+    # ATR_STOP_MULT/MIN_RR del módulo cripto, pero usando la volatilidad del
+    # historial de precios de Polymarket en vez de ATR. Sin validar todavía
+    # contra resultados reales — punto de partida, no un valor probado.
     POLYMARKET_STOP_VOL_MULT = _float("POLYMARKET_STOP_VOL_MULT", 3.0)
-    POLYMARKET_TARGET_PCT_MIN = _float("POLYMARKET_TARGET_PCT_MIN", 0.10)
-    POLYMARKET_TARGET_PCT_MAX = _float("POLYMARKET_TARGET_PCT_MAX", 0.30)
+    POLYMARKET_TARGET_RR = _float("POLYMARKET_TARGET_RR", 1.5)
 
     # NUEVO: categorías de mercado (ver polymarket_categories.py) que no se
     # avisan más — basado en polymarket_backtest.py + analyze_polymarket_categories.py
-    # sobre 216 trades reales: "Política / elecciones" dio profit factor 0.80
+    # sobre 216 trades reales: "Política / geopolítica" dio profit factor 0.80
     # con n=41 (pierde plata en promedio, muestra suficiente para no ser
     # ruido). El resto de categorías con muestra chica (Deportes/vanity,
     # Macro, IA/tech) todavía no tienen evidencia suficiente para excluirlas
     # — se dejan corriendo para seguir juntando datos.
     #
-    # AMPLIADO (1 sep 2026, 76 señales resueltas en producción):
-    # "Redes sociales / figuras públicas" — 0/5 aciertos, profit factor
-    # indefinido (sin ganadores), -5.00R acumulado. Muestra chica pero
-    # patrón fuerte (0% de aciertos).
-    # "Cripto — objetivo de precio" — profit factor 0.48 con n=7, -1.57R
-    # acumulado. Muestra chica, se excluye por precaución; revisar de nuevo
-    # cuando haya más datos por si el PF se recupera.
+    # FIX: el string por defecto decía "Política / elecciones", que no
+    # coincide con ningún nombre real de polymarket_categories.py (la
+    # categoría se llama "Política / geopolítica") — el filtro nunca
+    # excluyó nada en producción pese al comentario de arriba.
+    #
+    # 2026-09-01: agregada "Redes sociales / figuras públicas" — sobre 47
+    # señales resueltas en polymarket_signals (Supabase, proyecto lstrade),
+    # esa categoría dio 0% win rate y -5.00R en n=5 (todas perdedoras).
+    # Muestra chica — sigue siendo la peor categoría del corte por lejos,
+    # pero conviene revalidar cuando haya más señales antes de darla por
+    # sentado como edge negativo estructural.
     POLYMARKET_EXCLUDED_CATEGORIES = [
         c.strip() for c in os.getenv(
             "POLYMARKET_EXCLUDED_CATEGORIES",
-            "Política / elecciones,Redes sociales / figuras públicas,Cripto — objetivo de precio",
+            "Política / geopolítica,Redes sociales / figuras públicas",
         ).split(",") if c.strip()
     ]
 
@@ -153,24 +152,6 @@ class Config:
     # sigue apareciendo en el detalle de buckets del reporte para
     # referencia.
     WEATHER_MIN_PRICE = _float("WEATHER_MIN_PRICE", 0.01)
-
-    # ICAO que siempre entra al lote de estaciones analizadas por ciclo, sin
-    # importar su ranking de liquidez frente al resto — pedido explícito de
-    # LS (01/09/2026) para no perderse Miami aunque otras ciudades tengan
-    # más volumen operado ese día. Vacío/None desactiva el pineo.
-    WEATHER_PINNED_ICAO = os.getenv("WEATHER_PINNED_ICAO", "KMIA")
-
-    # Timeout por request HTTP individual dentro del análisis de clima
-    # (NWS points+forecast, Open-Meteo, METAR, TAF — hasta 5 requests por
-    # estación desde que se sumó Open-Meteo). Bajado de 6s a 4s de default
-    # (01/09/2026) porque al subir WEATHER_TOP_N a 5 estaciones, el peor
-    # caso teórico de una sola estación con todas sus fuentes colgadas
-    # (5 requests × timeout) pasó de 30s a poder comerse buena parte de
-    # WEATHER_TIME_BUDGET_SECONDS antes de que el chequeo entre estaciones
-    # llegue a cortar. No es una garantía dura contra ese peor caso (seguiría
-    # existiendo si TODAS las fuentes están caídas a la vez), pero acota
-    # bastante el daño de una estación puntualmente lenta.
-    WEATHER_HTTP_TIMEOUT_SECONDS = _float("WEATHER_HTTP_TIMEOUT_SECONDS", 4.0)
 
     # Desvío estándar base (°F) para repartir la masa de probabilidad entre
     # buckets adyacentes — punto de partida de la skill wu-airport-weather
