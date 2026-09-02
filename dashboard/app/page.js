@@ -931,8 +931,24 @@ function PolymarketTab({ data }) {
   );
 }
 
+// Nombres técnicos de failed_sections (ver api/data/route.js) traducidos
+// a algo legible para el banner.
+const SECTION_LABELS = {
+  crypto_open: "posiciones cripto abiertas",
+  crypto_stats: "estadísticas de cripto",
+  polymarket_open: "señales de Polymarket abiertas",
+  polymarket_resolved: "historial de Polymarket",
+  indicators: "indicadores técnicos",
+  weather_open: "señales de clima abiertas",
+  weather_resolved: "historial de clima",
+};
+
 export default function Dashboard() {
   const [data, setData] = useState(null);
+  // Error solo de la carga MÁS RECIENTE — si ya había datos de una carga
+  // anterior exitosa, un fallo transitorio (timeout, blip de red) ya no
+  // borra la pantalla entera; se sigue mostrando el último dato bueno
+  // con un aviso de que está desactualizado, en vez de perderlo.
   const [error, setError] = useState("");
   const [tab, setTab] = useState("cripto");
   
@@ -954,7 +970,9 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
   
-  if (error) {
+  // Sin datos todavía (primera carga) y ya falló: ahí sí no hay nada que
+  // mostrar más que el error.
+  if (error && !data) {
     return (
       <div className="wrap">
         <p className="error">{error}</p>
@@ -970,6 +988,8 @@ export default function Dashboard() {
     );
   }
   
+  const failedLabels = (data.failed_sections || []).map((s) => SECTION_LABELS[s] || s);
+  
   return (
     <div className="wrap">
       <div className="header">
@@ -981,6 +1001,16 @@ export default function Dashboard() {
           {data.halted ? `Detenido — ${data.halt_reason}` : "Sistema en línea"}
         </span>
       </div>
+      {error && (
+        <div className="pending-banner">
+          Última actualización falló ({error}) — mostrando el último dato disponible.
+        </div>
+      )}
+      {failedLabels.length > 0 && (
+        <div className="pending-banner">
+          No se pudo cargar: {failedLabels.join(", ")}. Esas secciones pueden verse vacías o desactualizadas.
+        </div>
+      )}
       {data.pending.length > 0 && (
         <div className="pending-banner">
           Esperando tu respuesta en Telegram para: {data.pending.map((p) => p.symbol).join(", ")}
