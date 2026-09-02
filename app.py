@@ -100,6 +100,23 @@ def build_memo_markdown(symbol, signal, risk_report, plan):
 
 def run_cycle():
     config = Config
+
+    # FIX (02/09/2026): el reloj del time budget arrancaba recién antes del
+    # loop de escaneo, pero position_manager.manage_open_positions() (2
+    # llamadas de red sin límite por cada posición abierta), el health check
+    # y fetch_equity() corrían todos ANTES sin descontar nada de ningún
+    # presupuesto. Con varias posiciones abiertas eso solo podía comerse
+    # varios segundos, y el budget de 20s del loop se sumaba ENCIMA de eso
+    # -- fácil de superar el maxDuration=25 de vercel.json (como pasó: timeout
+    # a los 25.86s). Ahora el reloj arranca acá, al toque, y se comparte para
+    # TODO el ciclo -- gestión de posiciones incluida -- en vez de uno nuevo
+    # e independiente para el loop de escaneo.
+    started = time.monotonic()
+    time_budget = float(os.environ.get("CYCLE_TIME_BUDGET_SECONDS", "20.0"))
+
+    def time_left():
+        return time_budget - (time.monotonic() - started)
+
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     exchange_client = ExchangeClient(config)
     risk_manager = RiskManager(config, db)
@@ -133,7 +150,7 @@ def run_cycle():
     # del mismo símbolo) que nunca se cerraban, closed_trades se quedó en 0
     # filas siempre, y no había forma de calcular win rate/expectancy real
     # ni de mover el stop a breakeven/trailing en producción.
-    position_manager.manage_open_positions()
+    position_manager.manage_open_positions(time_left)
 
     if db.has_open_pending_decision():
         expired = db.expire_stale_pending_decisions(config.PENDING_DECISION_EXPIRY_SECONDS)
@@ -162,12 +179,6 @@ def run_cycle():
         return {"status": "error", "detail": f"No se pudo obtener equity real del exchange: {e}"}
 
     dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
-
-    started = time.monotonic()
-    time_budget = float(os.environ.get("CYCLE_TIME_BUDGET_SECONDS", "20.0"))
-
-    def time_left():
-        return time_budget - (time.monotonic() - started)
 
     best_signal, best_symbol = None, None
     errors = []
@@ -396,6 +407,25 @@ def run_weather_cycle():
     if not config.WEATHER_ANALYSIS_ENABLED:
         return {"status": "disabled"}
 
+    # FIX (02/09/2026): el reloj arrancaba después de instanciar SupabaseDatabase
+    # y de la query db.get_open_weather_signals() de la línea de abajo -- ese
+    # tiempo no se contaba contra ningún budget (mismo patrón de bug que en
+    # run_cycle()/api/cycle). Se mueve acá arriba para que todo el handler
+    # comparta un único reloj.
+    started = time.monotonic()
+    # Subido de 8.0 a 18.0 (01/09/2026): con WEATHER_TOP_N=5 y 5 fuentes por
+    # estación (NWS×2 + Open-Meteo + METAR + TAF), 8s alcanzaba para 1-2
+    # estaciones como mucho y el resto quedaba "sin_tiempo" en casi todas
+    # las corridas. Con maxDuration=25 en vercel.json, 18s deja ~7s de
+    # margen para el resto del handler (fetch inicial de eventos, notif. a
+    # Telegram, escritura a Supabase). Si cron-job.org tiene su propio
+    # timeout de request, confirmar que sea mayor a 18-20s o va a cortar la
+    # conexión antes de que Vercel termine.
+    time_budget = float(os.environ.get("WEATHER_TIME_BUDGET_SECONDS", "18.0"))
+
+    def time_left():
+        return time_budget - (time.monotonic() - started)
+
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
@@ -412,20 +442,6 @@ def run_weather_cycle():
     # los condition_id ya abiertos para no duplicar el registro (el reenvío
     # de Telegram sigue funcionando igual, solo no se vuelve a insertar).
     open_condition_ids = {s["condition_id"] for s in db.get_open_weather_signals()}
-
-    started = time.monotonic()
-    # Subido de 8.0 a 18.0 (01/09/2026): con WEATHER_TOP_N=5 y 5 fuentes por
-    # estación (NWS×2 + Open-Meteo + METAR + TAF), 8s alcanzaba para 1-2
-    # estaciones como mucho y el resto quedaba "sin_tiempo" en casi todas
-    # las corridas. Con maxDuration=25 en vercel.json, 18s deja ~7s de
-    # margen para el resto del handler (fetch inicial de eventos, notif. a
-    # Telegram, escritura a Supabase). Si cron-job.org tiene su propio
-    # timeout de request, confirmar que sea mayor a 18-20s o va a cortar la
-    # conexión antes de que Vercel termine.
-    time_budget = float(os.environ.get("WEATHER_TIME_BUDGET_SECONDS", "18.0"))
-
-    def time_left():
-        return time_budget - (time.monotonic() - started)
 
     events = client.fetch_weather_events(limit=20, time_budget_seconds=time_budget * 0.5)
     if not events:
@@ -467,8 +483,13 @@ def run_weather_cycle():
             break
         scanned += 1
         try:
+            # FIX (02/09/2026): se propaga time_left para que NWS/METAR/TAF
+            # usen timeouts dinámicos según el budget restante, no fijos
+            # (ver _capped_timeout en weather_signal_engine.py) -- esto es
+            # lo que evita el 504 intermitente.
             signal = generate_weather_signal(
-                event, config, min_ev=config.WEATHER_MIN_EV, min_price=config.WEATHER_MIN_PRICE
+                event, config, min_ev=config.WEATHER_MIN_EV, min_price=config.WEATHER_MIN_PRICE,
+                time_left_fn=time_left,
             )
         except Exception as e:
             detail.append({"title": event["title"], "status": "error", "error": str(e)})
@@ -478,6 +499,8 @@ def run_weather_cycle():
         if signal.get("reason"):
             detail_entry["reason"] = signal["reason"]
         detail.append(detail_entry)
+        if signal.get("status") == "sin_tiempo":
+            break
         if signal.get("status") != "ok" or not signal.get("best_trade"):
             continue
 
