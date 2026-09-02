@@ -202,7 +202,8 @@ def backtest_market(config, market, yes_history, no_history):
             snapshot, price_window,
             min_score=0.03,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
-            target_rr=config.POLYMARKET_TARGET_RR,
+            target_pct_min=config.POLYMARKET_TARGET_PCT_MIN,
+            target_pct_max=config.POLYMARKET_TARGET_PCT_MAX,
         )
         if not signal:
             diagnostics["no_signal"] += 1
