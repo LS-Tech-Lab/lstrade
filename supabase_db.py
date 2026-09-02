@@ -143,8 +143,8 @@ class SupabaseDatabase:
         gross_win, gross_loss = sum(r for r in wins if r > 0), abs(sum(r for r in losses if r < 0))
         return {"n": n, "win_rate": len(wins) / n * 100, "expectancy_r": sum(r["r_multiple"] for r in rows) / n, "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None}
 
-    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop):
-        self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "ts_signaled": _now_iso()}).execute()
+    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None):
+        self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "score": score, "confidence": confidence, "ts_signaled": _now_iso()}).execute()
 
     def get_open_polymarket_signals(self):
         return self.client.table("polymarket_signals").select("*").is_("outcome", "null").execute().data or []

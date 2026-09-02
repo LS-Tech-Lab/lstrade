@@ -101,7 +101,15 @@ create table if not exists polymarket_signals (
     ts_signaled timestamptz not null,
     outcome text,
     exit_price double precision,
-    ts_resolved timestamptz
+    ts_resolved timestamptz,
+    -- 2026-09-02: guardar el score/confidence con el que se generó la señal
+    -- (antes se perdía — no había forma de validar con datos reales si las
+    -- señales de confianza baja rinden peor que las de confianza alta, solo
+    -- se podía especular). Aplicado ya vía migración
+    -- add_score_confidence_to_polymarket_signals; este bloque documenta el
+    -- estado real de la tabla en Supabase.
+    score double precision,
+    confidence smallint
 );
 
 -- Señales de clima con la probabilidad estimada por el modelo (my_prob) —

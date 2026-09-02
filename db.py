@@ -71,7 +71,9 @@ class Database:
             ts_signaled REAL NOT NULL,
             outcome TEXT,
             exit_price REAL,
-            ts_resolved REAL)""")
+            ts_resolved REAL,
+            score REAL,
+            confidence INTEGER)""")
 
         # NUEVO: snapshot de indicadores por símbolo en cada ciclo — ver
         # schema.sql (modo Supabase) para el razonamiento completo.
@@ -305,12 +307,12 @@ class Database:
         return [dict(r) for r in rows]
 
     # NUEVO: Tracking de resultados de señales de Polymarket
-    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop):
+    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None):
         self.conn.execute(
             """INSERT INTO polymarket_signals
-            (condition_id, question, direction, token_id, entry, target, stop, ts_signaled)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (condition_id, question, direction, token_id, entry, target, stop, time.time())
+            (condition_id, question, direction, token_id, entry, target, stop, ts_signaled, score, confidence)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (condition_id, question, direction, token_id, entry, target, stop, time.time(), score, confidence)
         )
         self.conn.commit()
 

@@ -48,6 +48,7 @@ import logging
 import time
 
 from config import Config
+from polymarket_categories import categorize
 from polymarket_client import PolymarketClient
 from polymarket_signal_engine import generate_polymarket_signal
 
@@ -146,17 +147,28 @@ def fetch_closed_markets(client, limit, min_volume=5000, max_offset=1900, max_ch
     return markets[:limit]
 
 
-def backtest_market(config, market, yes_history, no_history):
+def backtest_market(config, market, yes_history, no_history, min_confidence=1):
     """
     Camina yes_history punto a punto (asume que no_history está alineado por
     índice — ambos vienen del mismo endpoint con el mismo `fidelity`).
+
+    min_confidence (2026-09-02): mismo filtro que config.POLYMARKET_MIN_CONFIDENCE
+    en producción (polymarket_main.py) — se aplica acá también para que el
+    backtest mida la estrategia tal cual corre en vivo, no una versión sin
+    el filtro de confianza.
     """
     trades = []
     warmup = 13
     in_trade = None
-    diagnostics = {"no_signal": 0, "signal_no_trade_plan": 0}
+    diagnostics = {"no_signal": 0, "signal_no_trade_plan": 0, "below_min_confidence": 0, "excluded_category": 0}
+    category = categorize(market["question"])
+    excluded = category in getattr(config, "POLYMARKET_EXCLUDED_CATEGORIES", [])
 
     n = min(len(yes_history), len(no_history)) if no_history else len(yes_history)
+
+    if excluded:
+        diagnostics["excluded_category"] = n - warmup if n > warmup else 0
+        return trades, diagnostics
 
     for i in range(warmup, n):
         if in_trade:
@@ -171,7 +183,9 @@ def backtest_market(config, market, yes_history, no_history):
                 r_multiple = ((exit_price - in_trade["entry"]) / in_trade["stop_distance"]) * sign
                 trades.append({
                     "question": market["question"][:60],
+                    "category": category,
                     "direction": in_trade["direction"],
+                    "confidence": in_trade["confidence"],
                     "outcome": outcome,
                     "r_multiple": r_multiple,
                     "entry_idx": in_trade["entry_idx"],
@@ -208,6 +222,9 @@ def backtest_market(config, market, yes_history, no_history):
         if not signal:
             diagnostics["no_signal"] += 1
             continue
+        if signal["confidence"] < min_confidence:
+            diagnostics["below_min_confidence"] = diagnostics.get("below_min_confidence", 0) + 1
+            continue
         if not signal.get("trade_plan"):
             diagnostics["signal_no_trade_plan"] += 1
             continue
@@ -221,6 +238,7 @@ def backtest_market(config, market, yes_history, no_history):
             "direction": signal["direction"],
             "entry": tp["entry"], "target": tp["target"], "stop": tp["stop"],
             "stop_distance": stop_distance, "entry_idx": i,
+            "confidence": signal["confidence"],
         }
 
     return trades, diagnostics
@@ -245,19 +263,23 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=100, help="cuántos mercados cerrados analizar")
     parser.add_argument("--min-volume", type=float, default=5000, help="volumen total mínimo para considerar el mercado")
+    parser.add_argument("--min-confidence", type=int, default=None,
+                         help="confianza mínima (1-5) a simular; por defecto usa config.POLYMARKET_MIN_CONFIDENCE")
     parser.add_argument("--output", help="CSV opcional con el detalle de cada trade simulado")
     args = parser.parse_args()
 
     config = Config
     client = PolymarketClient(config)
+    min_confidence = args.min_confidence if args.min_confidence is not None else config.POLYMARKET_MIN_CONFIDENCE
 
     log.info(f"Buscando hasta {args.limit} mercados cerrados con volumen total >= {args.min_volume}...")
+    log.info(f"Confianza mínima a simular: {min_confidence}/5 | Categorías excluidas: {config.POLYMARKET_EXCLUDED_CATEGORIES}")
     markets = fetch_closed_markets(client, args.limit, args.min_volume)
     log.info(f"{len(markets)} mercados encontrados. Descargando historial de precios...")
 
     all_trades = []
     skipped_short_history = 0
-    total_diag = {"no_signal": 0, "signal_no_trade_plan": 0}
+    total_diag = {"no_signal": 0, "signal_no_trade_plan": 0, "below_min_confidence": 0, "excluded_category": 0}
     for i, market in enumerate(markets, 1):
         yes_history = client.fetch_price_history(market["yes_token_id"], interval="max", fidelity=60)
         no_history = client.fetch_price_history(market["no_token_id"], interval="max", fidelity=60) \
@@ -268,10 +290,10 @@ def main():
             skipped_short_history += 1
             continue
 
-        trades, diagnostics = backtest_market(config, market, yes_history, no_history)
+        trades, diagnostics = backtest_market(config, market, yes_history, no_history, min_confidence=min_confidence)
         all_trades.extend(trades)
         for k in total_diag:
-            total_diag[k] += diagnostics[k]
+            total_diag[k] += diagnostics.get(k, 0)
         if trades:
             log.info(f"[{i}/{len(markets)}] {market['question'][:50]}: {len(trades)} trade(s) simulado(s)")
 
@@ -282,6 +304,8 @@ def main():
             f"Sin trades simulados. Diagnóstico: {skipped_short_history} mercado(s) con menos de "
             f"13 puntos de historial (se saltearon enteros), {total_diag['no_signal']} evaluaciones "
             f"sin señal (ineficiencia/momentum por debajo del umbral), "
+            f"{total_diag['excluded_category']} evaluaciones en mercados de categoría excluida, "
+            f"{total_diag['below_min_confidence']} señales por debajo de confianza {min_confidence}/5, "
             f"{total_diag['signal_no_trade_plan']} señales sin plan de salida (volatilidad nula). "
             f"Si la mayoría cae en 'sin señal', probá con --limit más alto o revisá "
             f"min_score/umbrales en polymarket_signal_engine.py."
@@ -292,6 +316,12 @@ def main():
             f"expectancy {stats['expectancy_r']:.2f}R | profit factor {stats['profit_factor']:.2f} | "
             f"total {stats['total_r']:.2f}R"
         )
+        by_conf = {}
+        for t in all_trades:
+            by_conf.setdefault(t["confidence"], []).append(t)
+        for conf in sorted(by_conf, reverse=True):
+            s = summarize(by_conf[conf])
+            log.info(f"  confianza {conf}/5: {s['n']} trades | win rate {s['win_rate']:.1f}% | total {s['total_r']:.2f}R")
 
     if args.output and all_trades:
         with open(args.output, "w", newline="", encoding="utf-8") as f:

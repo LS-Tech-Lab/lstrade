@@ -109,12 +109,37 @@ class Config:
     # Muestra chica — sigue siendo la peor categoría del corte por lejos,
     # pero conviene revalidar cuando haya más señales antes de darla por
     # sentado como edge negativo estructural.
+    #
+    # 2026-09-02: agregada "Otros / sin clasificar" (el fallback de
+    # polymarket_categories.py cuando ninguna regla matchea la pregunta).
+    # Sobre 104 señales resueltas ese día, esta categoría fue apenas n=2
+    # (ambas "stop") — muestra demasiado chica para hablar de edge negativo
+    # real, a diferencia de "Redes sociales" arriba. Se excluye igual por
+    # costo de oportunidad casi nulo: por definición un mercado que no
+    # matcheó ninguna categoría conocida (deportes, esports, cripto, etc.)
+    # no tiene un patrón identificable detrás del momentum de precio, así
+    # que no hay razón a priori para esperar que la señal generada tenga
+    # fundamento. Revisar de nuevo con más muestra si en algún momento se
+    # quiere reactivar.
     POLYMARKET_EXCLUDED_CATEGORIES = [
         c.strip() for c in os.getenv(
             "POLYMARKET_EXCLUDED_CATEGORIES",
-            "Política / geopolítica,Redes sociales / figuras públicas",
+            "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar",
         ).split(",") if c.strip()
     ]
+
+    # 2026-09-02: filtro de confianza mínima para avisar una señal de
+    # Polymarket. confidence = round(score*20), 1-5 (ver
+    # polymarket_signal_engine.py) — confidence=2 corresponde a un score
+    # apenas por encima del piso (0.03) de generate_polymarket_signal().
+    # Igual que POLYMARKET_STOP_VOL_MULT en su momento: punto de partida
+    # sin validar todavía contra resultados reales, porque
+    # polymarket_signals no guardaba score/confidence hasta ahora (ver
+    # record_polymarket_signal) — no había forma de confirmar con datos
+    # reales si las señales de confianza baja rendían peor. Se agregan esas
+    # columnas en este mismo cambio para poder revisar esto con evidencia
+    # dentro de unos días en vez de a ojo.
+    POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 3)
 
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
     # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para

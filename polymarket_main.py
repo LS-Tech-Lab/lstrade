@@ -139,7 +139,10 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
             target_rr=config.POLYMARKET_TARGET_RR,
         )
-        if signal:
+        # 2026-09-02: filtro de confianza mínima (ver config.POLYMARKET_MIN_CONFIDENCE) —
+        # antes cualquier señal por encima del piso de score (0.03) se avisaba igual,
+        # incluyendo confianza 1-2/5 que es la zona más floja que genera el motor.
+        if signal and signal["confidence"] >= config.POLYMARKET_MIN_CONFIDENCE:
             signals.append(signal)
     
     if parsed_markets:
@@ -202,6 +205,7 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
                 db.record_polymarket_signal(
                     condition_id, signal["market"]["question"], signal["direction"], token_id,
                     tp["entry"], tp["target"], tp["stop"],
+                    score=signal.get("score"), confidence=signal.get("confidence"),
                 )
 
         time.sleep(0.5)
@@ -329,7 +333,11 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
             target_rr=config.POLYMARKET_TARGET_RR,
         )
-        if signal:
+        # 2026-09-02: mismo filtro de confianza mínima que run_polymarket_cycle
+        # (ver config.POLYMARKET_MIN_CONFIDENCE) — debe replicarse acá porque
+        # este es un codepath separado (modo serverless), no una llamada
+        # compartida.
+        if signal and signal["confidence"] >= config.POLYMARKET_MIN_CONFIDENCE:
             signals.append(signal)
 
     signals.sort(key=lambda s: s["score"], reverse=True)
@@ -365,6 +373,7 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
                 db.record_polymarket_signal(
                     condition_id, signal["market"]["question"], signal["direction"], token_id,
                     tp["entry"], tp["target"], tp["stop"],
+                    score=signal.get("score"), confidence=signal.get("confidence"),
                 )
         sent += 1
 
