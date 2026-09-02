@@ -89,17 +89,39 @@ class PolymarketClient:
             return []
 
     def fetch_market_by_condition_id(self, condition_id, timeout=15):
-        """Semana 3: Obtiene los datos actuales de un mercado específico para validar su liquidez."""
+        """Semana 3: Obtiene los datos actuales de un mercado específico para validar su liquidez.
+
+        FIX (02/09/2026): el filtro se mandaba como `condition_id` (snake_case),
+        pero la Gamma API usa camelCase en TODOS sus query params y campos
+        (conditionId, outcomePrices, clobTokenIds, tagId...) -- de hecho la
+        documentación oficial ni siquiera lista un filtro por condition id en
+        /markets, así que un nombre de parámetro no reconocido simplemente se
+        ignora en silencio (sin 400, sin error) y la API devuelve el primer
+        mercado del listado por defecto en vez de lanzar excepción o vacío.
+        Con `limit=1` eso significa: SIEMPRE devuelve *un* mercado, pero casi
+        nunca el correcto -- por eso nunca traía `closed: true` para la señal
+        real y las señales de weather_track_results/polymarket_track_results
+        se quedaban abiertas indefinidamente pese a que el cron corría bien.
+        Se valida además que el conditionId del mercado devuelto matchee el
+        pedido, por las dudas de que algún día la API sí soporte el filtro
+        pero devuelva más de un resultado ambiguo."""
         try:
             resp = self.session.get(
                 f"{GAMMA_API}/markets",
-                params={"condition_id": condition_id, "limit": 1},
+                params={"conditionId": condition_id, "limit": 1},
                 timeout=timeout
             )
             resp.raise_for_status()
             markets = resp.json()
+            for m in markets:
+                if m.get("conditionId") == condition_id:
+                    return self.parse_market_for_analysis(m)
             if markets:
-                return self.parse_market_for_analysis(markets[0])
+                log.warning(
+                    f"fetch_market_by_condition_id: la API devolvió mercado(s) "
+                    f"pero ninguno matchea conditionId={condition_id} -- filtro "
+                    f"posiblemente ignorado de nuevo, revisar respuesta cruda."
+                )
             return None
         except Exception as e:
             log.warning(f"Error fetching market by condition_id {condition_id}: {e}")
