@@ -373,33 +373,11 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 .stat-bar-fill.ok{background:var(--good);}
 .stat-bar-fill.fail{background:var(--bad);}
 
-/* NUEVO: mini-barra dentro de una celda de tabla (categorías de Polymarket) */
-.cell-bar-wrap{display:flex; flex-direction:column; gap:3px; min-width:70px;}
-.cell-bar-track{height:4px; border-radius:3px; background:var(--line); overflow:hidden;}
-.cell-bar-fill{height:100%; border-radius:3px; background:var(--ink-soft);}
-.cell-bar-fill.ok{background:var(--good);}
-.cell-bar-fill.fail{background:var(--bad);}
-
-/* ────────────────────────────────────────────────────────────────
-   Tablas con scroll horizontal (pantallas medianas) con un
-   degradé lateral que avisa que hay más contenido para el costado —
-   antes el corte era abrupto y no se notaba que se podía deslizar.
-   ──────────────────────────────────────────────────────────────── */
-.table-scroll{
-  position:relative; overflow-x:auto; -webkit-overflow-scrolling:touch;
-  margin:0 -2px; padding:0 2px; max-width:100%;
-  mask-image:linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-  -webkit-mask-image:linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-}
-.table-scroll table{white-space:nowrap;}
-
 /* ────────────────────────────────────────────────────────────────
    Responsive real, con dos niveles:
    1) <=640px: se ajustan tamaños, grillas y paddings.
-   2) <=560px: las tablas anchas dejan de desbordar por completo —
-      cada fila pasa a ser una tarjeta apilada (label: valor), usando
-      los data-label agregados en page.js. Así ya no hace falta
-      deslizar el dedo para leer una columna que quedó cortada.
+   2) <=560px: ajustes finos de las tarjetas del carrusel en pantallas
+      chicas.
    ──────────────────────────────────────────────────────────────── */
 @media (max-width: 640px){
   .wrap{padding:14px;}
@@ -424,30 +402,6 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   .equity-chart{height:170px;}
 
   .login-card{padding:22px;}
-}
-
-@media (max-width: 560px){
-  .table-scroll{overflow:visible; mask-image:none; -webkit-mask-image:none; margin:0; padding:0;}
-  .table-scroll table{white-space:normal;}
-
-  table{display:block; width:100%;}
-  thead{display:none;}
-  tbody{display:block;}
-  tr{
-    display:block; background:var(--paper); border:1px solid var(--line); border-radius:10px;
-    padding:4px 12px; margin-bottom:9px;
-  }
-  tr:last-child{margin-bottom:0;}
-  td{
-    display:flex; flex-direction:column; align-items:flex-start; gap:3px;
-    padding:8px 0; border-bottom:1px dashed var(--line-soft); text-align:left;
-  }
-  td:last-child{border-bottom:none;}
-  td::before{
-    content:attr(data-label); font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em;
-    color:var(--ink-soft); font-weight:700;
-  }
-  .cell-bar-wrap{align-items:flex-start; width:100%;}
 }
 
 @media (max-width: 380px){
