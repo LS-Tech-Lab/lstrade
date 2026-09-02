@@ -151,13 +151,13 @@ def run_cycle():
             _touch_notification(db)
 
         if db.has_open_pending_decision():
-            equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.peak_equity() or 10000.0)
+            equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity() or 10000.0)
             dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
             _maybe_send_heartbeat(db, notifier, equity, dd_pct, [])
             return {"status": "waiting_for_human_approval"}
 
     try:
-        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.peak_equity() or 10000.0)
+        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity() or 10000.0)
     except Exception as e:
         return {"status": "error", "detail": f"No se pudo obtener equity real del exchange: {e}"}
 
