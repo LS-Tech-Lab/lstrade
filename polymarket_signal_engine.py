@@ -63,31 +63,8 @@ def calculate_time_to_resolution(market):
     except Exception:
         return None
 
-def _win_probability_tier(entry_price):
-    """Qué tan 'segura' es la selección según lo que ya dice el propio
-    mercado: el precio de entrada ES la probabilidad implícita de que esa
-    selección gane. Precio alto = el mercado ya le da mucha chance a ese
-    lado (pick más seguro); precio bajo = selección más especulativa."""
-    if entry_price >= 0.80:
-        return 5
-    elif entry_price >= 0.65:
-        return 4
-    elif entry_price >= 0.50:
-        return 3
-    elif entry_price >= 0.35:
-        return 2
-    else:
-        return 1
-
-
-def _target_pct_for_tier(tier, pct_min, pct_max):
-    """Interpola linealmente entre pct_min (tier 1) y pct_max (tier 5)."""
-    tier = max(1, min(5, tier))
-    return pct_min + (tier - 1) * (pct_max - pct_min) / 4.0
-
-
 def generate_polymarket_signal(market, price_history=None, min_score=0.03,
-                                stop_vol_mult=3.0, target_pct_min=0.10, target_pct_max=0.30):
+                                stop_vol_mult=3.0, target_rr=1.5):
     if not market or market.get("closed"):
         return None
     
@@ -161,34 +138,18 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.03,
 
     # Plan de salida sugerido: no hace falta llegar a la resolución del mercado
     # para ganar — como cualquier libro de órdenes, se puede vender la acción
-    # antes si el precio se mueve a favor. El STOP sigue usando la volatilidad
-    # del historial de precios (mismo principio que ATR_STOP_MULT en cripto).
-    # El TARGET, en cambio, combina dos señales de "qué tan segura" es la
-    # selección elegida:
-    #   1) el precio de entrada (probabilidad implícita que ya le da el
-    #      mercado a ese lado — un pick a 0.85 es más "seguro" que uno a 0.40)
-    #   2) la confianza interna del bot (score de ineficiencia + momentum)
-    # Se promedian ambos tiers (1-5) y ese resultado define qué % de
-    # recorrido hay que esperar antes de tomar ganancia: de +10% (tier 1,
-    # pick dudoso) a +30% (tier 5, pick muy favorito), sin obligación de
-    # esperar la resolución del mercado.
+    # antes si el precio se mueve a favor. stop/target usan la volatilidad del
+    # historial de precios (mismo principio que ATR_STOP_MULT/MIN_RR en cripto).
     entry_price = market["yes_price"] if direction == "YES" else market["no_price"]
-    win_prob_tier = _win_probability_tier(entry_price)
-    combined_tier = round((win_prob_tier + confidence) / 2)
-    target_pct = _target_pct_for_tier(combined_tier, target_pct_min, target_pct_max)
-
     volatility = momentum_data["volatility"]
     trade_plan = None
     if volatility > 0:
         stop_distance = volatility * stop_vol_mult
+        target_distance = stop_distance * target_rr
         trade_plan = {
             "entry": round(entry_price, 3),
-            "target": round(min(0.99, entry_price + target_pct), 3),
+            "target": round(min(0.99, entry_price + target_distance), 3),
             "stop": round(max(0.01, entry_price - stop_distance), 3),
-            "target_pct": round(target_pct * 100, 1),
-            "win_prob_tier": win_prob_tier,
-            "confidence_tier": confidence,
-            "combined_tier": combined_tier,
         }
     
     return {
@@ -202,9 +163,12 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.03,
             "condition_id": market["condition_id"],
             "yes_price": market["yes_price"],
             "no_price": market["no_price"],
+            "yes_label": market.get("yes_label", "Sí"),
+            "no_label": market.get("no_label", "No"),
             "volume_24h": market["volume_24h"],
             "liquidity": market["liquidity"],
             "days_to_resolution": days_to_resolution,
+            "url": market.get("url"),
         },
         "momentum": momentum_data,
         "inefficiency": inefficiency_data,
