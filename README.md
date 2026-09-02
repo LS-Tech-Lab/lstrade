@@ -9,7 +9,7 @@ te lo manda por Telegram (o consola) para tu aprobación, y ejecuta la orden rea
 
 [![CI](https://github.com/LS-Tech-Lab/trader-ia-247/actions/workflows/ci.yml/badge.svg)](https://github.com/LS-Tech-Lab/trader-ia-247/actions)
 
-## ⚠️ Antes de arrancar
+## ⚠️ Antes de arrancar:
 
 - Esto opera con dinero real si activás `LIVE_TRADING=true`. Podés perder capital. No es asesoría financiera.
 - Empezá siempre con `LIVE_TRADING=false` (modo papel) al menos un par de días para ver cómo se comporta
