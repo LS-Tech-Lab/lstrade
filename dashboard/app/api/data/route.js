@@ -5,6 +5,37 @@ function getClient() {
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 }
 
+// FIX: el commit de hoy migró TODAS las columnas de timestamp (en 9
+// tablas: ts, ts_opened, ts_closed, ts_signaled, ts_resolved) de
+// "double precision" (epoch en segundos) a "timestamptz". PostgREST
+// ahora devuelve esas columnas como strings ISO 8601 en vez de
+// números, pero page.js sigue asumiendo epoch en segundos y hace
+// `new Date(row.ts * 1000)` en ~11 lugares — con un string eso da
+// "Hace NaN min" / "Invalid Date" (así se reportó en el tab de
+// Cripto, pero afecta a Polymarket y Clima igual). Se normaliza acá,
+// una sola vez a la salida de la API, en vez de tocar cada consumidor.
+const TS_KEYS = ["ts", "ts_opened", "ts_closed", "ts_signaled", "ts_resolved"];
+
+function toEpochSeconds(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "number") return value; // ya en epoch (fila vieja, previa a la migración)
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed / 1000;
+}
+
+function normalizeTimestamps(row) {
+  if (!row || typeof row !== "object") return row;
+  const out = { ...row };
+  for (const key of TS_KEYS) {
+    if (key in out) out[key] = toEpochSeconds(out[key]);
+  }
+  return out;
+}
+
+function normalizeRows(rows) {
+  return (rows || []).map(normalizeTimestamps);
+}
+
 function computeStats(rows) {
   const valid = (rows || []).filter((r) => r.r_multiple !== null && r.r_multiple !== undefined);
   if (valid.length === 0) return { n: 0, win_rate: null, expectancy_r: null, profit_factor: null };
@@ -47,17 +78,6 @@ function categorize(question) {
   }
   return FALLBACK_CATEGORY;
 }
-
-// Mismo default que config.POLYMARKET_EXCLUDED_CATEGORIES (Python) — no
-// comparten código (uno corre en el motor de señales, este en el dashboard
-// serverless), así que si se toca uno hay que tocar el otro. Se usa para
-// que el indicador principal (win rate/expectancy/PF de arriba) no quede
-// arrastrado por categorías ya identificadas como perdedoras — el
-// historial completo sigue disponible sin filtrar en polymarket_resolved
-// y en la tabla por categoría, esto solo afecta el resumen agregado.
-const EXCLUDED_CATEGORIES = (
-  process.env.POLYMARKET_EXCLUDED_CATEGORIES || "Política / geopolítica,Redes sociales / figuras públicas"
-).split(",").map((c) => c.trim()).filter(Boolean);
 
 function computePolymarketStats(rows) {
   const resolved = (rows || []).filter((r) => r.outcome);
@@ -172,41 +192,45 @@ export async function GET() {
 
     const stateMap = Object.fromEntries((stateRes.data || []).map((r) => [r.key, r.value]));
 
+    const equityRows = normalizeRows(equityRes.data);
+    const decisionsRows = normalizeRows(decisionsRes.data);
+    const pendingRows = normalizeRows(pendingRes.data);
+    const openTradesRows = openTradesRes.error ? [] : normalizeRows(openTradesRes.data);
+    const polymarketOpenRows = polymarketOpenRes.error ? [] : normalizeRows(polymarketOpenRes.data);
+    const indicatorRows = indicatorsRes.error ? [] : normalizeRows(indicatorsRes.data);
+    const weatherOpenRows = weatherOpenRes.error ? [] : normalizeRows(weatherOpenRes.data);
+
     // Un snapshot por símbolo (el más reciente) — la tabla puede tener
     // varias filas históricas por símbolo, acá solo interesa la última.
+    // (indicatorRows ya viene ordenado desc por ts desde Postgres —el
+    // orden lexicográfico ISO 8601 coincide con el cronológico— así que
+    // normalizar el campo después no altera cuál fila queda primero.)
     const latestIndicatorsBySymbol = {};
-    for (const row of indicatorsRes.data || []) {
+    for (const row of indicatorRows) {
       if (!latestIndicatorsBySymbol[row.symbol]) latestIndicatorsBySymbol[row.symbol] = row;
     }
 
-    const resolvedSignals = polymarketResolvedRes.error ? [] : (polymarketResolvedRes.data || []);
-    const weatherResolved = weatherResolvedRes.error ? [] : (weatherResolvedRes.data || []);
-    // "Core" = sin las categorías excluidas (ver EXCLUDED_CATEGORIES) — es
-    // lo que se muestra como indicador principal para que una categoría ya
-    // identificada como mala no tape el desempeño real del resto.
-    const resolvedSignalsCore = resolvedSignals.filter((r) => !EXCLUDED_CATEGORIES.includes(categorize(r.question)));
+    const resolvedSignals = polymarketResolvedRes.error ? [] : normalizeRows(polymarketResolvedRes.data);
+    const weatherResolved = weatherResolvedRes.error ? [] : normalizeRows(weatherResolvedRes.data);
 
     return NextResponse.json({
-      equity: equityRes.data || [],
-      decisions: decisionsRes.data || [],
+      equity: equityRows,
+      decisions: decisionsRows,
       halted: stateMap.trading_halted === "1",
       halt_reason: stateMap.halt_reason || null,
-      pending: pendingRes.data || [],
+      pending: pendingRows,
       // Si las tablas todavía no existen (schema.sql viejo sin correr de
       // nuevo), no rompemos el dashboard — se muestran vacías.
-      crypto_open: openTradesRes.error ? [] : (openTradesRes.data || []),
+      crypto_open: openTradesRows,
       stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null }
         : computeStats(closedTradesRes.data),
       polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null }
-        : computePolymarketStats(resolvedSignalsCore),
-      polymarket_stats_all_categories: polymarketResolvedRes.error ? { n: 0, win_rate: null }
         : computePolymarketStats(resolvedSignals),
-      polymarket_excluded_categories: EXCLUDED_CATEGORIES,
       polymarket_stats_by_category: computePolymarketStatsByCategory(resolvedSignals),
-      polymarket_open: polymarketOpenRes.error ? [] : (polymarketOpenRes.data || []),
+      polymarket_open: polymarketOpenRows,
       polymarket_resolved: resolvedSignals.slice(0, 20),
-      indicators: indicatorsRes.error ? [] : Object.values(latestIndicatorsBySymbol),
-      weather_open: weatherOpenRes.error ? [] : (weatherOpenRes.data || []),
+      indicators: Object.values(latestIndicatorsBySymbol),
+      weather_open: weatherOpenRows,
       weather_resolved: weatherResolved.slice(0, 20),
       weather_stats: weatherResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
         : computeWeatherStats(weatherResolved),
@@ -214,4 +238,4 @@ export async function GET() {
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
-      }
+}
