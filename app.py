@@ -402,6 +402,16 @@ def run_weather_cycle():
     state_store = WeatherNotifyStateStore(
         db, resend_cooldown_hours=config.WEATHER_RESEND_COOLDOWN_HOURS
     )
+    # Hallazgo 01/09/2026: should_notify() permite reenviar la alerta de
+    # Telegram cuando el EV sube ≥20% aunque el condition_id sea el mismo
+    # de antes (tiene sentido: avisar que la oportunidad mejoró) — pero eso
+    # también insertaba una fila NUEVA en weather_signals cada vez, aunque
+    # fuera el mismo mercado todavía sin resolver. Como las dos filas de un
+    # mismo mercado siempre resuelven igual, el win rate/Brier score las
+    # contaba como dos ensayos independientes en vez de uno. Se trackean acá
+    # los condition_id ya abiertos para no duplicar el registro (el reenvío
+    # de Telegram sigue funcionando igual, solo no se vuelve a insertar).
+    open_condition_ids = {s["condition_id"] for s in db.get_open_weather_signals()}
 
     started = time.monotonic()
     # Subido de 8.0 a 18.0 (01/09/2026): con WEATHER_TOP_N=5 y 5 fuentes por
@@ -482,15 +492,19 @@ def run_weather_cycle():
             notifier.send_message(memo)
             state_store.record_notified(best["condition_id"], best["ev"])
             sent += 1
-            try:
-                db.record_weather_signal(
-                    best["condition_id"], best["question"], event["title"],
-                    signal["station"].get("icao"), best["my_prob"], best["market_price"],
-                    best["ev"], signal["center_estimate_f"], signal["sigma"],
-                    best.get("yes_token_id"),
-                )
-            except Exception as e:
-                detail.append({"title": event["title"], "status": "error_registro", "error": str(e)})
+            if best["condition_id"] in open_condition_ids:
+                detail.append({"title": event["title"], "status": "reenvio_sin_duplicar_registro"})
+            else:
+                try:
+                    db.record_weather_signal(
+                        best["condition_id"], best["question"], event["title"],
+                        signal["station"].get("icao"), best["my_prob"], best["market_price"],
+                        best["ev"], signal["center_estimate_f"], signal["sigma"],
+                        best.get("yes_token_id"),
+                    )
+                    open_condition_ids.add(best["condition_id"])
+                except Exception as e:
+                    detail.append({"title": event["title"], "status": "error_registro", "error": str(e)})
         except Exception as e:
             detail.append({"title": event["title"], "status": "error_envio", "error": str(e)})
 
