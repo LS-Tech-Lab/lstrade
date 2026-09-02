@@ -13,15 +13,35 @@ class PositionManager:
         self.exchange = exchange_client
         self.notifier = notifier
 
-    def manage_open_positions(self):
-        """Revisa todas las posiciones abiertas y aplica Trailing Stop."""
+    def manage_open_positions(self, time_left_fn=None):
+        """Revisa todas las posiciones abiertas y aplica Trailing Stop.
+
+        FIX (02/09/2026): cada posición hace 2 llamadas de red sin límite
+        (fetch_ticker + fetch_ohlcv para el ATR), y este método corría ANTES
+        de que run_cycle() empezara a contar su time budget -- con varias
+        posiciones abiertas eso solo ya podía comerse varios segundos que
+        nunca se descontaban de ningún lado, y el ciclo terminaba pasándose
+        del maxDuration de Vercel. Ahora acepta la misma función time_left()
+        que usa el loop de escaneo en run_cycle(), y si queda poco tiempo
+        corta el loop y deja las posiciones restantes para el próximo ciclo
+        (no pasa nada por posponer un chequeo de trailing stop un rato en
+        modo papel/LIVE_TRADING=false). time_left_fn es opcional para no
+        romper otros callers (ej. main.py en modo VPS, que no tiene este
+        límite de duración)."""
         open_trades = self.db.get_open_trades()
         if not open_trades:
             return
 
         log.info(f"Gestionando {len(open_trades)} posiciones abiertas (Trailing Stop)...")
-        
+
         for trade in open_trades:
+            if time_left_fn and time_left_fn() < 2.0:
+                remaining = len(open_trades) - open_trades.index(trade)
+                log.warning(
+                    f"[SIN TIEMPO] Se corta la gestión de posiciones abiertas — "
+                    f"quedaban {remaining} sin revisar, se retoman en el próximo ciclo."
+                )
+                break
             symbol = trade["symbol"]
             direction = trade["direction"]
             entry = trade["entry_price"]
