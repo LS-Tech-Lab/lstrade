@@ -119,6 +119,14 @@ class Database:
         row = self.conn.execute("SELECT MAX(equity) as peak FROM equity_history").fetchone()
         return row["peak"] if row and row["peak"] is not None else None
 
+    def last_equity(self):
+        """Último equity registrado (no el pico histórico). Es el que hay que
+        usar como base para aplicar el P&L de un trade que se acaba de cerrar."""
+        row = self.conn.execute(
+            "SELECT equity FROM equity_history ORDER BY ts DESC LIMIT 1"
+        ).fetchone()
+        return row["equity"] if row and row["equity"] is not None else None
+
     def current_exposure_pct(self, equity):
         cutoff = time.time() - 24 * 3600
         rows = self.conn.execute(
@@ -232,6 +240,19 @@ class Database:
         )
         self.conn.execute("DELETE FROM open_trades WHERE id = ?", (trade["id"],))
         self.conn.commit()
+
+        # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
+        # equity de modo papel se quedaba pegado en el pico histórico sin
+        # importar el resultado de los trades cerrados (ver auditoría).
+        position_size = trade.get("position_size")
+        if position_size:
+            sign = 1 if direction == "LONG" else -1
+            pnl_dollars = (exit_price - entry) * position_size * sign
+            base_equity = self.last_equity()
+            if base_equity is None:
+                base_equity = 10000.0
+            self.record_equity(base_equity + pnl_dollars)
+
         return r_multiple
 
     def get_closed_trades(self, limit=500):
