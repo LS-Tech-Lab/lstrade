@@ -73,7 +73,7 @@ const FRESHNESS_FAIL_MINUTES = 60;   // 6x — casi seguro que el cron dejó de 
 
 function freshnessState(ts) {
   if (!ts) return { minutes: null, text: "Sin datos", tone: "" };
-  const minutes = (Date.now() / 1000 - ts) / 60;
+  const minutes = (Date.now() - parseTs(ts).getTime()) / 60000;
   if (minutes >= FRESHNESS_FAIL_MINUTES) {
     return { minutes, text: `Sin actualizar hace ${Math.round(minutes)} min — revisá el cron`, tone: "fail" };
   }
@@ -93,10 +93,22 @@ function Info({ text }) {
   );
 }
 
-// Formatea un timestamp unix (segundos) en fecha corta, para el tooltip
+// NUEVO: desde el commit "Change timestamps to ISO 8601 format in Supabase
+// DB" (1 sep), supabase_db.py guarda los ts nuevos como string ISO 8601
+// (timestamptz nativo de Postgres) en vez de segundos unix. Pero las filas
+// más viejas en la base todavía tienen el formato anterior (número). Este
+// helper soporta los dos: string → new Date() lo parsea directo; número →
+// se asume que sigue siendo segundos unix, así que se multiplica por 1000.
+// Todo el dashboard debe usar esto en vez de `new Date(x * 1000)` a mano.
+function parseTs(ts) {
+  if (ts === null || ts === undefined) return null;
+  return typeof ts === "string" ? new Date(ts) : new Date(ts * 1000);
+}
+
+// Formatea un timestamp (ver parseTs) en fecha corta, para el tooltip
 // del gráfico de equity.
 function formatChartDate(ts) {
-  return new Date(ts * 1000).toLocaleString(undefined, {
+  return parseTs(ts).toLocaleString(undefined, {
     day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
   });
 }
@@ -345,10 +357,18 @@ function IndicatorCard({ symbol, snapshot }) {
         <span className={`freshness-dot ${freshness.tone}`} />
         <span className={freshness.tone === "" ? "" : freshness.tone}>{freshness.text}</span>
         <span className="indicator-ts-sep">·</span>
-        {new Date(snapshot.ts * 1000).toLocaleTimeString()}
+        {parseTs(snapshot.ts).toLocaleTimeString()}
       </div>
     </div>
   );
+}
+
+// NUEVO: envuelve cualquier tabla ancha para que en pantallas chicas se
+// pueda desplazar horizontalmente en vez de desbordar el layout o achicar
+// el texto hasta ser ilegible. El borde/degradé lateral es la señal visual
+// de "hay más contenido para el costado".
+function TableScroll({ children }) {
+  return <div className="table-scroll">{children}</div>;
 }
 
 // NUEVO: hook compartido por todos los carruseles (indicadores, posiciones
@@ -498,7 +518,7 @@ function CryptoOpenTable({ rows }) {
             />
             <RowField label="Ratio R:B" value={rrStats?.rr ? `1 : ${rrStats.rr.toFixed(2)}` : "—"} />
             <RowField label="Tamaño" value={r.position_size?.toFixed(6)} />
-            <RowField label="Abierta" value={new Date(r.ts_opened * 1000).toLocaleString()} />
+            <RowField label="Abierta" value={parseTs(r.ts_opened).toLocaleString()} />
           </>
         );
       }}
@@ -506,8 +526,16 @@ function CryptoOpenTable({ rows }) {
   );
 }
 
-function PolymarketCategoryTable({ byCategory }) {
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// lenguaje visual que los indicadores en vivo de cripto (una tarjeta por
+// categoría, flechas y puntos para navegar) en vez de una tabla ancha que
+// en mobile achicaba el texto o forzaba scroll lateral.
+function PolymarketCategoryTable({ byCategory, excludedCategories = [] }) {
   const rows = Object.entries(byCategory || {}).sort((a, b) => b[1].total_r - a[1].total_r);
+  if (rows.length === 0) {
+    return <p className="empty">Todavía no hay señales resueltas para desglosar por categoría.</p>;
+  }
+  const maxAbs = Math.max(...rows.map(([, s]) => Math.abs(s.total_r)), 0.01);
   return (
     <RowCarousel
       items={rows}
@@ -515,14 +543,27 @@ function PolymarketCategoryTable({ byCategory }) {
       emptyMessage="Todavía no hay señales resueltas para desglosar por categoría."
       renderFields={([cat, s]) => {
         const tone = s.total_r >= 0 ? "ok" : "fail";
+        const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
+        const isExcluded = excludedCategories.includes(cat);
         return (
           <>
-            <RowField label="Categoría" value={s.n < 5 ? `${cat} ⚠️` : cat} />
+            <RowField label="Categoría" value={`${isExcluded ? "🚫 " : ""}${cat}${s.n < 5 ? " ⚠️" : ""}`} />
             <RowField label="n" value={s.n} />
             <RowField label="Win%" value={`${s.win_rate.toFixed(0)}%`} />
             <RowField label="Expectancy" value={`${s.expectancy_r >= 0 ? "+ " : ""}${s.expectancy_r.toFixed(2)}R`} tone={tone} />
             <RowField label="PF" value={s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"} />
-            <RowField label="Total R" value={`${s.total_r >= 0 ? "+ " : ""}${s.total_r.toFixed(2)}R`} tone={tone} />
+            <RowField
+              label="Total R"
+              value={
+                <div className="cell-bar-wrap">
+                  <span>{s.total_r >= 0 ? "+ " : ""}{s.total_r.toFixed(2)}R</span>
+                  <div className="cell-bar-track">
+                    <div className={`cell-bar-fill ${tone}`} style={{ width: `${barPct}%` }} />
+                  </div>
+                </div>
+              }
+              tone={tone}
+            />
           </>
         );
       }}
@@ -530,6 +571,8 @@ function PolymarketCategoryTable({ byCategory }) {
   );
 }
 
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// patrón que CryptoOpenTable (posiciones cripto abiertas).
 function PolymarketOpenTable({ rows }) {
   return (
     <RowCarousel
@@ -538,12 +581,12 @@ function PolymarketOpenTable({ rows }) {
       emptyMessage="Sin señales de Polymarket abiertas ahora mismo."
       renderFields={(r) => (
         <>
-          <RowField label="Mercado" value={r.question} />
+          <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
           <RowField label="Dirección" value={directionLabel(r.direction)} />
           <RowField label="Entrada" value={r.entry?.toFixed(3)} />
           <RowField label="Target" value={r.target?.toFixed(3)} tone="ok" />
           <RowField label="Stop" value={r.stop?.toFixed(3)} tone="fail" />
-          <RowField label="Enviada" value={new Date(r.ts_signaled * 1000).toLocaleString()} />
+          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
         </>
       )}
     />
@@ -555,6 +598,8 @@ function PolymarketOpenTable({ rows }) {
 // con métricas de rendimiento detalladas: R-múltiple, retorno %, tiempo
 // hasta resolución, precios de entrada/salida.
 // ────────────────────────────────────────────────────────────────────
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// patrón que el resto de los carruseles (indicadores, posiciones, bitácora).
 function PolymarketResolvedTable({ rows }) {
   if (!rows || rows.length === 0) {
     return <p className="empty">Todavía no hay señales resueltas.</p>;
@@ -571,8 +616,8 @@ function PolymarketResolvedTable({ rows }) {
       ? ((r.exit_price - r.entry) / r.entry) * 100
       : null;
     
-    const tsSignaled = r.ts_signaled ? new Date(r.ts_signaled * 1000) : null;
-    const tsResolved = r.ts_resolved ? new Date(r.ts_resolved * 1000) : null;
+    const tsSignaled = r.ts_signaled ? parseTs(r.ts_signaled) : null;
+    const tsResolved = r.ts_resolved ? parseTs(r.ts_resolved) : null;
     const timeToResolve = tsSignaled && tsResolved
       ? (tsResolved.getTime() - tsSignaled.getTime()) / (1000 * 60 * 60) // horas
       : null;
@@ -589,19 +634,21 @@ function PolymarketResolvedTable({ rows }) {
         const isWin = r.outcome === "target";
         const rTone = r.rMultiple !== null ? (r.rMultiple >= 0 ? "ok" : "fail") : "";
         const retTone = r.returnPct !== null ? (r.returnPct >= 0 ? "ok" : "fail") : "";
-        const timeLabel = r.timeToResolve !== null
-          ? (r.timeToResolve < 24 ? `${r.timeToResolve.toFixed(1)}h` : `${(r.timeToResolve / 24).toFixed(1)}d`)
-          : "—";
         return (
           <>
-            <RowField label="Mercado" value={r.question} />
+            <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
             <RowField label="Dirección" value={directionLabel(r.direction)} />
             <RowField label="Entrada" value={r.entry?.toFixed(3)} />
             <RowField label="Salida" value={r.exit_price?.toFixed(3)} />
-            <RowField label="R-Múltiple" value={r.rMultiple !== null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"} tone={rTone} />
-            <RowField label="Retorno" value={r.returnPct !== null ? `${r.returnPct >= 0 ? "+" : ""}${r.returnPct.toFixed(1)}%` : "—"} tone={retTone} />
-            <RowField label="Tiempo" value={timeLabel} />
-            <RowField label="Resultado" value={
+            <RowField label="R-Múltiple" tone={rTone}
+              value={r.rMultiple !== null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"} />
+            <RowField label="Retorno" tone={retTone}
+              value={r.returnPct !== null ? `${r.returnPct >= 0 ? "+" : ""}${r.returnPct.toFixed(1)}%` : "—"} />
+            <RowField label="Tiempo"
+              value={r.timeToResolve !== null
+                ? (r.timeToResolve < 24 ? `${r.timeToResolve.toFixed(1)}h` : `${(r.timeToResolve / 24).toFixed(1)}d`)
+                : "—"} />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
               <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
                 {isWin ? "✅ GANADA" : "❌ PERDIDA"}
               </span>
@@ -654,45 +701,73 @@ function WeatherStatsRow({ stats }) {
 }
 
 function WeatherOpenTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Sin señales de clima abiertas ahora mismo.</p>;
+  }
   return (
-    <RowCarousel
-      items={rows}
-      keyExtractor={(r) => r.id}
-      emptyMessage="Sin señales de clima abiertas ahora mismo."
-      renderFields={(r) => (
-        <>
-          <RowField label="Mercado" value={r.question} />
-          <RowField label="Estación" value={r.station_icao || "—"} />
-          <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
-          <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
-          <RowField label="EV" value={r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"} tone={r.ev >= 0 ? "ok" : "fail"} />
-          <RowField label="Enviada" value={new Date(r.ts_signaled * 1000).toLocaleString()} />
-        </>
-      )}
-    />
+    <TableScroll>
+      <table>
+        <thead>
+          <tr>
+            <th>Mercado</th>
+            <th>Estación</th>
+            <th>Mi prob.</th>
+            <th>Precio mkt</th>
+            <th>EV</th>
+            <th>Enviada</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
+              <td data-label="Estación">{r.station_icao || "—"}</td>
+              <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
+              <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
+              <td data-label="EV" className={r.ev >= 0 ? "ok" : "fail"}>{r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"}</td>
+              <td data-label="Enviada">{parseTs(r.ts_signaled).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableScroll>
   );
 }
 
 function WeatherResolvedTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Todavía no hay señales de clima resueltas.</p>;
+  }
   return (
-    <RowCarousel
-      items={rows}
-      keyExtractor={(r) => r.id}
-      emptyMessage="Todavía no hay señales de clima resueltas."
-      renderFields={(r) => {
-        const ret = weatherReturnPct(r);
-        return (
-          <>
-            <RowField label="Mercado" value={r.question} />
-            <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
-            <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
-            <RowField label="Resultado" value={r.outcome === "yes" ? "SI OCURRIÓ" : "NO OCURRIÓ"} tone={r.outcome === "yes" ? "ok" : "fail"} />
-            <RowField label="Retorno" value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""} />
-            <RowField label="Resuelta" value={r.ts_resolved ? new Date(r.ts_resolved * 1000).toLocaleString() : "—"} />
-          </>
-        );
-      }}
-    />
+    <TableScroll>
+      <table>
+        <thead>
+          <tr>
+            <th>Mercado</th>
+            <th>Mi prob.</th>
+            <th>Precio mkt</th>
+            <th>Resultado</th>
+            <th>Retorno</th>
+            <th>Resuelta</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const ret = weatherReturnPct(r);
+            return (
+              <tr key={r.id}>
+                <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
+                <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
+                <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
+                <td data-label="Resultado" className={r.outcome === "yes" ? "ok" : "fail"}>{r.outcome === "yes" ? "SI OCURRIÓ" : "NO OCURRIÓ"}</td>
+                <td data-label="Retorno" className={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}>{ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"}</td>
+                <td data-label="Resuelta">{r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </TableScroll>
   );
 }
 
@@ -804,7 +879,7 @@ function CriptoTab({ data }) {
           maxDots={8}
           renderFields={(d) => (
             <>
-              <RowField label="Fecha" value={new Date(d.ts * 1000).toLocaleString()} />
+              <RowField label="Fecha" value={parseTs(d.ts).toLocaleString()} />
               <RowField label="Símbolo" value={d.symbol} />
               <RowField label="Señal" value={d.signal_type || "—"} />
               <RowField label="Dirección" value={directionLabel(d.direction)} />
@@ -822,15 +897,25 @@ function CriptoTab({ data }) {
 }
 
 function PolymarketTab({ data }) {
+  const excluded = data.polymarket_excluded_categories || [];
   return (
     <>
       <PlainSummary halted={false} stats={data.polymarket_stats} label="Polymarket" />
-      <StatsRow title="Performance — Polymarket (señales resueltas)" stats={data.polymarket_stats}
+      <StatsRow title="Performance — Polymarket (sin categorías excluidas)" stats={data.polymarket_stats}
         emptyMessage="Sin señales resueltas todavía — las métricas aparecen cuando el motor encuentre y cierre alguna." />
+      {excluded.length > 0 && (
+        <p className="card-subtitle">
+          Excluidas del indicador de arriba por bajo desempeño: {excluded.join(", ")}.{" "}
+          {data.polymarket_stats_all_categories?.n > 0 && (
+            <>Con esas categorías incluidas, el win rate real es {data.polymarket_stats_all_categories.win_rate.toFixed(1)}%
+            {" "}sobre {data.polymarket_stats_all_categories.n} señales.</>
+          )}
+        </p>
+      )}
       <div className="card">
         <h2>Performance por categoría</h2>
-        <p className="card-subtitle">Mismo desempeño de arriba, pero desglosado por el tema del mercado (clima, política, cripto, etc.).</p>
-        <PolymarketCategoryTable byCategory={data.polymarket_stats_by_category} />
+        <p className="card-subtitle">Desglose completo, categorías excluidas incluidas (marcadas con 🚫) — para decidir si sacar o meter alguna del filtro.</p>
+        <PolymarketCategoryTable byCategory={data.polymarket_stats_by_category} excludedCategories={excluded} />
       </div>
       <div className="card">
         <h2>Señales abiertas ({data.polymarket_open?.length || 0})</h2>
