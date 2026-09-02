@@ -2,6 +2,15 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import categorySpec from "../../../polymarket_categories.json";
 
+// FIX: sin esto, Next.js puede pre-renderizar este route handler como
+// estático (no usa cookies()/headers() ni ninguna otra API dinámica), y
+// entonces sirve siempre la MISMA respuesta cacheada del build, sin volver
+// a consultar Supabase — el `cache: "no-store"` del fetch en page.js solo
+// evita el caché del navegador, no el caché de ejecución del handler en el
+// servidor. Por eso el equity (y el resto del dashboard) se veía congelado
+// aunque los datos en Supabase sí cambiaban.
+export const dynamic = "force-dynamic";
+
 function getClient() {
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 }
