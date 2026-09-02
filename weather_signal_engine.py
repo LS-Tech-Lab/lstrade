@@ -40,6 +40,28 @@ AWC_API = "https://aviationweather.gov/api/data"
 
 DEFAULT_TIMEOUT = 6
 
+
+def _capped_timeout(time_left_fn, ceiling=DEFAULT_TIMEOUT, floor=1.0, safety_margin=0.5):
+    """Cap del timeout de UNA request según lo que quede del budget global
+    del ciclo, en vez de un timeout fijo ciego a cuánto ya se gastó.
+
+    FIX (02/09/2026): fetch_nws_guidance (2 requests secuenciales) + METAR +
+    TAF, cada una con DEFAULT_TIMEOUT=6s fijo, podían sumar hasta ~24s en el
+    peor caso -- casi todo el maxDuration=25 de Vercel -- para UN solo
+    evento. El time_left() del loop en run_weather_cycle() (app.py) solo
+    corta ENTRE eventos, no puede interrumpir requests ya en curso dentro de
+    uno. Resultado: 504 FUNCTION_INVOCATION_TIMEOUT intermitente, solo en
+    los ciclos donde NWS/METAR/TAF andaban lentos cerca del máximo -- de ahí
+    que "a veces sí, a veces no". Con esto cada request usa como timeout lo
+    que quede del budget (con margen), así que en el peor caso el propio
+    requests.get() corta antes de que lo mate Vercel, y el ciclo devuelve
+    una respuesta parcial en vez de un 504 que pierde TODO el trabajo del
+    ciclo (incluidas las estaciones ya procesadas antes)."""
+    if time_left_fn is None:
+        return ceiling
+    remaining = time_left_fn() - safety_margin
+    return max(floor, min(ceiling, remaining))
+
 # ---------------------------------------------------------------------------
 # STEP 0 — Resolución de estación de asentamiento (NUNCA asumir)
 # ---------------------------------------------------------------------------
@@ -210,7 +232,7 @@ def _headers(config):
     return {"User-Agent": ua, "Accept": "application/json"}
 
 
-def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT):
+def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT, time_left_fn=None):
     """Guía de pronóstico oficial de NWS para el punto de la estación.
     api.weather.gov exige un User-Agent identificable (no un navegador
     genérico) — configurar WEATHER_USER_AGENT con un contacto real o NWS
@@ -219,12 +241,19 @@ def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT):
         return None
     try:
         headers = _headers(config)
+        t1 = _capped_timeout(time_left_fn, ceiling=timeout)
         points = requests.get(
             f"{NWS_API}/points/{station['lat']},{station['lon']}",
-            headers=headers, timeout=timeout,
+            headers=headers, timeout=t1,
         ).json()
         forecast_url = points["properties"]["forecast"]
-        forecast = requests.get(forecast_url, headers=headers, timeout=timeout).json()
+        # FIX (02/09/2026): la llamada de arriba ya pudo haber consumido
+        # varios segundos del budget -- se recalcula el timeout para esta
+        # segunda request en vez de reusar el mismo `timeout` fijo, que
+        # antes dejaba que las 2 requests de este método solas se comieran
+        # hasta 2x DEFAULT_TIMEOUT.
+        t2 = _capped_timeout(time_left_fn, ceiling=timeout)
+        forecast = requests.get(forecast_url, headers=headers, timeout=t2).json()
         periods = forecast["properties"]["periods"]
         today_day = next((p for p in periods if p.get("isDaytime")), periods[0])
         return {
@@ -251,7 +280,7 @@ def _parse_six_hour_max_f(raw_ob):
     return celsius * 9 / 5 + 32
 
 
-def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT):
+def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT, time_left_fn=None):
     """Observación en vivo + máxima de 6h de los remarks, tal como pide
     STEP 1 de la skill (watch the 6-hour max temperature group)."""
     try:
@@ -259,7 +288,7 @@ def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT):
         resp = requests.get(
             f"{AWC_API}/metar",
             params={"ids": icao, "format": "json", "hours": hours},
-            headers=headers, timeout=timeout,
+            headers=headers, timeout=_capped_timeout(time_left_fn, ceiling=timeout),
         )
         resp.raise_for_status()
         obs = resp.json()
@@ -278,7 +307,7 @@ def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT):
         return None
 
 
-def fetch_taf(icao, config, timeout=DEFAULT_TIMEOUT):
+def fetch_taf(icao, config, timeout=DEFAULT_TIMEOUT, time_left_fn=None):
     """TAF para timing de nubes/tormenta — lo que realmente topea la
     máxima del día (STEP 1/2 de la skill)."""
     try:
@@ -286,7 +315,7 @@ def fetch_taf(icao, config, timeout=DEFAULT_TIMEOUT):
         resp = requests.get(
             f"{AWC_API}/taf",
             params={"ids": icao, "format": "json"},
-            headers=headers, timeout=timeout,
+            headers=headers, timeout=_capped_timeout(time_left_fn, ceiling=timeout),
         )
         resp.raise_for_status()
         data = resp.json()
@@ -438,7 +467,7 @@ DISCLAIMER = (
 )
 
 
-def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
+def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_left_fn=None):
     """
     Genera una señal de clima para un evento de Polymarket agrupado por
     buckets (mercados YES/NO por rango de temperatura del mismo día/estación).
@@ -446,8 +475,16 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
     `event`: {"title": str, "markets": [market_parseado, ...]} — cada market
     viene de PolymarketClient.parse_market_for_analysis (o compatible).
 
+    `time_left_fn`: función opcional que devuelve segundos restantes del
+    budget global del ciclo (ver run_weather_cycle en app.py). Si se pasa,
+    los timeouts de NWS/METAR/TAF se ajustan dinámicamente a lo que quede
+    (FIX 02/09/2026, ver _capped_timeout) en vez de usar DEFAULT_TIMEOUT
+    fijo, que en el peor caso podía comerse ~24s solo para las 3 fuentes de
+    UN evento y provocar un 504 intermitente en Vercel.
+
     Devuelve un dict con "status" en {"no_station", "no_buckets", "no_data",
-    "ok"} — nunca lanza excepción por datos faltantes, siempre degrada.
+    "sin_tiempo", "ok"} — nunca lanza excepción por datos faltantes, siempre
+    degrada.
     """
     title = event.get("title") or ""
     station = resolve_station(title, override_icao=getattr(config, "WEATHER_STATION_OVERRIDE", None))
@@ -466,9 +503,18 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01):
     if not buckets:
         return {"status": "no_buckets", "title": title, "station": station}
 
-    nws = fetch_nws_guidance(station, config)
-    metar = fetch_metar(station["icao"], config)
-    taf = fetch_taf(station["icao"], config)
+    if time_left_fn and time_left_fn() < 1.5:
+        return {"status": "sin_tiempo", "title": title, "station": station}
+    nws = fetch_nws_guidance(station, config, time_left_fn=time_left_fn)
+
+    if time_left_fn and time_left_fn() < 1.0:
+        metar, taf = None, None
+    else:
+        metar = fetch_metar(station["icao"], config, time_left_fn=time_left_fn)
+        if time_left_fn and time_left_fn() < 1.0:
+            taf = None
+        else:
+            taf = fetch_taf(station["icao"], config, time_left_fn=time_left_fn)
 
     center, notes, penalty = estimate_adjusted_high(nws, metar, taf, station)
     if center is None:
