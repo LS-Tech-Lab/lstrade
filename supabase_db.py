@@ -76,6 +76,12 @@ class SupabaseDatabase:
             "ts_opened": _now_iso(), "stop_distance": stop_distance,
         }).execute()
 
+    def update_trade_stop(self, trade_id, new_stop_price, new_order_id=None):
+        update = {"current_stop": new_stop_price}
+        if new_order_id is not None:
+            update["order_id"] = new_order_id
+        self.client.table("open_trades").update(update).eq("id", trade_id).execute()
+
     def close_trade_with_outcome(self, trade, exit_price, outcome):
         deleted = self.client.table("open_trades").delete().eq("id", trade["id"]).execute()
         if not deleted.data:
