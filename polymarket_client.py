@@ -88,6 +88,44 @@ class PolymarketClient:
             log.warning(f"Error fetching price history: {e}")
             return []
 
+    def fetch_order_book_liquidity(self, token_id, timeout=15):
+        """Suma el notional (price*size) de bids+asks del order book de un token
+        vía CLOB /book, como medida de liquidez real en $ para ESE token puntual.
+
+        FIX (02/09/2026): polymarket_track_results.py usaba `liquidity` de
+        fetch_market_by_condition_id() (Gamma) como gate de seguridad antes de
+        resolver una señal. Como Gamma no soporta filtrar por condition_id (ver
+        nota en fetch_market_by_condition_id más abajo), ese método siempre
+        devolvía None -- y con la validación de conditionId que se agregó para
+        arreglar el módulo de clima, pasó de "colar con datos de un mercado
+        random" a "bloquear TODO siempre" -- ninguna de las señales de
+        Polymarket llegaba ni a chequear si tocó target/stop. Este método evita
+        depender de Gamma por completo: pega directo a la CLOB con el
+        token_id real de la señal (que ya se usa más abajo para
+        fetch_price_history), y de paso es más preciso que el agregado de
+        Gamma porque refleja la profundidad real de ESE token, no un promedio
+        del mercado. Devuelve None (no 0) si no se pudo obtener el book, para
+        distinguir "sin datos" de "liquidez real es cero"."""
+        try:
+            resp = self.session.get(
+                f"{CLOB_API}/book",
+                params={"token_id": token_id},
+                timeout=timeout
+            )
+            resp.raise_for_status()
+            book = resp.json()
+            total = 0.0
+            for side in ("bids", "asks"):
+                for level in book.get(side, []):
+                    try:
+                        total += float(level.get("price", 0)) * float(level.get("size", 0))
+                    except (TypeError, ValueError):
+                        continue
+            return total
+        except Exception as e:
+            log.warning(f"Error fetching order book for token {token_id}: {e}")
+            return None
+
     def fetch_market_by_condition_id(self, condition_id, timeout=15):
         """Semana 3: Obtiene los datos actuales de un mercado específico para validar su liquidez.
 
