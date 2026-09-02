@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
+import { verifySessionToken } from "./lib/auth";
 
-export function middleware(request) {
+export async function middleware(request) {
   const isPublic =
     request.nextUrl.pathname.startsWith("/login") ||
     request.nextUrl.pathname.startsWith("/api/login");
 
   if (isPublic) return NextResponse.next();
 
-  const cookie = request.cookies.get("dashboard_pw")?.value;
-  const expected = process.env.DASHBOARD_PASSWORD;
+  // La cookie guarda un token firmado (ver lib/auth.js), no la
+  // contraseña — antes era `dashboard_pw` con la contraseña en texto
+  // plano.
+  const token = request.cookies.get("dashboard_session")?.value;
+  const secret = process.env.DASHBOARD_PASSWORD;
 
-  if (expected && cookie === expected) {
+  if (await verifySessionToken(token, secret)) {
     return NextResponse.next();
   }
 
