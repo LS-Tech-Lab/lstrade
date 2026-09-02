@@ -97,8 +97,19 @@ class Config:
     # ruido). El resto de categorías con muestra chica (Deportes/vanity,
     # Macro, IA/tech) todavía no tienen evidencia suficiente para excluirlas
     # — se dejan corriendo para seguir juntando datos.
+    #
+    # AMPLIADO (1 sep 2026, 76 señales resueltas en producción):
+    # "Redes sociales / figuras públicas" — 0/5 aciertos, profit factor
+    # indefinido (sin ganadores), -5.00R acumulado. Muestra chica pero
+    # patrón fuerte (0% de aciertos).
+    # "Cripto — objetivo de precio" — profit factor 0.48 con n=7, -1.57R
+    # acumulado. Muestra chica, se excluye por precaución; revisar de nuevo
+    # cuando haya más datos por si el PF se recupera.
     POLYMARKET_EXCLUDED_CATEGORIES = [
-        c.strip() for c in os.getenv("POLYMARKET_EXCLUDED_CATEGORIES", "Política / elecciones").split(",") if c.strip()
+        c.strip() for c in os.getenv(
+            "POLYMARKET_EXCLUDED_CATEGORIES",
+            "Política / elecciones,Redes sociales / figuras públicas,Cripto — objetivo de precio",
+        ).split(",") if c.strip()
     ]
 
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
