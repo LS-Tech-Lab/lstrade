@@ -121,10 +121,18 @@ class Config:
     # que no hay razón a priori para esperar que la señal generada tenga
     # fundamento. Revisar de nuevo con más muestra si en algún momento se
     # quiere reactivar.
+    #
+    # 2026-09-02: agregada "Cripto — objetivo de precio". Esta categoría ya
+    # está cubierta por el módulo cripto propio (ccxt sobre SYMBOLS, con su
+    # propio motor de riesgo/ATR/stop) — dejar pasar además señales de
+    # Polymarket sobre el mismo subyacente (ej. "price of Bitcoin above $X")
+    # duplica exposición direccional a BTC/ETH sin agregar una fuente de
+    # edge distinta. Se excluye por solapamiento de exposición, no porque
+    # el corte de resultados ya la muestre negativa.
     POLYMARKET_EXCLUDED_CATEGORIES = [
         c.strip() for c in os.getenv(
             "POLYMARKET_EXCLUDED_CATEGORIES",
-            "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar",
+            "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar,Cripto — objetivo de precio",
         ).split(",") if c.strip()
     ]
 
