@@ -404,7 +404,15 @@ def run_weather_cycle():
     )
 
     started = time.monotonic()
-    time_budget = float(os.environ.get("WEATHER_TIME_BUDGET_SECONDS", "8.0"))
+    # Subido de 8.0 a 18.0 (01/09/2026): con WEATHER_TOP_N=5 y 5 fuentes por
+    # estación (NWS×2 + Open-Meteo + METAR + TAF), 8s alcanzaba para 1-2
+    # estaciones como mucho y el resto quedaba "sin_tiempo" en casi todas
+    # las corridas. Con maxDuration=25 en vercel.json, 18s deja ~7s de
+    # margen para el resto del handler (fetch inicial de eventos, notif. a
+    # Telegram, escritura a Supabase). Si cron-job.org tiene su propio
+    # timeout de request, confirmar que sea mayor a 18-20s o va a cortar la
+    # conexión antes de que Vercel termine.
+    time_budget = float(os.environ.get("WEATHER_TIME_BUDGET_SECONDS", "18.0"))
 
     def time_left():
         return time_budget - (time.monotonic() - started)
@@ -413,14 +421,32 @@ def run_weather_cycle():
     if not events:
         return {"status": "no_events"}
 
-    top_n = int(os.environ.get("WEATHER_TOP_N", "3"))
-    events = sorted(
+    top_n = int(os.environ.get("WEATHER_TOP_N", "5"))
+
+    def _station_icao(e):
+        st = resolve_station(e.get("title") or "", override_icao=getattr(config, "WEATHER_STATION_OVERRIDE", None))
+        return st.get("icao") if st else None
+
+    sorted_events = sorted(
         events,
         key=lambda e: (
-            0 if resolve_station(e.get("title") or "", override_icao=getattr(config, "WEATHER_STATION_OVERRIDE", None)) else 1,
+            0 if _station_icao(e) else 1,
             -sum(m.get("liquidity", 0) for m in e["markets"]),
         ),
-    )[:top_n]
+    )
+
+    # WEATHER_PINNED_ICAO (default KMIA, pedido de LS 01/09/2026): esa
+    # estación siempre entra al lote de este ciclo, aunque su liquidez no
+    # alcance para colarse en el top_n por ranking normal. El resto de los
+    # slots se llena con el orden de siempre (estación resuelta primero,
+    # después por liquidez).
+    pinned_icao = getattr(config, "WEATHER_PINNED_ICAO", None)
+    if pinned_icao:
+        pinned = [e for e in sorted_events if _station_icao(e) == pinned_icao]
+        rest = [e for e in sorted_events if _station_icao(e) != pinned_icao]
+        events = (pinned[:1] + rest)[:top_n]
+    else:
+        events = sorted_events[:top_n]
 
     sent = 0
     scanned = 0
