@@ -1,8 +1,11 @@
 name: Trigger Polymarket track results
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"
+  # FIX (auditoría 02/09/2026): mismo motivo que trigger-manage-positions.yml
+  # y trigger-polymarket-cycle.yml -- el `schedule` de GitHub Actions no es
+  # confiable para intervalos cortos. El disparo real es ahora un cron
+  # externo (cron-job.org) pegándole directo a /api/polymarket_track_results.
+  # Este workflow queda solo para forzar una corrida manual puntual.
   workflow_dispatch: {}
 
 jobs:

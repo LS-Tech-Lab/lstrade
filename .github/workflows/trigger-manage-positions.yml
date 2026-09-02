@@ -1,10 +1,17 @@
 name: Trigger position management (cripto)
 
 on:
-  schedule:
-    # Corre desfasado 5 min respecto al ciclo principal, para no competir
-    # por el mismo trade justo cuando se acaba de abrir.
-    - cron: "5-59/10 * * * *"
+  # FIX (auditoría 02/09/2026): mismo motivo documentado en trigger-cycle.yml
+  # y trigger-polymarket-resolve.yml -- el `schedule` de GitHub Actions no
+  # garantiza horario ("puede demorarse o saltearse en períodos de carga
+  # alta"), y este workflow lo seguía usando pese a que el resto del repo ya
+  # había migrado por ese mismo problema. Para el cierre de posiciones eso
+  # es particularmente riesgoso: un disparo salteado o atrasado deja
+  # trailing stops sin actualizar y posiciones sin revisar por más tiempo
+  # del esperado. El disparo real ahora es un cron externo (cron-job.org)
+  # pegándole directo a /api/manage_positions, desfasado ~5 min respecto al
+  # ciclo principal para no competir por el mismo trade recién abierto. Este
+  # workflow queda solo para forzar una corrida manual puntual.
   workflow_dispatch: {}
 
 jobs:
