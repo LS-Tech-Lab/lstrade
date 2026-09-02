@@ -92,28 +92,13 @@ class Config:
 
     # NUEVO: categorías de mercado (ver polymarket_categories.py) que no se
     # avisan más — basado en polymarket_backtest.py + analyze_polymarket_categories.py
-    # sobre 216 trades reales: "Política / geopolítica" dio profit factor 0.80
+    # sobre 216 trades reales: "Política / elecciones" dio profit factor 0.80
     # con n=41 (pierde plata en promedio, muestra suficiente para no ser
     # ruido). El resto de categorías con muestra chica (Deportes/vanity,
     # Macro, IA/tech) todavía no tienen evidencia suficiente para excluirlas
     # — se dejan corriendo para seguir juntando datos.
-    #
-    # FIX: el string por defecto decía "Política / elecciones", que no
-    # coincide con ningún nombre real de polymarket_categories.py (la
-    # categoría se llama "Política / geopolítica") — el filtro nunca
-    # excluyó nada en producción pese al comentario de arriba.
-    #
-    # 2026-09-01: agregada "Redes sociales / figuras públicas" — sobre 47
-    # señales resueltas en polymarket_signals (Supabase, proyecto lstrade),
-    # esa categoría dio 0% win rate y -5.00R en n=5 (todas perdedoras).
-    # Muestra chica — sigue siendo la peor categoría del corte por lejos,
-    # pero conviene revalidar cuando haya más señales antes de darla por
-    # sentado como edge negativo estructural.
     POLYMARKET_EXCLUDED_CATEGORIES = [
-        c.strip() for c in os.getenv(
-            "POLYMARKET_EXCLUDED_CATEGORIES",
-            "Política / geopolítica,Redes sociales / figuras públicas",
-        ).split(",") if c.strip()
+        c.strip() for c in os.getenv("POLYMARKET_EXCLUDED_CATEGORIES", "Política / elecciones").split(",") if c.strip()
     ]
 
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
@@ -152,6 +137,24 @@ class Config:
     # sigue apareciendo en el detalle de buckets del reporte para
     # referencia.
     WEATHER_MIN_PRICE = _float("WEATHER_MIN_PRICE", 0.01)
+
+    # ICAO que siempre entra al lote de estaciones analizadas por ciclo, sin
+    # importar su ranking de liquidez frente al resto — pedido explícito de
+    # LS (01/09/2026) para no perderse Miami aunque otras ciudades tengan
+    # más volumen operado ese día. Vacío/None desactiva el pineo.
+    WEATHER_PINNED_ICAO = os.getenv("WEATHER_PINNED_ICAO", "KMIA")
+
+    # Timeout por request HTTP individual dentro del análisis de clima
+    # (NWS points+forecast, Open-Meteo, METAR, TAF — hasta 5 requests por
+    # estación desde que se sumó Open-Meteo). Bajado de 6s a 4s de default
+    # (01/09/2026) porque al subir WEATHER_TOP_N a 5 estaciones, el peor
+    # caso teórico de una sola estación con todas sus fuentes colgadas
+    # (5 requests × timeout) pasó de 30s a poder comerse buena parte de
+    # WEATHER_TIME_BUDGET_SECONDS antes de que el chequeo entre estaciones
+    # llegue a cortar. No es una garantía dura contra ese peor caso (seguiría
+    # existiendo si TODAS las fuentes están caídas a la vez), pero acota
+    # bastante el daño de una estación puntualmente lenta.
+    WEATHER_HTTP_TIMEOUT_SECONDS = _float("WEATHER_HTTP_TIMEOUT_SECONDS", 4.0)
 
     # Desvío estándar base (°F) para repartir la masa de probabilidad entre
     # buckets adyacentes — punto de partida de la skill wu-airport-weather
