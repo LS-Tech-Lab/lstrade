@@ -528,6 +528,19 @@ WEATHER_RESOLVED_YES_THRESHOLD = 0.98
 WEATHER_RESOLVED_NO_THRESHOLD = 0.02
 
 def run_weather_track_results():
+    """Hallazgo 01/09/2026: la versión anterior usaba fetch_price_history()
+    y marcaba "resuelto" apenas el precio en vivo del token cruzaba 0.98/0.02
+    — pero eso es solo el precio de mercado, no si el mercado resolvió de
+    verdad. Un bucket barato (que es justo el perfil que el bot busca:
+    "el mercado lo cree improbable, yo no") se queda cotizando cerca de
+    cero mientras el día todavía no terminó, así que esto marcaba "no" a
+    los 30-60 minutos de firmada la señal, mucho antes de que la máxima
+    real del día se supiera. Resultado: 8/8 señales resueltas "no" en
+    <2.5h, win rate 0% — eso no medía el modelo, medía si el precio
+    seguía bajo en la primera hora (que para un long-shot pasa casi
+    siempre, termine ganando o no). Fix: usar fetch_market_by_condition_id(),
+    que trae el campo `closed` real de la Gamma API — solo se resuelve la
+    señal cuando el mercado efectivamente cerró y liquidó."""
     config = Config
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     client = PolymarketClient(config)
@@ -538,24 +551,27 @@ def run_weather_track_results():
 
     resolved = []
     for sig in open_signals:
-        token_id = sig.get("yes_token_id")
-        if not token_id:
+        condition_id = sig.get("condition_id")
+        if not condition_id:
             continue
-        history = client.fetch_price_history(token_id, interval="1h", fidelity=60)
-        if not history:
-            continue
-        current_price = history[-1]["p"]
+        market = client.fetch_market_by_condition_id(condition_id)
+        if not market or not market.get("closed"):
+            continue  # todavía no resolvió de verdad -- se revisa en el próximo ciclo
 
-        if current_price >= WEATHER_RESOLVED_YES_THRESHOLD:
+        yes_price = market.get("yes_price", 0.0)
+        if yes_price >= WEATHER_RESOLVED_YES_THRESHOLD:
             outcome = "yes"
-        elif current_price <= WEATHER_RESOLVED_NO_THRESHOLD:
+        elif yes_price <= WEATHER_RESOLVED_NO_THRESHOLD:
             outcome = "no"
         else:
+            # Cerrado pero sin precio final claro en 0/1 -- no debería pasar
+            # en la práctica una vez closed=True, pero por las dudas no se
+            # fuerza un outcome ambiguo; se reintenta en el próximo ciclo.
             continue
 
         if not db.resolve_weather_signal(sig["id"], outcome):
             continue
-        resolved.append({"condition_id": sig["condition_id"], "outcome": outcome})
+        resolved.append({"condition_id": condition_id, "outcome": outcome})
 
     return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
 
