@@ -379,11 +379,21 @@ function TableScroll({ children }) {
 function useCarouselNav() {
   const containerRef = useRef(null);
   const [active, setActive] = useState(0);
+  // FIX: antes esto corría sin throttle en CADA evento "scroll" — con
+  // scroll-behavior: smooth (ver goTo) eso dispara decenas de re-renders
+  // seguidos por un solo desplazamiento. Se agenda a lo sumo un cálculo por
+  // frame con requestAnimationFrame; si ya hay uno pendiente, los eventos
+  // intermedios se ignoran.
+  const rafRef = useRef(null);
   function handleScroll() {
-    const el = containerRef.current;
-    if (!el || el.children.length === 0) return;
-    const cardWidth = el.children[0].offsetWidth + 12; // + gap
-    setActive(Math.round(el.scrollLeft / cardWidth));
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const el = containerRef.current;
+      if (!el || el.children.length === 0) return;
+      const cardWidth = el.children[0].offsetWidth + 12; // + gap
+      setActive(Math.round(el.scrollLeft / cardWidth));
+    });
   }
   function goTo(i) {
     const el = containerRef.current;
@@ -391,6 +401,9 @@ function useCarouselNav() {
     const idx = Math.max(0, Math.min(el.children.length - 1, i));
     el.children[idx].scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
   }
+  useEffect(() => () => {
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+  }, []);
   return { containerRef, active, handleScroll, goTo };
 }
 
@@ -934,6 +947,13 @@ function PolymarketTab({ data }) {
 // Nombres técnicos de failed_sections (ver api/data/route.js) traducidos
 // a algo legible para el banner.
 const SECTION_LABELS = {
+  // FIX: estas 4 antes tumbaban todo el panel con un error genérico si
+  // fallaban (ver el comentario junto a namedResults en api/data/route.js)
+  // — ahora degradan igual que el resto, así que necesitan su label acá.
+  equity: "historial de equity",
+  decisions: "bitácora de decisiones",
+  bot_state: "estado del bot",
+  pending: "decisiones pendientes",
   crypto_open: "posiciones cripto abiertas",
   crypto_stats: "estadísticas de cripto",
   polymarket_open: "señales de Polymarket abiertas",
@@ -966,8 +986,26 @@ export default function Dashboard() {
   
   useEffect(() => {
     load();
-    const id = setInterval(load, 15000); // refresco cada 15s
-    return () => clearInterval(id);
+    // FIX: antes el setInterval de 15s corría siempre, aunque la pestaña
+    // estuviera en background — cada pestaña abierta y olvidada seguía
+    // pegándole a /api/data (y de ahí a 11 queries en Supabase) cada 15s
+    // sin que nadie la estuviera mirando. Se pausa con
+    // document.visibilityState y se relanza (con una carga inmediata, para
+    // no esperar hasta el próximo tick de 15s) al volver a la pestaña.
+    let id = setInterval(load, 15000);
+    function handleVisibility() {
+      if (document.visibilityState === "hidden") {
+        clearInterval(id);
+      } else {
+        load();
+        id = setInterval(load, 15000);
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, []);
   
   // Sin datos todavía (primera carga) y ya falló: ahí sí no hay nada que
