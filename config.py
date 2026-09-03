@@ -242,6 +242,26 @@ class Config:
     # que un patrón de precio.
     WEATHER_RESEND_COOLDOWN_HOURS = _float("WEATHER_RESEND_COOLDOWN_HOURS", 3.0)
 
+    # AUDITORÍA (03/09/2026): a diferencia de polymarket_main.py
+    # (MAX_SIGNALS_PER_CYCLE=1), run_weather_cycle() en app.py no tenía
+    # ningún tope de cuántos best_trade se mandan por corrida -- podía
+    # enviar y registrar hasta WEATHER_TOP_N (5) señales en un solo ciclo.
+    # Con /api/weather_cycle disparado cada 30 min (ver README, sección de
+    # cron-job.org) eso son 48 corridas/día × 5 = 240 avisos/día en el
+    # techo teórico, muy por encima del volumen que llevó a bajar
+    # MAX_SIGNALS_PER_CYCLE a 1 en el módulo de Polymarket por el mismo
+    # motivo (ver ese comentario en polymarket_main.py). En la práctica el
+    # número real es más bajo porque WEATHER_TOP_N ya filtra a las 5
+    # ciudades con más liquidez y el cooldown de reenvío evita repetir la
+    # MISMA ciudad seguido -- pero nada impedía que las 5 califberan y se
+    # mandaran juntas en una sola corrida. Punto de partida sin validar
+    # todavía contra resultados reales (no hay backtest de este módulo,
+    # ver nota más abajo) -- se elige 2 en vez de 1 porque acá cada
+    # "señal" es una ciudad distinta, no el mismo activo, así que hay más
+    # razón a priori para no descartar automáticamente la segunda mejor
+    # oportunidad del ciclo.
+    MAX_WEATHER_SIGNALS_PER_CYCLE = _int("MAX_WEATHER_SIGNALS_PER_CYCLE", 2)
+
     NOTIFY_TELEGRAM = _bool("NOTIFY_TELEGRAM", False)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
