@@ -233,10 +233,13 @@ usando el mismo historial que ya se descargaba para generar la señal.
 
 **Sí — con Supabase como base de datos, y así corre hoy en producción** (`lstrade.vercel.app`). Esta es la arquitectura ya incluida en el repo (`app.py`, `supabase_db.py`, `vercel.json`). Cosas a tener en cuenta respecto al modo VPS:
 
-1. **Desde 2026, el runtime Python de Vercel ya no soporta "un archivo = una función" dentro de `api/`.** Construye una sola Vercel Function a partir de un único entrypoint en la raíz que exponga una variable `app` (ASGI) — acá es **`app.py`** (FastAPI), que registra las 8 rutas reales:
-   `/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_track_results`
-   (alias de `polymarket_resolve`, ver tabla de Estructura), `/api/manage_positions`, `/api/weather_cycle`,
-   `/api/reset_halt` y `/api/telegram_webhook`.
+1. **Desde 2026, el runtime Python de Vercel ya no soporta "un archivo = una función" dentro de `api/`.** Construye una sola Vercel Function a partir de un único entrypoint en la raíz que exponga una variable `app` (ASGI) — acá es **`app.py`** (FastAPI), que registra las 9 rutas reales:
+   `/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_history`,
+   `/api/manage_positions`, `/api/weather_cycle`, `/api/weather_track_results`, `/api/reset_halt` y
+   `/api/telegram_webhook`. (`/api/polymarket_track_results` existió como alias de `polymarket_resolve`
+   hasta el 03/09/2026 — se eliminó porque cron-job.org lo tenía dado de alta como job separado, disparando
+   casi al mismo segundo que `polymarket_resolve` y duplicando el trabajo sobre Supabase/Polymarket sin
+   ningún beneficio; ver "Cambios recientes".)
    Todo vive en `app.py` — no existe una carpeta `api/` separada con copias de cada endpoint (se eliminó
    porque nunca se desplegaba y quedaba desincronizada de la lógica real). Toda ruta nueva tiene que
    agregarse como endpoint dentro de `app.py` o queda inalcanzable: Vercel la sirve, pero FastAPI le
@@ -296,9 +299,13 @@ header `Authorization: Bearer <CRON_SECRET>` (el valor que copiaste en el paso 2
 |---|---|
 | `/api/cycle` | cada 10 min |
 | `/api/polymarket_cycle` | cada 10 min |
-| `/api/polymarket_resolve` (= `/api/polymarket_track_results`) | cada 30 min |
+| `/api/polymarket_resolve` | cada 30 min |
 | `/api/manage_positions` | cada 10-15 min |
 | `/api/weather_cycle` | cada 30 min (el pronóstico no cambia tan rápido como el precio) |
+| `/api/weather_track_results` | cada 60 min |
+
+`/api/polymarket_history` no necesita cron — lo consulta el dashboard de Next.js bajo demanda, no se
+dispara periódicamente.
 
 Los workflows `.github/workflows/trigger-*.yml` quedaron como respaldo manual (`workflow_dispatch`
 desde la pestaña Actions) — no como el disparador real, ver nota en la sección anterior. Antes de dar
@@ -371,7 +378,7 @@ de raíz sin depender de VPN en tu propia conexión.
 | `weather_signal_engine.py` | Motor de análisis de clima para mercados de Polymarket (NWS + METAR/TAF, solo fuentes con API oficial) |
 | `weather_report.py` | Modo manual del análisis de clima — reporte completo para correr vos mismo, sin tocar el ciclo automático |
 | `polymarket_categories.py` | Categorización compartida de mercados de Polymarket por keywords (usada en producción y en el backtest offline) |
-| `app.py` | **Único entrypoint real de Vercel** (FastAPI) — registra las 8 rutas serverless (`/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_track_results`, `/api/manage_positions`, `/api/weather_cycle`, `/api/reset_halt`, `/api/telegram_webhook`) y el heartbeat |
+| `app.py` | **Único entrypoint real de Vercel** (FastAPI) — registra las 9 rutas serverless (`/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_history`, `/api/manage_positions`, `/api/weather_cycle`, `/api/weather_track_results`, `/api/reset_halt`, `/api/telegram_webhook`) y el heartbeat |
 | `dashboard/` | Panel Next.js — bitácora, equity y estado del sistema |
 | `schema.sql` | Tablas de Supabase — correr una vez en el SQL Editor |
 | `deploy/trader-ia.service` | Unidad systemd para correrlo 24/7 en un VPS |
@@ -388,6 +395,24 @@ de raíz sin depender de VPN en tu propia conexión.
 
 ## Cambios recientes
 
+- **Eliminado** (`app.py`, `.github/workflows/`, `cron-job.org`): la ruta `/api/polymarket_track_results`
+  era un alias de `/api/polymarket_resolve` (mismo `check_open_signals`), pero estaba dada de alta como
+  un cron *separado* en cron-job.org, disparando casi al mismo segundo que `polymarket_resolve` cada 30
+  min — trabajo duplicado sobre Supabase/Polymarket sin ningún beneficio. Se borró el alias de `app.py`,
+  el workflow `trigger-polymarket-track.yml`, la entrada correspondiente en `ci.yml`, y hay que borrar
+  el job viejo en cron-job.org a mano (no se puede desde acá). El endpoint que queda,
+  `/api/polymarket_resolve`, sigue en la misma franja de 30 min — el cambio es solo de cuántos jobs
+  apuntan a la misma lógica, no de frecuencia.
+- **Corregido** (`polymarket_track_results.py`): `check_open_signals()` pedía el historial de precios
+  con `interval="1h"` — la API CLOB de Polymarket interpreta `interval` como la VENTANA de tiempo hacia
+  atrás (no el tamaño de la vela), así que para un token que no tuvo ningún trade en la última hora
+  exacta (típico de un favorito perdedor ya cerca de 0) el historial volvía vacío, `current_price`
+  quedaba en `None` para siempre, y la señal nunca detectaba el cruce de stop — quedaba esperando el
+  fallback de "mercado cerrado", que en Polymarket puede tardar horas por el período de disputa del
+  oráculo UMA (caso real detectado: una señal tardó 43h en resolver por este camino en vez de minutos
+  por cruce de precio normal). Es el mismo bug de semántica de `interval` ya corregido el 31/08 en
+  `polymarket_main.py`, pero ese fix no había tocado este segundo call site. Cambiado a `interval="1d"`,
+  igual que en `polymarket_main.py`.
 - **Corregido** (`risk_manager.py`, `db.py`, `supabase_db.py`): faltaba un chequeo de "¿ya hay una
   posición abierta en este símbolo?" antes de abrir una nueva. El único guardrail existente
   (`MAX_CORRELATED_POSITIONS`) contaba posiciones totales por dirección, sin importar el símbolo —
