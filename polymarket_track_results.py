@@ -25,35 +25,78 @@ def check_open_signals(db, client, notifier, config):
     min_liquidity = getattr(config, "POLYMARKET_MIN_EXIT_LIQUIDITY", 500.0)
     
     for sig in open_signals:
-        # FIX (02/09/2026): antes se pedía `liquidity` a fetch_market_by_condition_id()
-        # (Gamma) — que nunca traía el mercado real (ver nota en polymarket_client.py) y
-        # por eso "if not market: continue" se disparaba siempre, bloqueando la resolución
-        # de las 70 señales abiertas antes de que llegaran a chequear el precio. Se
-        # reemplaza por la liquidez real del order book del token vía CLOB, que además es
-        # más precisa que el agregado de Gamma.
-        current_liquidity = client.fetch_order_book_liquidity(sig["token_id"])
-        if current_liquidity is None:
-            log.warning(f"[SIN DATOS] No se pudo obtener el order book para {sig['question'][:60]}")
-            continue
-
-        if current_liquidity < min_liquidity:
-            log.warning(f"[LIQUIDEZ BAJA] {sig['question'][:60]} - Liquidez: ${current_liquidity:.0f} < ${min_liquidity:.0f}. Se pospone resolución.")
-            continue
-
+        # AUDITORÍA (03/09/2026, usuario reportó señales con pérdidas de
+        # 60% hasta 100%): antes el chequeo de liquidez del order book iba
+        # PRIMERO y, si estaba baja, hacía `continue` sin siquiera mirar el
+        # historial de precios -- es decir, ni se evaluaba si ya había
+        # tocado stop o target. El problema es que la liquidez de un
+        # mercado binario típicamente se seca justo cuando el precio se
+        # acerca a 0 o a 1 (resolución cerca), que es EXACTAMENTE cuando
+        # más urgente es detectar que el stop ya voló. El resultado: la
+        # señal quedaba "pospuesta" ciclo tras ciclo mientras el precio
+        # real seguía cayendo, hasta terminar en 100% sin que nunca se
+        # mandara el aviso de stop.
+        #
+        # Ahora el chequeo de precio/stop/target va SIEMPRE primero, sin
+        # depender de la liquidez -- la liquidez del book sólo se usa
+        # como dato informativo en el mensaje de salida (para que el
+        # usuario sepa si puede haber slippage al ejecutar la salida real
+        # en Polymarket), nunca como gate que bloquee la detección.
         history = client.fetch_price_history(sig["token_id"], interval="1h", fidelity=60)
-        if not history:
-            continue
-        current_price = history[-1]["p"]
+        current_price = history[-1]["p"] if history else None
 
-        hit_target = current_price >= sig["target"]
-        hit_stop = current_price <= sig["stop"]
+        hit_target = current_price is not None and current_price >= sig["target"]
+        hit_stop = current_price is not None and current_price <= sig["stop"]
+
         if not (hit_target or hit_stop):
+            # Todavía no tocó ni target ni stop según el historial de
+            # precios. Antes de darlo por "sin novedad", chequear si el
+            # mercado subyacente ya CERRÓ del todo (settlement real) --
+            # eso puede pasar sin que el historial de precios muestre un
+            # cruce limpio por el stop si los datos saltan directo a 0/1.
+            # Sin esto, una señal así queda abierta para siempre en la DB,
+            # nunca se resuelve ni se avisa, y el usuario se entera del
+            # 100% de pérdida mirando Polymarket directamente, no por el
+            # bot.
+            clob_market = client.fetch_clob_market(sig["condition_id"])
+            if clob_market and clob_market.get("closed"):
+                final_yes = clob_market["yes_price"]
+                final_price = final_yes if sig["direction"] == "YES" else (1.0 - final_yes)
+                # Se usa "target"/"stop" (no una tercera etiqueta) para que
+                # polymarket_stats_summary/el dashboard sigan contando esto
+                # como win/loss real -- lo único distinto es que se detectó
+                # al cerrar el mercado en vez de por un cruce de precio a
+                # tiempo, y eso se deja explícito en el aviso de Telegram.
+                late_outcome = "target" if final_price >= sig["entry"] else "stop"
+                if not db.resolve_polymarket_signal(sig["id"], final_price, late_outcome):
+                    continue
+                log.warning(
+                    f"[CERRADO SIN STOP DETECTADO A TIEMPO] {sig['question'][:60]} "
+                    f"({sig['direction']}) — el mercado ya resolvió, precio final {final_price:.3f}, "
+                    f"nunca se detectó cruce de stop/target antes del cierre."
+                )
+                if notifier.enabled:
+                    notifier.send_message(
+                        f"⚠️ *Señal Polymarket resuelta sin aviso previo* — {sig['question'][:70]}\n"
+                        f"Dirección: {sig['direction']} | El mercado ya cerró antes de cruzar stop/target.\n"
+                        f"Entrada: `{sig['entry']:.3f}` → Cierre: `{final_price:.3f}`\n"
+                        f"Revisar manualmente si esta posición se sostuvo hasta acá en la práctica."
+                    )
             continue
 
         outcome = "target" if hit_target else "stop"
         exit_price = sig["target"] if hit_target else sig["stop"]
         if not db.resolve_polymarket_signal(sig["id"], exit_price, outcome):
             continue  # otra invocación ya la había resuelto
+
+        # Liquidez sólo como dato informativo en el mensaje, no como gate.
+        current_liquidity = client.fetch_order_book_liquidity(sig["token_id"])
+        liquidity_note = (
+            f"Liquidez al cierre: `${current_liquidity:,.0f}`" if current_liquidity is not None
+            else "Liquidez al cierre: sin datos"
+        )
+        if current_liquidity is not None and current_liquidity < min_liquidity:
+            liquidity_note += " ⚠️ liquidez baja — puede haber slippage al salir en Polymarket."
 
         emoji = "✅" if outcome == "target" else "🛑"
         log.info(f"[{outcome.upper()}] {sig['question'][:60]} ({sig['direction']})")
@@ -62,7 +105,7 @@ def check_open_signals(db, client, notifier, config):
                 f"{emoji} *Señal Polymarket resuelta* — {sig['question'][:70]}\n"
                 f"Dirección: {sig['direction']} | Resultado: {outcome.upper()}\n"
                 f"Entrada: `{sig['entry']:.3f}` → Salida: `{exit_price:.3f}`\n"
-                f"Liquidez al cierre: `${current_liquidity:,.0f}`"
+                f"{liquidity_note}"
             )
         time.sleep(0.2)
 
