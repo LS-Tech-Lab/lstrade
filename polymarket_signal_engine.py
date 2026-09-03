@@ -162,7 +162,40 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.06,
     volatility = momentum_data["volatility"]
     trade_plan = None
     if volatility > 0:
-        stop_distance = volatility * stop_vol_mult
+        # AUDITORÍA (03/09/2026, pedido de cortar pérdidas más rápido —
+        # usuario reportó señales con pérdidas de 60% hasta 100%):
+        #
+        # `volatility` es un desvío estándar de RETORNOS relativos (ver
+        # analyze_probability_momentum: cada return ya es (p1-p0)/p0, un
+        # porcentaje sin unidades de precio) -- pero acá se restaba
+        # directamente de entry_price como si ya fuera una distancia de
+        # precio absoluta. Eso funciona más o menos por casualidad cuando
+        # entry_price ronda 1.0 (ahí % relativo ≈ delta absoluto), pero se
+        # rompe fuerte en entradas baratas: con entry=0.05 y una
+        # volatilidad relativa de apenas 10%, el cálculo viejo daba
+        # stop_distance=0.10*3=0.30 -- más que el precio entero de
+        # entrada -- y el clamp `max(0.01, entry - stop_distance)` lo
+        # aplastaba contra el piso de $0.01, es decir, un stop que de
+        # entrada ya implicaba ~80% de pérdida, y si el bot no llegaba a
+        # detectarlo a tiempo (ver fix en polymarket_track_results.py),
+        # terminaba en el 100% real reportado. La distancia de stop ahora
+        # se escala por el precio de entrada, así que una volatilidad
+        # relativa del 10% en una entrada de $0.05 da un stop de $0.015
+        # (30% de pérdida), no $0.30.
+        stop_distance = entry_price * volatility * stop_vol_mult
+
+        # AUDITORÍA (03/09/2026): además del fix de unidades de arriba, se
+        # agrega un techo duro a cuánto puede perder un solo trade según el
+        # plan sugerido -- una volatilidad puntual inusualmente alta en el
+        # historial reciente ya no puede generar un stop_distance gigante.
+        # Con MAX_STOP_LOSS_PCT=0.35, ningún trade queda planeado para
+        # perder más del 35% de la entrada si el stop se ejecuta a tiempo
+        # (ver también el fix de detección de stop en
+        # polymarket_track_results.py, que es lo que ahora garantiza que
+        # se llegue a intentar salir en ese nivel en vez de recién
+        # enterarse al resolver el mercado).
+        MAX_STOP_LOSS_PCT = 0.35
+        stop_distance = min(stop_distance, entry_price * MAX_STOP_LOSS_PCT)
         target_distance = stop_distance * target_rr
         trade_plan = {
             "entry": round(entry_price, 3),
