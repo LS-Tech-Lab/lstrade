@@ -232,11 +232,46 @@ def _headers(config):
     return {"User-Agent": ua, "Accept": "application/json"}
 
 
-def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT, time_left_fn=None):
+def _target_local_date(event, station):
+    """Fecha (en huso local de la estación) que realmente liquida el
+    evento, a partir del `end_date` (endDate de Polymarket) que ya viene en
+    cada bucket parseado.
+
+    AUDITORÍA (03/09/2026): esta función no existía. fetch_nws_guidance
+    tomaba ciegamente el primer período "isDaytime" de la grilla de NWS
+    (services.periods[0] o el próximo daytime), asumiendo que siempre era
+    el día que liquida el mercado. Si algún evento del batch resolvía
+    "mañana" en vez de "hoy" -- Polymarket publica ambos con frecuencia
+    para la misma ciudad -- el motor comparaba el pronóstico del día
+    equivocado contra ese mercado sin ninguna señal de alerta. Devuelve
+    None si no hay end_date parseable; en ese caso el llamador debe
+    degradar confianza en vez de asumir "hoy".
+    """
+    end_date = None
+    for m in event.get("markets", []):
+        end_date = m.get("end_date")
+        if end_date:
+            break
+    if not end_date:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+        return dt.astimezone(ZoneInfo(station["tz"])).date()
+    except Exception:
+        return None
+
+
+def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT, time_left_fn=None, target_date=None):
     """Guía de pronóstico oficial de NWS para el punto de la estación.
     api.weather.gov exige un User-Agent identificable (no un navegador
     genérico) — configurar WEATHER_USER_AGENT con un contacto real o NWS
-    puede empezar a bloquear las requests."""
+    puede empezar a bloquear las requests.
+
+    `target_date`: date en huso local de la estación que realmente liquida
+    el mercado (ver _target_local_date). Si se pasa, se busca el período
+    diurno de la grilla de NWS cuyo startTime cae en esa fecha, en vez de
+    asumir que el primer período diurno de la respuesta es el correcto
+    (AUDITORÍA 03/09/2026 — ver _target_local_date)."""
     if station.get("lat") is None:
         return None
     try:
@@ -255,11 +290,33 @@ def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT, time_left_fn=No
         t2 = _capped_timeout(time_left_fn, ceiling=timeout)
         forecast = requests.get(forecast_url, headers=headers, timeout=t2).json()
         periods = forecast["properties"]["periods"]
-        today_day = next((p for p in periods if p.get("isDaytime")), periods[0])
+        date_mismatch = False
+        chosen = None
+        if target_date is not None:
+            for p in periods:
+                if not p.get("isDaytime"):
+                    continue
+                try:
+                    p_date = datetime.fromisoformat(p["startTime"]).astimezone(
+                        ZoneInfo(station["tz"])
+                    ).date()
+                except Exception:
+                    continue
+                if p_date == target_date:
+                    chosen = p
+                    break
+            if chosen is None:
+                # No hay período diurno para esa fecha en la grilla (fuera
+                # de rango, o el parseo de end_date falló) -- se degrada en
+                # vez de adivinar con el primer período disponible.
+                date_mismatch = True
+        if chosen is None:
+            chosen = next((p for p in periods if p.get("isDaytime")), periods[0])
         return {
-            "forecast_high_f": today_day.get("temperature"),
-            "short_forecast": today_day.get("shortForecast"),
+            "forecast_high_f": chosen.get("temperature"),
+            "short_forecast": chosen.get("shortForecast"),
             "issued": forecast["properties"].get("updated"),
+            "date_mismatch": date_mismatch,
         }
     except Exception as e:
         log.warning(f"NWS guidance falló para {station.get('icao')}: {e}")
@@ -505,7 +562,8 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
 
     if time_left_fn and time_left_fn() < 1.5:
         return {"status": "sin_tiempo", "title": title, "station": station}
-    nws = fetch_nws_guidance(station, config, time_left_fn=time_left_fn)
+    target_date = _target_local_date(event, station)
+    nws = fetch_nws_guidance(station, config, time_left_fn=time_left_fn, target_date=target_date)
 
     if time_left_fn and time_left_fn() < 1.0:
         metar, taf = None, None
@@ -520,8 +578,30 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     if center is None:
         return {"status": "no_data", "title": title, "station": station}
 
-    base_sigma = getattr(config, "WEATHER_BASE_SIGMA_F", 1.6)
+    # AUDITORÍA (03/09/2026): si no se pudo confirmar que el período de NWS
+    # usado corresponde al día real de liquidación del mercado (ver
+    # _target_local_date / fetch_nws_guidance), no hay forma honesta de
+    # confiar en el centro estimado -- se ensancha fuerte la distribución
+    # en vez de operar con la misma confianza que un caso donde sí se
+    # verificó la fecha.
+    if nws and nws.get("date_mismatch"):
+        penalty = min(1.0, penalty + 0.4)
+        notes.append("No se pudo confirmar que el pronóstico de NWS usado corresponda al día que liquida este mercado -- confianza reducida.")
+
+    base_sigma = getattr(config, "WEATHER_BASE_SIGMA_F", 2.4)
     distribution, sigma = build_bucket_distribution(center, buckets, base_sigma=base_sigma, confidence_penalty=penalty)
+
+    # AUDITORÍA (03/09/2026): la skill de referencia (wu-airport-weather,
+    # STEP 0) es explícita en que si la estación de asentamiento no está
+    # confirmada hay que "tratar cualquier trade como especulativo". El
+    # código sólo mostraba un emoji de advertencia en el mensaje de
+    # Telegram (verified_flag en build_weather_memo) pero elegía best_trade
+    # exactamente igual que con una estación verificada -- la advertencia
+    # nunca cambiaba si el bot realmente operaba o no. Se exige el doble de
+    # EV para calificar cuando la estación es un proxy sin confirmar (ej.
+    # KLGA por NYC/Central Park), en vez de dejar que compita en igualdad
+    # de condiciones con estaciones confirmadas.
+    effective_min_ev = min_ev if station.get("verified", False) else max(min_ev * 2, min_ev + 0.15)
 
     rows = []
     best = None
@@ -547,7 +627,7 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
         # candidatos a "mejor señal": ahí el EV se dispara por dividir casi
         # entre cero, no por ventaja real, y casi nunca hay book detrás para
         # ejecutar. Igual quedan en `rows` para el detalle del reporte.
-        if ev is not None and ev >= min_ev and price >= min_price and (best is None or ev > best["ev"]):
+        if ev is not None and ev >= effective_min_ev and price >= min_price and (best is None or ev > best["ev"]):
             best = row
 
     rows.sort(key=lambda r: (r["ev"] if r["ev"] is not None else -999), reverse=True)
