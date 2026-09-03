@@ -158,3 +158,15 @@ create index if not exists idx_closed_trades_ts on closed_trades (ts_closed desc
 create index if not exists idx_polymarket_signals_outcome on polymarket_signals (outcome);
 create index if not exists idx_weather_signals_outcome on weather_signals (outcome);
 create index if not exists idx_indicator_snapshots_symbol_ts on indicator_snapshots (symbol, ts desc);
+
+-- FIX: los índices simples en `outcome` de arriba no calzan con las queries
+-- reales de dashboard/app/api/data/route.js, que filtran por
+-- outcome IS NULL / IS NOT NULL Y ADEMÁS ordenan por ts_signaled/ts_resolved.
+-- Con solo el índice en `outcome`, Postgres igual tiene que ordenar el
+-- resultado a mano. Un índice parcial cubre filtro + orden en un solo paso.
+-- Con el volumen actual (cientos de filas) no se nota, pero es gratis
+-- prevenirlo ahora que ya se identificó el patrón exacto de acceso.
+create index if not exists idx_polymarket_signals_open on polymarket_signals (ts_signaled desc) where outcome is null;
+create index if not exists idx_polymarket_signals_resolved on polymarket_signals (ts_resolved desc) where outcome is not null;
+create index if not exists idx_weather_signals_open on weather_signals (ts_signaled desc) where outcome is null;
+create index if not exists idx_weather_signals_resolved on weather_signals (ts_resolved desc) where outcome is not null;
