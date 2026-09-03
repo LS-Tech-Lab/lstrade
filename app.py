@@ -509,12 +509,20 @@ def run_weather_cycle():
     else:
         events = sorted_events[:top_n]
 
+    # AUDITORÍA (03/09/2026): tope de señales enviadas por corrida -- ver
+    # MAX_WEATHER_SIGNALS_PER_CYCLE en config.py para el porqué. Antes no
+    # existía ningún límite acá, a diferencia del módulo de Polymarket.
+    max_sent_per_cycle = getattr(config, "MAX_WEATHER_SIGNALS_PER_CYCLE", 2)
+
     sent = 0
     scanned = 0
     detail = []
     for event in events:
         if time_left() < 1.0:
             detail.append({"title": event["title"], "status": "sin_tiempo"})
+            break
+        if sent >= max_sent_per_cycle:
+            detail.append({"title": event["title"], "status": "tope_de_ciclo_alcanzado"})
             break
         scanned += 1
         try:
