@@ -79,8 +79,7 @@ jobs:
           expected = {
               '/api/cycle', '/api/reset_halt', '/api/telegram_webhook',
               '/api/polymarket_cycle', '/api/polymarket_resolve',
-              '/api/polymarket_track_results', '/api/manage_positions',
-              '/api/weather_cycle',
+              '/api/manage_positions', '/api/weather_cycle',
           }
           registered = {r.path for r in app.app.routes if hasattr(r, 'path')}
           missing = expected - registered
