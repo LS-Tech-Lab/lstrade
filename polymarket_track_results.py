@@ -42,7 +42,21 @@ def check_open_signals(db, client, notifier, config):
         # como dato informativo en el mensaje de salida (para que el
         # usuario sepa si puede haber slippage al ejecutar la salida real
         # en Polymarket), nunca como gate que bloquee la detección.
-        history = client.fetch_price_history(sig["token_id"], interval="1h", fidelity=60)
+        # FIX (03/09/2026): interval="1h" traía como mucho 1 punto (o 0 si el
+        # token no tuvo ningún trade en la última hora exacta, típico de un
+        # favorito perdedor ya cerca de 0) -- mismo bug de semántica de
+        # `interval` diagnosticado y arreglado el 31/08 en polymarket_main.py
+        # (interval es la VENTANA hacia atrás, no el tamaño de vela), pero
+        # ese fix no había tocado este call site. Con history=[] acá,
+        # current_price quedaba en None para siempre y la señal nunca
+        # detectaba el cruce de stop -- quedaba esperando el fallback de
+        # "mercado cerrado" más abajo, que en Polymarket puede tardar horas
+        # por el período de disputa del oráculo UMA (caso real: señal Porto
+        # id=43, 43h para resolver via ese fallback en vez de segundos via
+        # cruce de precio). interval="1d" trae ~24 puntos (uno por hora del
+        # último día) incluso para tokens ilíquidos, así current_price casi
+        # nunca es None salvo que el token no tenga NINGÚN trade en 24h.
+        history = client.fetch_price_history(sig["token_id"], interval="1d", fidelity=60)
         current_price = history[-1]["p"] if history else None
 
         hit_target = current_price is not None and current_price >= sig["target"]
