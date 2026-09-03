@@ -21,6 +21,15 @@ log = logging.getLogger("polymarket_main")
 
 MARKET_WATCH_INTERVAL_SECONDS = 6 * 3600  # 6 horas
 
+# AUDITORÍA (03/09/2026, pedido de reducir volumen y subir calidad de
+# señales): antes se enviaban hasta 3 señales NUEVAS por corrida del
+# cron, sin ningún tope agregado por día -- con el cron corriendo cada
+# pocos minutos, eso multiplicaba rápido el volumen aunque cada señal
+# individual pasara los filtros de score/confidence. Se baja a 1 por
+# corrida: menos señales, pero siempre la de mayor score de ese ciclo
+# (new_signals ya viene ordenada por score desc.).
+MAX_SIGNALS_PER_CYCLE = 1
+
 def build_market_watch_text(parsed_markets, markdown=False):
     """Construye el resumen de los top 5 mercados por volumen."""
     lines = []
@@ -119,7 +128,7 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         parsed_markets.append(market)
         market_by_condition_id[market["condition_id"]] = market
         
-        if market["liquidity"] < 1000:
+        if market["liquidity"] < getattr(config, "POLYMARKET_MIN_LIQUIDITY", 1000):
             continue
 
         category = categorize(market["question"])
@@ -173,9 +182,9 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         log.info("Todas las señales ya fueron notificadas recientemente sin cambios — no se reenvía nada.")
         return signals
 
-    log.info(f"Enviando {len(new_signals[:3])} señal(es) nueva(s) o actualizada(s) a Telegram...")
+    log.info(f"Enviando {len(new_signals[:MAX_SIGNALS_PER_CYCLE])} señal(es) nueva(s) o actualizada(s) a Telegram...")
 
-    for i, signal in enumerate(new_signals[:3], 1):
+    for i, signal in enumerate(new_signals[:MAX_SIGNALS_PER_CYCLE], 1):
         memo_console = build_polymarket_memo(signal, markdown=False)
         print("\n" + "=" * 70)
         print(f"SEÑAL #{i}")
@@ -258,7 +267,7 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
             continue
         parsed_markets.append(market)
 
-        if market["liquidity"] < 1000:
+        if market["liquidity"] < getattr(config, "POLYMARKET_MIN_LIQUIDITY", 1000):
             continue
         if market["yes_price"] <= 0 or market["no_price"] <= 0:
             continue
@@ -354,7 +363,7 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
     ]
 
     sent = 0
-    for signal in new_signals[:3]:
+    for signal in new_signals[:MAX_SIGNALS_PER_CYCLE]:
         if time_left() < 0.5:
             log.warning("Presupuesto de tiempo agotado antes de enviar todas las señales nuevas.")
             break
