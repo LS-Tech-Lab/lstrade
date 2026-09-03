@@ -46,15 +46,28 @@ function categorize(question) {
   return FALLBACK_CATEGORY;
 }
 
-// Mismo default que config.POLYMARKET_EXCLUDED_CATEGORIES (Python) — no
-// comparten código (uno corre en el motor de señales, este en el dashboard
-// serverless), así que si se toca uno hay que tocar el otro. Se usa para
-// que el indicador principal (win rate/expectancy/PF de arriba) no quede
-// arrastrado por categorías ya identificadas como perdedoras — el
-// historial completo sigue disponible sin filtrar en polymarket_resolved
-// y en la tabla por categoría, esto solo afecta el resumen agregado.
+// FIX: este default tiene que ser IDÉNTICO char por char al de
+// config.POLYMARKET_EXCLUDED_CATEGORIES (Python) — no comparten código (uno
+// corre en el motor de señales, este en el dashboard serverless). Hasta
+// ahora se habían ido desincronizando cada vez que se agregaba una
+// categoría nueva de un solo lado: este default se había quedado en solo 2
+// categorías mientras config.py ya tenía 4 ("Otros / sin clasificar" y
+// "Cripto — objetivo de precio" faltaban acá). Si POLYMARKET_EXCLUDED_CATEGORIES
+// no está seteada como env var real en Vercel, cada lado cae en SU PROPIO
+// default y el panel termina mostrando un indicador "sin categorías
+// excluidas" que no coincide con lo que el motor de señales realmente
+// excluye. Se usa para que el indicador principal (win rate/expectancy/PF
+// de arriba) no quede arrastrado por categorías ya identificadas como
+// perdedoras — el historial completo sigue disponible sin filtrar en
+// polymarket_resolved y en la tabla por categoría, esto solo afecta el
+// resumen agregado.
+//
+// Mientras no compartan una sola fuente (ver el mismo comentario en
+// config.py), cualquier cambio a esta lista se tiene que reflejar A MANO
+// en AMBOS archivos.
 const EXCLUDED_CATEGORIES = (
-  process.env.POLYMARKET_EXCLUDED_CATEGORIES || "Política / geopolítica,Redes sociales / figuras públicas"
+  process.env.POLYMARKET_EXCLUDED_CATEGORIES ||
+  "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar,Cripto — objetivo de precio"
 ).split(",").map((c) => c.trim()).filter(Boolean);
 
 function computePolymarketStats(rows) {
@@ -123,6 +136,20 @@ function computeWeatherStats(resolvedSignals) {
   };
 }
 
+// FIX: las listas de filas "abiertas" (sin resolver todavía) no tenían
+// .limit() — en operación normal son chicas (unas pocas posiciones/señales
+// esperando resolución), pero si el proceso que las resuelve se traba (cron
+// caído, bug en *_track_results.py) crecen sin techo y cada carga del panel
+// (cada 15s) traería la tabla entera. 100 es generoso para lo que realmente
+// se muestra (el carrusel no pagina más allá de eso de forma usable).
+const OPEN_ROWS_LIMIT = 100;
+// FIX: antes pedía 200 filas de indicator_snapshots solo para quedarse con
+// la más reciente POR SÍMBOLO (ver latestIndicatorsBySymbol abajo) — con 2-3
+// símbolos y un snapshot cada ~10 min, 200 filas son ~33h de historial
+// descartado en el cliente. 50 sigue dando varias horas de margen sin traer
+// de más.
+const INDICATOR_SNAPSHOT_LIMIT = 50;
+
 export async function GET() {
   try {
     const supabase = getClient();
@@ -152,36 +179,35 @@ export async function GET() {
       supabase.from("pending_decisions").select("*").eq("resolved", false),
       // NUEVO: posiciones cripto abiertas (modo papel) — antes run_cycle()
       // nunca las registraba, así que esta tabla estaba siempre vacía.
-      supabase.from("open_trades").select("*").order("ts_opened", { ascending: false }),
+      supabase.from("open_trades").select("*").order("ts_opened", { ascending: false }).limit(OPEN_ROWS_LIMIT),
       supabase.from("closed_trades").select("outcome,r_multiple").order("ts_closed", { ascending: false }).limit(500),
       // Señales de Polymarket todavía sin resolver — "posiciones abiertas" de ese módulo.
-      supabase.from("polymarket_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }),
+      supabase.from("polymarket_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
       // Últimas resueltas: para el historial reciente y las stats por categoría.
       supabase.from("polymarket_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
       // NUEVO: último snapshot de indicadores por símbolo (ver
       // indicator_snapshots en schema.sql) — antes el dashboard solo podía
       // mostrar RSI/tendencia en los raros ciclos donde hubo señal real.
-      supabase.from("indicator_snapshots").select("*").order("ts", { ascending: false }).limit(200),
+      supabase.from("indicator_snapshots").select("*").order("ts", { ascending: false }).limit(INDICATOR_SNAPSHOT_LIMIT),
       // NUEVO: señales de Clima — corrían y se guardaban en weather_signals
       // desde hace rato, pero el dashboard nunca las consultaba (a
       // diferencia de Cripto y Polymarket, Clima no tenía ningún tab).
-      supabase.from("weather_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }),
+      supabase.from("weather_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
       supabase.from("weather_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
     ]);
 
-    const firstError = [equityRes, decisionsRes, stateRes, pendingRes].find((r) => r.error)?.error;
-    if (firstError) {
-      return NextResponse.json({ error: firstError.message }, { status: 500 });
-    }
-
-    // Estas 7 consultas no cortan la respuesta si fallan (a diferencia de
-    // las 4 de firstError) para que un error puntual en, por ejemplo,
-    // weather_signals no tumbe todo el panel — pero antes esa sección
-    // quedaba mostrada como "vacía" sin ninguna forma de distinguirlo de
-    // que realmente no hay datos. Ahora se listan acá y el frontend puede
-    // avisar cuál sección no cargó en vez de mostrarla como si no hubiera
-    // nada que mostrar.
+    // FIX: antes un fallo puntual en cualquiera de estas 4 (equity_history,
+    // decisions, bot_state, pending_decisions) devolvía 500 y tumbaba TODO
+    // el panel — incluso sin relación entre sí (equity y pending, por
+    // ejemplo, son completamente independientes entre sí y del resto). Ahora
+    // se tratan igual que las otras 7 secciones: se listan en
+    // failed_sections y el resto del panel sigue funcionando con lo que sí
+    // cargó, en vez de una pantalla de error total por un problema parcial.
     const namedResults = {
+      equity: equityRes,
+      decisions: decisionsRes,
+      bot_state: stateRes,
+      pending: pendingRes,
       crypto_open: openTradesRes,
       crypto_stats: closedTradesRes,
       polymarket_open: polymarketOpenRes,
