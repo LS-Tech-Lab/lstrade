@@ -5,9 +5,13 @@ Vercel ya no soporta un archivo = una función por cada módulo dentro de
 `api/`; construye una sola Vercel Function a partir de UN entrypoint
 Python en la raíz (`app.py`, `index.py`, `main.py`, etc.) que exponga
 una variable `app` (ASGI/WSGI). Por eso los 9 endpoints — cycle,
-manage_positions, polymarket_cycle, polymarket_resolve,
-polymarket_track_results, weather_cycle, weather_track_results,
-reset_halt y telegram_webhook — viven todos acá en una sola app FastAPI.
+manage_positions, polymarket_cycle, polymarket_resolve, polymarket_history,
+weather_cycle, weather_track_results, reset_halt y telegram_webhook —
+viven todos acá en una sola app FastAPI. (`polymarket_track_results`
+existió como alias de `polymarket_resolve` hasta el 03/09/2026 — se
+eliminó porque cron-job.org lo tenía dado de alta como job separado,
+disparando casi al mismo segundo que `polymarket_resolve` y duplicando
+el trabajo sobre Supabase/Polymarket sin ningún beneficio.)
 La carpeta `api/` que existía como copia de referencia de cada endpoint
 por separado se eliminó del repo (nunca se desplegaba y había quedado
 desincronizada de la lógica real de acá); este archivo es ahora la
