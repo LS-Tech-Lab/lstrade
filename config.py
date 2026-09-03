@@ -184,13 +184,30 @@ class Config:
     # candidato a mejor señal (best_trade) por debajo de este precio, aunque
     # sigue apareciendo en el detalle de buckets del reporte para
     # referencia.
-    WEATHER_MIN_PRICE = _float("WEATHER_MIN_PRICE", 0.01)
+    #
+    # AUDITORÍA (03/09/2026, tras 8 fallos de 10 en la primera corrida real):
+    # 0.01 NO cumplía el propósito de arriba — es el piso real de precio de
+    # Polymarket (ningún book cotiza más barato que $0.01), así que el
+    # filtro nunca se activaba y el problema que el comentario describe
+    # (EV inflado por dividir casi entre cero) seguía pasando en cada
+    # corrida. Se sube a un piso que sí excluye contratos "muertos".
+    WEATHER_MIN_PRICE = _float("WEATHER_MIN_PRICE", 0.05)
 
     # Desvío estándar base (°F) para repartir la masa de probabilidad entre
     # buckets adyacentes — punto de partida de la skill wu-airport-weather
     # ("normalmente ±1-2°F"). Ajustable sin tocar código a medida que se
     # calibre contra resultados reales.
-    WEATHER_BASE_SIGMA_F = _float("WEATHER_BASE_SIGMA_F", 1.6)
+    #
+    # AUDITORÍA (03/09/2026): 1.6°F resultó demasiado angosto para un solo
+    # día de datos reales — la skill de referencia advierte explícitamente
+    # contra "overconfident single-bucket distributions" y exige que el
+    # RANGO COMPLETO de confianza limpie el precio (regla de Silver), no
+    # solo el punto central. Con sigma tan chico, casi toda la masa de
+    # probabilidad caía en 1-2 buckets y generaba EV altos que no
+    # sobrevivían al error real de pronóstico del día. Se sube a un valor
+    # más conservador mientras se junta historial suficiente para calibrar
+    # esto con datos en vez de a ojo.
+    WEATHER_BASE_SIGMA_F = _float("WEATHER_BASE_SIGMA_F", 2.4)
 
     # Forzar una estación ICAO específica en vez de resolverla por el texto
     # del evento (STATION_MAP en weather_signal_engine.py) — útil para
