@@ -421,17 +421,15 @@ async def polymarket_history(request: Request):
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
 
-# ────────────────────────────────────────────────────────────────────
-# /api/polymarket_track_results — alias de /api/polymarket_resolve
-# ────────────────────────────────────────────────────────────────────
-
-@app.get("/api/polymarket_track_results")
-async def polymarket_track_results_get(request: Request):
-    return await _polymarket_resolve_endpoint(request)
-
-@app.post("/api/polymarket_track_results")
-async def polymarket_track_results_post(request: Request):
-    return await _polymarket_resolve_endpoint(request)
+# NOTA (03/09/2026): el alias /api/polymarket_track_results se eliminó —
+# era el mismo handler que /api/polymarket_resolve, dado de alta como un
+# cron SEPARADO en cron-job.org que disparaba casi al mismo segundo cada
+# 30 min (trabajo duplicado sobre Supabase/Polymarket, sin ningún
+# beneficio). Se decidió mantener /api/polymarket_resolve porque es el
+# nombre canónico documentado en el README (tabla de cron-job.org) y el
+# que usan los secrets ya cargados (VERCEL_POLYMARKET_RESOLVE_URL). Si
+# `check_open_signals` necesita volver a exponerse bajo otro nombre en el
+# futuro, agregar el alias acá siguiendo el mismo patrón de arriba.
 
 # ────────────────────────────────────────────────────────────────────
 # /api/weather_cycle
