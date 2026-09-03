@@ -168,7 +168,7 @@ alta esté la volatilidad reciente, en vez de usar siempre `ATR_STOP_MULT` fijo.
 
 ### Exposición correlacionada
 
-`MAX_CORRELATED_POSITIONS` (default 3) limita cuántas posiciones abiertas simultáneas puede
+`MAX_CORRELATED_POSITIONS` (default 5) limita cuántas posiciones abiertas simultáneas puede
 haber en la misma dirección (LONG o SHORT), sin importar el símbolo — varias altcoins LONG a
 la vez suelen ser, en la práctica, una sola apuesta direccional concentrada.
 
