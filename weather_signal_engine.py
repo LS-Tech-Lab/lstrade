@@ -617,10 +617,16 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
             "ev": ev,
             "liquidity": m.get("liquidity", 0),
             "yes_token_id": m.get("yes_token_id"),
-            # Link directo al bucket específico si el mercado individual
-            # trae su propio slug; si no, más abajo se usa el link del
-            # evento completo como mejor esfuerzo.
-            "url": m.get("url") or event.get("url"),
+            # AUDITORÍA (03/09/2026): antes esto priorizaba m.get("url"),
+            # construido en _build_market_url() a partir del slug del
+            # mercado individual (bucket). En clima cada evento tiene
+            # varios buckets y su slug casi nunca coincide con el del
+            # evento -- Polymarket sirve las páginas bajo /event/{event_slug},
+            # no bajo el slug del mercado, así que ese link caía en 404. El
+            # link del evento (event.get("url"), con el slug real del
+            # evento) sí resuelve siempre, así que ahora es el que manda;
+            # el slug del bucket queda solo como último recurso.
+            "url": event.get("url") or m.get("url"),
         }
         rows.append(row)
         # min_price descarta buckets pegados al piso de Polymarket como
