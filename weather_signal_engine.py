@@ -654,6 +654,7 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
         "buckets": rows,
         "best_trade": best,
         "settlement_verified": station.get("verified", False),
+        "min_ev_threshold": effective_min_ev,
         "disclaimer": DISCLAIMER,
     }
 
@@ -661,11 +662,32 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
 # ---------------------------------------------------------------------------
 # STEP 4 — Formato de reporte (versión compacta para Telegram)
 # ---------------------------------------------------------------------------
+def _half_kelly_fraction(prob, price):
+    """Fracción de Kelly (a mitad, por conservadurismo) para una apuesta
+    binaria que paga $1 si gana y cuesta `price`. Solo informativo: el
+    módulo de clima es de solo lectura y no ejecuta ni dimensiona órdenes
+    en Polymarket (a diferencia de risk_manager.py en el módulo cripto)."""
+    if not price or price <= 0 or price >= 1:
+        return None
+    kelly = (prob - price) / (1 - price)
+    return max(0.0, kelly) / 2
+
+
 def build_weather_memo(signal, markdown=True):
     """
     Versión compacta: solo lo necesario para decidir (estimación, mejor
     oportunidad, link). El desglose completo por bucket y la física del día
     siguen disponibles corriendo weather_report.py a mano.
+
+    AUDITORÍA (03/09/2026): la versión anterior mostraba "Mi prob" y
+    "Precio mercado" uno al lado del otro sin decir qué acción tomar --
+    quien lee el mensaje tenía que inferir si eso era señal de compra y de
+    qué lado. Ahora la primera línea después del header es siempre la
+    decisión explícita (comprar SÍ + qué bucket, o no operar y por qué),
+    con el edge en puntos porcentuales (que es lo que realmente justifica
+    la operación, no el EV% solo) y el umbral que se usó para decidir.
+    También se listan los próximos 2 buckets por EV con el motivo del
+    descarte, para que se vea que el bot barrió todas las opciones.
 
     FIX: la versión anterior envolvía DISCLAIMER en asteriscos/guiones bajos
     para itálica (`_{disclaimer}_`), pero el texto del disclaimer contiene
@@ -681,6 +703,7 @@ def build_weather_memo(signal, markdown=True):
     if not signal or signal.get("status") != "ok":
         return None
     st = signal["station"]
+    threshold = signal.get("min_ev_threshold")
     lines = []
     title_txt = signal["title"][:70]
     lines.append(f"🌡️ *ANÁLISIS DE CLIMA* — {title_txt}" if markdown else f"🌡️ ANÁLISIS DE CLIMA — {title_txt}")
@@ -689,18 +712,50 @@ def build_weather_memo(signal, markdown=True):
     lines.append(f"📍 Estación: {st.get('name', st.get('icao'))} ({verified_flag})")
     lines.append(f"📈 Estimación de máxima: {signal['center_estimate_f']}°F (±{signal['sigma']:.1f}°F)")
     lines.append("")
-    if signal["best_trade"]:
-        bt = signal["best_trade"]
-        lines.append(f"🎯 {bt['question'][:70]}")
-        lines.append(f"   Mi prob: {bt['my_prob']*100:.0f}% | Precio mercado: ${bt['market_price']:.3f} | EV {bt['ev']*100:+.0f}%")
+
+    rows = signal.get("buckets") or []
+    bt = signal["best_trade"]
+    if bt:
+        edge_pp = (bt["my_prob"] - bt["market_price"]) * 100
+        label = f"SEÑAL: COMPRAR \"SÍ\" — {bt['question'][:60]}"
+        lines.append(f"🟢 {label}" if not markdown else f"🟢 *{label}*")
+        lines.append(
+            f"   Mi prob: {bt['my_prob']*100:.0f}% | Mercado: {bt['market_price']*100:.1f}¢ | "
+            f"Edge: {edge_pp:+.0f}pp | EV: {bt['ev']*100:+.0f}%"
+        )
+        kelly = _half_kelly_fraction(bt["my_prob"], bt["market_price"])
+        if kelly is not None:
+            lines.append(f"   Tamaño sugerido (½ Kelly, informativo): {kelly*100:.1f}% del bankroll")
         if bt.get("url"):
             link_text = "Ver en Polymarket"
             lines.append(f"🔗 [{link_text}]({bt['url']})" if markdown else bt["url"])
     else:
-        lines.append("🎯 Sin edge suficiente hoy — pasar es la disciplina correcta.")
+        top_ev = rows[0]["ev"] if rows and rows[0].get("ev") is not None else None
+        threshold_txt = f"{threshold*100:.0f}%" if threshold is not None else "N/A"
+        if top_ev is not None:
+            lines.append(f"⚪ SIN SEÑAL — mejor EV disponible es {top_ev*100:+.0f}%, por debajo del umbral mínimo ({threshold_txt})")
+        else:
+            lines.append("⚪ SIN SEÑAL — pasar es la disciplina correcta.")
         if signal.get("url"):
             link_text = "Ver evento en Polymarket"
             lines.append(f"🔗 [{link_text}]({signal['url']})" if markdown else signal["url"])
+
+    # Próximos candidatos descartados, para que se vea que el bot barrió
+    # todas las opciones y la elección no es arbitraria.
+    others = [r for r in rows if not bt or r["condition_id"] != bt["condition_id"]][:2]
+    if others:
+        lines.append("")
+        lines.append("📊 Otros rangos evaluados:")
+        for r in others:
+            ev_txt = f"{r['ev']*100:+.0f}%" if r.get("ev") is not None else "N/A"
+            if r.get("ev") is not None and threshold is not None and r["ev"] < threshold:
+                reason = "no cumple umbral"
+            elif r.get("ev") is not None and bt and r["ev"] <= bt["ev"]:
+                reason = "EV menor"
+            else:
+                reason = "descartado"
+            lines.append(f"   {r['question'][:45]:<45} → {r['my_prob']*100:.0f}% vs {r['market_price']*100:.1f}¢ (EV {ev_txt}, {reason})")
+
     return "\n".join(lines)
 
 
