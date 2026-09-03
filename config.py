@@ -70,7 +70,7 @@ class Config:
     # limita el % de equity comprometido, pero no distingue si esas posiciones
     # están correlacionadas (varias altcoins moviéndose junto con BTC son, en
     # la práctica, una sola apuesta direccional concentrada).
-    MAX_CORRELATED_POSITIONS = _int("MAX_CORRELATED_POSITIONS", 3)
+    MAX_CORRELATED_POSITIONS = _int("MAX_CORRELATED_POSITIONS", 5)
 
     LIVE_TRADING = _bool("LIVE_TRADING", False)
     AUTO_EXECUTE = _bool("AUTO_EXECUTE", False)
