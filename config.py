@@ -90,6 +90,16 @@ class Config:
     POLYMARKET_STOP_VOL_MULT = _float("POLYMARKET_STOP_VOL_MULT", 3.0)
     POLYMARKET_TARGET_RR = _float("POLYMARKET_TARGET_RR", 1.5)
 
+    # AUDITORÍA (03/09/2026, pedido de reducir volumen y subir calidad):
+    # $1,000 de liquidez era el piso hardcodeado en polymarket_main.py desde
+    # el principio, sin revisar. Un book tan fino no solo tiene más riesgo
+    # de slippage al ejecutar, también es más fácil que el precio se mueva
+    # 2-5% con muy poco volumen real detrás -- exactamente el tipo de
+    # "momentum" que generate_polymarket_signal ahora exige como factor
+    # primario. Subir el piso de liquidez reduce candidatos ruidosos antes
+    # de que lleguen siquiera al motor de señales.
+    POLYMARKET_MIN_LIQUIDITY = _float("POLYMARKET_MIN_LIQUIDITY", 5000.0)
+
     # NUEVO: categorías de mercado (ver polymarket_categories.py) que no se
     # avisan más — basado en polymarket_backtest.py + analyze_polymarket_categories.py
     # sobre 216 trades reales: "Política / geopolítica" dio profit factor 0.80
@@ -147,7 +157,17 @@ class Config:
     # reales si las señales de confianza baja rendían peor. Se agregan esas
     # columnas en este mismo cambio para poder revisar esto con evidencia
     # dentro de unos días en vez de a ojo.
-    POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 3)
+    #
+    # AUDITORÍA (03/09/2026, pedido de reducir volumen y subir calidad): 3
+    # era demasiado permisivo — confidence=3 corresponde a score≈0.15, que
+    # con los umbrales viejos de generate_polymarket_signal se alcanzaba con
+    # una ineficiencia de precio de apenas 2% (spread normal de book, no
+    # necesariamente arbitraje real) o un momentum de sólo 3% en 12 velas
+    # (ruido común). Se sube a 4 -- score≈0.175+ -- junto con el
+    # endurecimiento de los umbrales primarios en polymarket_signal_engine.py
+    # (ver ese archivo), para que pasen menos señales pero con ineficiencia o
+    # momentum genuinamente más fuertes que el ruido típico del book.
+    POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 4)
 
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
     # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
