@@ -63,7 +63,7 @@ def calculate_time_to_resolution(market):
     except Exception:
         return None
 
-def generate_polymarket_signal(market, price_history=None, min_score=0.03,
+def generate_polymarket_signal(market, price_history=None, min_score=0.06,
                                 stop_vol_mult=3.0, target_rr=1.5):
     if not market or market.get("closed"):
         return None
@@ -88,16 +88,25 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.03,
     reasons = []
     has_primary_signal = False
 
+    # AUDITORÍA (03/09/2026, pedido de reducir volumen y subir calidad):
+    # 0.02 (2%) de desvío en yes+no y 0.03 (3%) de momentum en 12 velas eran
+    # umbrales demasiado bajos -- ambos caen dentro del ruido normal de
+    # spread/book de Polymarket, no de una ineficiencia real explotable.
+    # Se suben a 3.5% y 5% respectivamente para exigir una desviación que
+    # de verdad se distinga del ruido antes de contarla como señal primaria.
+    INEFFICIENCY_THRESHOLD = 0.035
+    MOMENTUM_THRESHOLD = 0.05
+
     # 1. Ineficiencia de precios (suma != 1.00) — factor primario
-    if inefficiency_data["inefficiency"] > 0.02:
+    if inefficiency_data["inefficiency"] > INEFFICIENCY_THRESHOLD:
         score += inefficiency_data["inefficiency"] * 2
         reasons.append(f"Ineficiencia de precio: {inefficiency_data['total_implied_prob']:.3f}")
         has_primary_signal = True
 
-    # 2. Momentum fuerte y real (cambio > 3% en el período) — factor primario
+    # 2. Momentum fuerte y real (cambio > 5% en el período) — factor primario
     if momentum_data:
         abs_momentum = abs(momentum_data["momentum"])
-        if abs_momentum > 0.03:
+        if abs_momentum > MOMENTUM_THRESHOLD:
             score += abs_momentum * 1.5
             reasons.append(f"Momentum fuerte: {momentum_data['momentum']*100:+.2f}%")
             has_primary_signal = True
@@ -130,7 +139,16 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.03,
     # Determinar dirección: solo si hay momentum real. Sin eso no hay
     # fundamento para elegir un lado — antes acá había un fallback que
     # apostaba en contra del precio más caro sin ninguna base real.
-    if not (momentum_data and abs(momentum_data["momentum"]) > 0.02):
+    #
+    # AUDITORÍA (03/09/2026): antes esto pedía apenas 0.02 (2%) de momentum
+    # para elegir dirección -- por debajo incluso del viejo umbral "fuerte"
+    # de 0.03. Eso permitía que una señal se armara casi enteramente sobre
+    # ineficiencia de precio (factor 1) con un momentum apenas por encima
+    # del ruido decidiendo el lado, sin que ese momentum aportara nada real
+    # al score. Se sube al mismo umbral que ahora cuenta como "momentum
+    # fuerte" (MOMENTUM_THRESHOLD) para que la dirección se elija con el
+    # mismo nivel de convicción que exige el resto del motor.
+    if not (momentum_data and abs(momentum_data["momentum"]) > MOMENTUM_THRESHOLD):
         return None
     direction = "YES" if momentum_data["momentum"] > 0 else "NO"
 
