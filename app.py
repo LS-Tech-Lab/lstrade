@@ -534,7 +534,7 @@ def run_weather_cycle():
             # lo que evita el 504 intermitente.
             signal = generate_weather_signal(
                 event, config, min_ev=config.WEATHER_MIN_EV, min_price=config.WEATHER_MIN_PRICE,
-                time_left_fn=time_left,
+                time_left_fn=time_left, client=client,
             )
         except Exception as e:
             detail.append({"title": event["title"], "status": "error", "error": str(e)})
