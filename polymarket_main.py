@@ -12,7 +12,7 @@ from db import Database
 from polymarket_categories import categorize
 from polymarket_chart import build_signal_chart
 from polymarket_client import PolymarketClient
-from polymarket_signal_engine import detect_inefficiency, generate_polymarket_signal
+from polymarket_signal_engine import detect_inefficiency, generate_polymarket_signal, verify_entry_against_book
 from polymarket_state import PolymarketStateStore
 from telegram_notifier import TelegramNotifier
 
@@ -191,7 +191,27 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         print(f"SEÑAL #{i}")
         print(memo_console)
         print("=" * 70)
-        
+
+        # AUDITORÍA (04/09/2026): verificar contra el book real ANTES de
+        # armar el memo -- si se hiciera después (como antes, solo al
+        # registrar en DB), el mensaje de Telegram ya mostraría el precio
+        # viejo de Gamma aunque la señal terminara descartándose. Ver
+        # verify_entry_against_book() para el porqué completo.
+        condition_id = signal["market"]["condition_id"]
+        original_market = market_by_condition_id.get(condition_id, {})
+        token_id = original_market.get("yes_token_id") if signal["direction"] == "YES" \
+            else original_market.get("no_token_id")
+        if signal.get("trade_plan"):
+            if not token_id:
+                log.info(f"Señal sin token_id resuelto, se descarta: {signal['market']['question'][:60]}")
+                continue
+            snap = client.fetch_order_book_snapshot(token_id)
+            verified = verify_entry_against_book(signal, snap, config)
+            if not verified:
+                log.info(f"Señal descartada tras verificar el book real (sin liquidez/book): {signal['market']['question'][:60]}")
+                continue
+            signal = verified
+
         memo_telegram = build_polymarket_memo(signal, markdown=True)
         notifier.send_message(memo_telegram)
         state_store.record_notified(signal["market"]["condition_id"], signal["direction"], signal["score"])
@@ -205,18 +225,13 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
                 except Exception as e:
                     log.warning(f"No se pudo generar/enviar el gráfico de la señal: {e}")
 
-        if db is not None and signal.get("trade_plan"):
-            condition_id = signal["market"]["condition_id"]
-            original_market = market_by_condition_id.get(condition_id, {})
-            token_id = original_market.get("yes_token_id") if signal["direction"] == "YES" \
-                else original_market.get("no_token_id")
-            if token_id:
-                tp = signal["trade_plan"]
-                db.record_polymarket_signal(
-                    condition_id, signal["market"]["question"], signal["direction"], token_id,
-                    tp["entry"], tp["target"], tp["stop"],
-                    score=signal.get("score"), confidence=signal.get("confidence"),
-                )
+        if db is not None and signal.get("trade_plan") and token_id:
+            tp = signal["trade_plan"]
+            db.record_polymarket_signal(
+                condition_id, signal["market"]["question"], signal["direction"], token_id,
+                tp["entry"], tp["target"], tp["stop"],
+                score=signal.get("score"), confidence=signal.get("confidence"),
+            )
 
         time.sleep(0.5)
     
@@ -370,22 +385,39 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
             log.warning("Presupuesto de tiempo agotado antes de enviar todas las señales nuevas.")
             break
 
+        condition_id = signal["market"]["condition_id"]
+        original_market = market_by_condition_id.get(condition_id, {})
+        token_id = original_market.get("yes_token_id") if signal["direction"] == "YES" \
+            else original_market.get("no_token_id")
+
+        # AUDITORÍA (04/09/2026): mismo fix que en el modo local -- verificar
+        # contra el book real ANTES de armar/mandar el memo, no solo al
+        # registrar en DB, para no avisar un precio que después se descarta.
+        # Gate por tiempo propio (más alto que el 0.5 general de arriba)
+        # porque acá se suma una request de red más al presupuesto ya
+        # ajustado del ciclo serverless.
+        if signal.get("trade_plan"):
+            if not token_id or time_left() < 1.5:
+                log.info(f"Señal sin token_id o sin tiempo para verificar book, se descarta: {signal['market']['question'][:60]}")
+                continue
+            snap = client.fetch_order_book_snapshot(token_id, timeout=min(request_timeout, max(1.0, time_left() - 0.5)))
+            verified = verify_entry_against_book(signal, snap, config)
+            if not verified:
+                log.info(f"Señal descartada tras verificar el book real (sin liquidez/book): {signal['market']['question'][:60]}")
+                continue
+            signal = verified
+
         memo_telegram = build_polymarket_memo(signal, markdown=True)
         notifier.send_message(memo_telegram)
         state_store.record_notified(signal["market"]["condition_id"], signal["direction"], signal["score"])
 
-        if db is not None and signal.get("trade_plan"):
-            condition_id = signal["market"]["condition_id"]
-            original_market = market_by_condition_id.get(condition_id, {})
-            token_id = original_market.get("yes_token_id") if signal["direction"] == "YES" \
-                else original_market.get("no_token_id")
-            if token_id:
-                tp = signal["trade_plan"]
-                db.record_polymarket_signal(
-                    condition_id, signal["market"]["question"], signal["direction"], token_id,
-                    tp["entry"], tp["target"], tp["stop"],
-                    score=signal.get("score"), confidence=signal.get("confidence"),
-                )
+        if db is not None and signal.get("trade_plan") and token_id:
+            tp = signal["trade_plan"]
+            db.record_polymarket_signal(
+                condition_id, signal["market"]["question"], signal["direction"], token_id,
+                tp["entry"], tp["target"], tp["stop"],
+                score=signal.get("score"), confidence=signal.get("confidence"),
+            )
         sent += 1
 
     return {
