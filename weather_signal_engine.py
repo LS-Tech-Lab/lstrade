@@ -524,7 +524,7 @@ DISCLAIMER = (
 )
 
 
-def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_left_fn=None):
+def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_left_fn=None, client=None):
     """
     Genera una señal de clima para un evento de Polymarket agrupado por
     buckets (mercados YES/NO por rango de temperatura del mismo día/estación).
@@ -538,6 +538,12 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     (FIX 02/09/2026, ver _capped_timeout) en vez de usar DEFAULT_TIMEOUT
     fijo, que en el peor caso podía comerse ~24s solo para las 3 fuentes de
     UN evento y provocar un 504 intermitente en Vercel.
+
+    `client`: instancia de PolymarketClient, usada para verificar el
+    candidato a best_trade contra el order book real (fetch_order_book_snapshot)
+    antes de fijarlo — ver auditoría del 04/09/2026 más abajo. Si es None,
+    no se puede verificar y el motor no elige best_trade (prefiere no
+    operar a operar contra un precio de Gamma potencialmente viejo).
 
     Devuelve un dict con "status" en {"no_station", "no_buckets", "no_data",
     "sin_tiempo", "ok"} — nunca lanza excepción por datos faltantes, siempre
@@ -602,9 +608,10 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     # KLGA por NYC/Central Park), en vez de dejar que compita en igualdad
     # de condiciones con estaciones confirmadas.
     effective_min_ev = min_ev if station.get("verified", False) else max(min_ev * 2, min_ev + 0.15)
+    min_liquidity = getattr(config, "WEATHER_MIN_LIQUIDITY", 200.0)
+    max_ev = getattr(config, "WEATHER_MAX_EV", 3.0)
 
     rows = []
-    best = None
     for m in buckets:
         prob = distribution.get(m["condition_id"], 0.0)
         price = m.get("yes_price") or 0.0
@@ -629,14 +636,86 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
             "url": event.get("url") or m.get("url"),
         }
         rows.append(row)
-        # min_price descarta buckets pegados al piso de Polymarket como
-        # candidatos a "mejor señal": ahí el EV se dispara por dividir casi
-        # entre cero, no por ventaja real, y casi nunca hay book detrás para
-        # ejecutar. Igual quedan en `rows` para el detalle del reporte.
-        if ev is not None and ev >= effective_min_ev and price >= min_price and (best is None or ev > best["ev"]):
-            best = row
 
+    # min_price sigue descartando buckets pegados al piso de Polymarket como
+    # candidatos: ahí el EV se dispara por dividir casi entre cero, no por
+    # ventaja real. Igual quedan en `rows` para el detalle del reporte.
     rows.sort(key=lambda r: (r["ev"] if r["ev"] is not None else -999), reverse=True)
+
+    # AUDITORÍA (04/09/2026, tras 20 señales cerradas y 15% de aciertos):
+    # la versión anterior fijaba best_trade comparando mi_prob contra
+    # `yes_price` de Gamma (outcomePrices) -- el ÚLTIMO PRECIO OPERADO, no
+    # lo que cuesta comprar ahora. En un bucket barato e ilíquido (justo el
+    # perfil que este motor busca: "el mercado lo cree improbable, yo no")
+    # ese último trade puede tener horas y estar muy por debajo del ask
+    # real -- el EV que se mandaba a Telegram no era ejecutable. Tampoco
+    # había piso de liquidez: `liquidity` se calculaba por fila pero nunca
+    # se usaba para descartar `best`. Con Brier 0.144 pero solo 15% de
+    # aciertos, el modelo no estaba muy mal calibrado en promedio -- el
+    # problema era la SELECCIÓN: maximizar EV=mi_prob/precio-1 sobre el
+    # propio modelo, sin verificar contra el book real, concentra las
+    # apuestas justo en los buckets donde un precio viejo o un error chico
+    # de cola del modelo genera el EV más inflado (winner's curse).
+    #
+    # Fix: antes de fijar best_trade se re-verifica el candidato top (por
+    # EV contra Gamma) contra el order book real -- se recalcula el EV con
+    # el ask real, se exige WEATHER_MIN_LIQUIDITY y se descarta cualquier
+    # EV verificado por encima de WEATHER_MAX_EV como más probable error de
+    # modelo que ventaja real. Si el candidato top no pasa, se prueba el
+    # siguiente por EV (hasta 3) antes de rendirse -- un candidato caro no
+    # es autómaticamente malo, solo el que no resiste verificación real.
+    best = None
+    discard_notes = []
+    candidates = [
+        r for r in rows
+        if r["ev"] is not None and r["ev"] >= effective_min_ev and r["market_price"] >= min_price
+    ][:3]
+
+    if client is None and candidates:
+        discard_notes.append(
+            "Sin cliente de Polymarket disponible para verificar el book real "
+            "-- no se opera contra un precio de Gamma sin confirmar."
+        )
+    for cand in candidates if client is not None else []:
+        label = cand["question"][:40]
+        if time_left_fn and time_left_fn() < 1.2:
+            discard_notes.append(f"{label}: sin tiempo para verificar book real.")
+            break
+        token_id = cand.get("yes_token_id")
+        if not token_id:
+            discard_notes.append(f"{label}: sin yes_token_id, no se puede verificar book.")
+            continue
+        snap = client.fetch_order_book_snapshot(
+            token_id, timeout=_capped_timeout(time_left_fn, ceiling=DEFAULT_TIMEOUT)
+        )
+        if not snap or snap.get("best_ask") is None:
+            discard_notes.append(f"{label}: book real no disponible.")
+            continue
+        real_liquidity = snap.get("liquidity") or 0.0
+        if real_liquidity < min_liquidity:
+            discard_notes.append(f"{label}: liquidez real ${real_liquidity:.0f} < piso ${min_liquidity:.0f}.")
+            continue
+        real_price = snap["best_ask"]
+        real_ev = compute_ev(cand["my_prob"], real_price)
+        if real_ev is None or real_ev < effective_min_ev:
+            shown = f"{real_ev * 100:.0f}%" if real_ev is not None else "N/A"
+            discard_notes.append(
+                f"{label}: EV real {shown} < umbral con el ask real "
+                f"(contra Gamma era {cand['ev'] * 100:.0f}%)."
+            )
+            continue
+        if real_ev > max_ev:
+            discard_notes.append(
+                f"{label}: EV real {real_ev * 100:.0f}% por encima del techo de sanidad "
+                f"({max_ev * 100:.0f}%) -- más probable error de modelo que ventaja real."
+            )
+            continue
+        best = dict(cand)
+        best["market_price"] = real_price
+        best["ev"] = real_ev
+        best["liquidity"] = real_liquidity
+        best["price_source"] = "book_real"
+        break
 
     return {
         "status": "ok",
@@ -653,6 +732,7 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
         "taf": taf,
         "buckets": rows,
         "best_trade": best,
+        "discard_notes": discard_notes,
         "settlement_verified": station.get("verified", False),
         "min_ev_threshold": effective_min_ev,
         "disclaimer": DISCLAIMER,
@@ -732,7 +812,16 @@ def build_weather_memo(signal, markdown=True):
     else:
         top_ev = rows[0]["ev"] if rows and rows[0].get("ev") is not None else None
         threshold_txt = f"{threshold*100:.0f}%" if threshold is not None else "N/A"
-        if top_ev is not None:
+        discard_notes = signal.get("discard_notes") or []
+        if discard_notes:
+            # AUDITORÍA (04/09/2026): distinguir "nada superó el umbral"
+            # (disciplina normal) de "algo superó el umbral pero no
+            # sobrevivió la verificación real contra el book" (precio
+            # viejo, sin liquidez, o EV sospechosamente alto) — son
+            # diagnósticos distintos y el segundo es la señal de que el
+            # modelo, no el mercado, es lo que hay que revisar.
+            lines.append(f"⚪ SIN SEÑAL — {discard_notes[0]}")
+        elif top_ev is not None:
             lines.append(f"⚪ SIN SEÑAL — mejor EV disponible es {top_ev*100:+.0f}%, por debajo del umbral mínimo ({threshold_txt})")
         else:
             lines.append("⚪ SIN SEÑAL — pasar es la disciplina correcta.")
