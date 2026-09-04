@@ -126,6 +126,58 @@ class PolymarketClient:
             log.warning(f"Error fetching order book for token {token_id}: {e}")
             return None
 
+    def fetch_order_book_snapshot(self, token_id, timeout=15):
+        """Como fetch_order_book_liquidity, pero además del notional total
+        devuelve el mejor ask y el mejor bid reales del book.
+
+        AUDITORÍA (04/09/2026): weather_signal_engine.py elegía best_trade
+        comparando la probabilidad del modelo contra `yes_price` de
+        parse_market_for_analysis, que viene de outcomePrices de Gamma —
+        el ÚLTIMO PRECIO OPERADO, no lo que cuesta comprar ahora. En un
+        bucket barato e ilíquido (el perfil que ese motor busca) ese
+        último trade puede tener horas y no reflejar el book actual. Este
+        método pega al mismo endpoint que fetch_order_book_liquidity pero
+        además extrae el mejor ask, para que el EV final se calcule contra
+        un precio ejecutable de verdad. Devuelve None si no se pudo
+        obtener el book (no un dict con ceros), para distinguir "sin
+        datos" de "book real vacío"."""
+        try:
+            resp = self.session.get(
+                f"{CLOB_API}/book",
+                params={"token_id": token_id},
+                timeout=timeout
+            )
+            resp.raise_for_status()
+            book = resp.json()
+            liquidity = 0.0
+            asks, bids = [], []
+            for level in book.get("asks", []):
+                try:
+                    price = float(level.get("price", 0))
+                    size = float(level.get("size", 0))
+                except (TypeError, ValueError):
+                    continue
+                liquidity += price * size
+                if size > 0 and price > 0:
+                    asks.append(price)
+            for level in book.get("bids", []):
+                try:
+                    price = float(level.get("price", 0))
+                    size = float(level.get("size", 0))
+                except (TypeError, ValueError):
+                    continue
+                liquidity += price * size
+                if size > 0 and price > 0:
+                    bids.append(price)
+            return {
+                "liquidity": liquidity,
+                "best_ask": min(asks) if asks else None,
+                "best_bid": max(bids) if bids else None,
+            }
+        except Exception as e:
+            log.warning(f"Error fetching order book snapshot for token {token_id}: {e}")
+            return None
+
     def fetch_market_by_condition_id(self, condition_id, timeout=15):
         """Semana 3: Obtiene los datos actuales de un mercado específico para validar su liquidez.
 
