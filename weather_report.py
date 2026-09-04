@@ -156,7 +156,7 @@ def main():
 
     for event in events:
         try:
-            signal = generate_weather_signal(event, config, min_ev=min_ev)
+            signal = generate_weather_signal(event, config, min_ev=min_ev, client=client)
         except Exception as e:
             log.exception(f"Error analizando '{event['title']}': {e}")
             continue
