@@ -79,7 +79,15 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.06,
         return None
 
     momentum_data = None
-    if price_history and len(price_history) >= 12:
+    # AUDITORÍA (04/09/2026): analyze_probability_momentum(window=12) exige
+    # len(price_history) >= window+1 = 13 (necesita 12 retornos, que salen
+    # de 13 precios) -- el chequeo de acá pedía solo 12, un punto menos de
+    # lo que la función realmente necesita. Con datos típicos (~24 velas
+    # por fetch_price_history con fidelity=60) esto casi nunca se nota,
+    # pero en el caso borde de exactamente 12 puntos, analyze_probability_momentum
+    # devolvía None de entrada y la señal perdía el factor de momentum en
+    # silencio, sin ningún aviso.
+    if price_history and len(price_history) >= 13:
         momentum_data = analyze_probability_momentum(price_history)
     
     days_to_resolution = calculate_time_to_resolution(market)
@@ -225,3 +233,59 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.06,
         "inefficiency": inefficiency_data,
         "trade_plan": trade_plan,
     }
+
+
+def verify_entry_against_book(signal, snapshot, config):
+    """Recalcula el trade_plan de una señal ya generada contra el book real
+    (bids/asks reales de ESE token) en vez de dejarlo anclado al
+    yes_price/no_price de Gamma (outcomePrices) usado en generate_polymarket_signal
+    -- que es el ÚLTIMO PRECIO OPERADO, no lo que cuesta comprar ahora.
+
+    AUDITORÍA (04/09/2026, mismo defecto estructural encontrado y corregido
+    en weather_signal_engine.py): el piso de liquidez AGREGADA del mercado
+    (POLYMARKET_MIN_LIQUIDITY, $5,000, sumando ambos lados del book de
+    Gamma) reduce el riesgo de operar contra un precio muy viejo, pero no
+    lo elimina -- un book desbalanceado (mucha profundidad de un lado,
+    casi nada del lado que el bot realmente va a comprar) puede pasar ese
+    piso agregado sin que haya liquidez real detrás de ESE token puntual.
+    Esta función es la misma verificación de último paso que ya se aplica
+    en clima, adaptada acá: recibe el snapshot ya obtenido vía
+    client.fetch_order_book_snapshot(token_id) (I/O queda en el
+    orquestador, este motor sigue sin tocar la red) y devuelve una copia
+    de `signal` con trade_plan y market[yes_price/no_price] reanclados al
+    ask real -- o None si no se puede confirmar (sin book, o liquidez del
+    token puntual por debajo de POLYMARKET_MIN_ENTRY_LIQUIDITY), en cuyo
+    caso el llamador debe descartar la señal en vez de mandarla con un
+    precio sin confirmar."""
+    if not signal.get("trade_plan") or not snapshot or snapshot.get("best_ask") is None:
+        return None
+    min_liquidity = getattr(config, "POLYMARKET_MIN_ENTRY_LIQUIDITY", 500.0)
+    real_liquidity = snapshot.get("liquidity") or 0.0
+    if real_liquidity < min_liquidity:
+        return None
+
+    tp = signal["trade_plan"]
+    old_entry = tp["entry"]
+    if old_entry <= 0:
+        return None
+    # Se preservan las distancias RELATIVAS de stop/target (ya pasaron por
+    # el fix de unidades y el techo MAX_STOP_LOSS_PCT del 03/09/2026 al
+    # generarse) y se reanclan al precio real, en vez de recalcular todo
+    # de cero acá.
+    stop_pct = (old_entry - tp["stop"]) / old_entry
+    target_pct = (tp["target"] - old_entry) / old_entry
+
+    real_entry = snapshot["best_ask"]
+    verified = dict(signal)
+    verified["trade_plan"] = {
+        "entry": round(real_entry, 3),
+        "target": round(min(0.99, real_entry * (1 + target_pct)), 3),
+        "stop": round(max(0.01, real_entry * (1 - stop_pct)), 3),
+    }
+    verified["market"] = dict(signal["market"])
+    if signal["direction"] == "YES":
+        verified["market"]["yes_price"] = real_entry
+    else:
+        verified["market"]["no_price"] = real_entry
+    verified["price_source"] = "book_real"
+    return verified
