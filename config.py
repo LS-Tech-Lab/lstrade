@@ -90,6 +90,18 @@ class Config:
     POLYMARKET_STOP_VOL_MULT = _float("POLYMARKET_STOP_VOL_MULT", 3.0)
     POLYMARKET_TARGET_RR = _float("POLYMARKET_TARGET_RR", 1.5)
 
+    # AUDITORÍA (03/09/2026, fix de polymarket_backtest.py): score mínimo
+    # para que generate_polymarket_signal() devuelva señal. Antes vivía solo
+    # como el default hardcodeado 0.06 dentro de la firma de la función
+    # (nunca pasado explícito desde polymarket_main.py) mientras
+    # polymarket_backtest.py pasaba un 0.03 propio hardcodeado -- dos
+    # valores distintos sin que nada lo hiciera evidente, así que el
+    # backtest terminaba midiendo una estrategia más permisiva que la que
+    # corre en vivo. Se saca a config como única fuente para que ambos
+    # coincidan siempre, igual que ya se hace con STOP_VOL_MULT/TARGET_RR
+    # arriba y con POLYMARKET_MIN_CONFIDENCE más abajo.
+    POLYMARKET_MIN_SCORE = _float("POLYMARKET_MIN_SCORE", 0.06)
+
     # AUDITORÍA (03/09/2026, pedido de reducir volumen y subir calidad):
     # $1,000 de liquidez era el piso hardcodeado en polymarket_main.py desde
     # el principio, sin revisar. Un book tan fino no solo tiene más riesgo
