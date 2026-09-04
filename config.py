@@ -179,7 +179,7 @@ class Config:
     # endurecimiento de los umbrales primarios en polymarket_signal_engine.py
     # (ver ese archivo), para que pasen menos señales pero con ineficiencia o
     # momentum genuinamente más fuertes que el ruido típico del book.
-    POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 4)
+    POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 5)
 
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
     # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
