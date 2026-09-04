@@ -145,11 +145,12 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         
         signal = generate_polymarket_signal(
             market, price_history,
+            min_score=config.POLYMARKET_MIN_SCORE,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
             target_rr=config.POLYMARKET_TARGET_RR,
         )
         # 2026-09-02: filtro de confianza mínima (ver config.POLYMARKET_MIN_CONFIDENCE) —
-        # antes cualquier señal por encima del piso de score (0.03) se avisaba igual,
+        # antes cualquier señal por encima del piso de score (config.POLYMARKET_MIN_SCORE) se avisaba igual,
         # incluyendo confianza 1-2/5 que es la zona más floja que genera el motor.
         if signal and signal["confidence"] >= config.POLYMARKET_MIN_CONFIDENCE:
             signals.append(signal)
@@ -339,6 +340,7 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
 
         signal = generate_polymarket_signal(
             market, price_history,
+            min_score=config.POLYMARKET_MIN_SCORE,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
             target_rr=config.POLYMARKET_TARGET_RR,
         )
