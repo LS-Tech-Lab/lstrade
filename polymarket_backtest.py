@@ -212,12 +212,28 @@ def backtest_market(config, market, yes_history, no_history, min_confidence=1):
         # el backtest — no era un problema de datos ni de umbrales.
         price_window = yes_history[max(0, i - 12):i + 1]
 
+        # FIX (03/09/2026): esto llamaba a generate_polymarket_signal() con
+        # target_pct_min=config.POLYMARKET_TARGET_PCT_MIN y
+        # target_pct_max=config.POLYMARKET_TARGET_PCT_MAX -- ninguno de los
+        # dos existe en Config, y aunque existiera la función real no los
+        # acepta (su firma es min_score/stop_vol_mult/target_rr, ver
+        # polymarket_signal_engine.py). Eso rompía con AttributeError en el
+        # primer mercado evaluado -- el backtest no podía correr NUNCA en
+        # este estado, así que ningún umbral tocado en las últimas
+        # auditorías de polymarket_signal_engine.py/config.py se había
+        # podido validar todavía contra histórico. Además, el 0.03 que sí
+        # se pasaba como min_score no coincidía con el default real de
+        # producción (0.06, ver config.POLYMARKET_MIN_SCORE) -- el backtest
+        # iba a medir una estrategia más permisiva que la que corre en vivo
+        # incluso después de arreglar el crash. Se reemplaza por los
+        # parámetros reales de la función, tomando min_score de la misma
+        # config que ya usa producción (polymarket_main.py) para que
+        # backtest y producción midan exactamente la misma estrategia.
         signal = generate_polymarket_signal(
             snapshot, price_window,
-            min_score=0.03,
+            min_score=config.POLYMARKET_MIN_SCORE,
             stop_vol_mult=config.POLYMARKET_STOP_VOL_MULT,
-            target_pct_min=config.POLYMARKET_TARGET_PCT_MIN,
-            target_pct_max=config.POLYMARKET_TARGET_PCT_MAX,
+            target_rr=config.POLYMARKET_TARGET_RR,
         )
         if not signal:
             diagnostics["no_signal"] += 1
