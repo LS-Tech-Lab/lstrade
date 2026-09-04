@@ -274,6 +274,25 @@ class Config:
     # oportunidad del ciclo.
     MAX_WEATHER_SIGNALS_PER_CYCLE = _int("MAX_WEATHER_SIGNALS_PER_CYCLE", 2)
 
+    # AUDITORÍA (04/09/2026, tras 20 señales cerradas con 15% de aciertos):
+    # best_trade se elegía con yes_price de Gamma (outcomePrices), que es el
+    # ÚLTIMO PRECIO OPERADO, no el ask real -- en un bucket barato e ilíquido
+    # (el perfil que este motor busca) ese trade puede tener horas y estar
+    # muy por debajo de lo que cuesta comprar ahora. Tampoco había piso de
+    # liquidez: se calculaba `liquidity` por fila pero nunca se usaba para
+    # descartar candidatos. Ahora, antes de fijar best_trade, se verifica el
+    # candidato contra el order book real (fetch_order_book_snapshot) y se
+    # exige este piso de liquidez en $ notional (bids+asks sumados).
+    WEATHER_MIN_LIQUIDITY = _float("WEATHER_MIN_LIQUIDITY", 200.0)
+
+    # Techo de sanidad para el EV verificado contra el book real. EV =
+    # mi_prob/precio - 1 diverge fácil cuando el precio es muy bajo -- un EV
+    # por encima de este techo es más probable un error de modelo (cola mal
+    # calibrada) que una ventaja real explotable, mismo criterio que ya se
+    # usó para los stops de Polymarket (ver auditoría de stops, 03/09/2026).
+    # Punto de partida sin validar todavía contra resultados reales.
+    WEATHER_MAX_EV = _float("WEATHER_MAX_EV", 3.0)
+
     NOTIFY_TELEGRAM = _bool("NOTIFY_TELEGRAM", False)
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
