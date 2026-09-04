@@ -1,0 +1,43 @@
+name: Backtest Polymarket (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Cuántos mercados cerrados analizar"
+        default: "200"
+      min_volume:
+        description: "Volumen total mínimo por mercado"
+        default: "5000"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Correr backtest histórico de Polymarket
+        run: python polymarket_backtest.py --limit ${{ inputs.limit }} --min-volume ${{ inputs.min_volume }} --output resultados_pm.csv
+
+      - name: Cruzar backtest vs. señales live resueltas
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python polymarket_compare_backtest_live.py --backtest-csv resultados_pm.csv --output comparacion.csv
+
+      - name: Subir resultados como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-polymarket-${{ github.run_id }}
+          path: |
+            resultados_pm.csv
+            comparacion.csv
+          retention-days: 30
