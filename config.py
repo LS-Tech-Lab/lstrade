@@ -311,6 +311,14 @@ class Config:
     # Evita falsos positivos donde el precio "mid" toca el nivel pero no hay profundidad de libro para ejecutar.
     POLYMARKET_MIN_EXIT_LIQUIDITY = _float("POLYMARKET_MIN_EXIT_LIQUIDITY", 500.0)
 
+    # AUDITORÍA (04/09/2026): piso de liquidez del token puntual (no del
+    # mercado agregado, ver POLYMARKET_MIN_LIQUIDITY) exigido por
+    # verify_entry_against_book() antes de confirmar entry/target/stop
+    # contra el book real. Mismo valor que POLYMARKET_MIN_EXIT_LIQUIDITY a
+    # propósito: no tiene sentido exigir menos liquidez para entrar que
+    # para salir.
+    POLYMARKET_MIN_ENTRY_LIQUIDITY = _float("POLYMARKET_MIN_ENTRY_LIQUIDITY", 500.0)
+
     @classmethod
     def validate(cls):
         problems = []
