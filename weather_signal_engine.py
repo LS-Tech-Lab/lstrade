@@ -6,7 +6,10 @@ Implementa la metodología STEP 0-3 de la skill `wu-airport-weather`
 bucket de temperatura, comparación contra precio de mercado y EV) usando
 ÚNICAMENTE fuentes con API oficial, gratuita y estable:
 
-  - NWS (api.weather.gov)          → guía de pronóstico oficial
+  - NWS (api.weather.gov)          → guía de pronóstico oficial y serie de
+                                      observaciones del día (máximo real
+                                      hasta el momento, vía
+                                      /stations/{id}/observations)
   - aviationweather.gov            → METAR (observación en vivo + máxima
                                       de 6h en remarks) y TAF (timing de
                                       tormenta/nubes)
@@ -323,6 +326,52 @@ def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT, time_left_fn=No
         return None
 
 
+def fetch_station_max_today(icao, station, config, target_date=None, timeout=DEFAULT_TIMEOUT, time_left_fn=None):
+    """Máximo real observado en lo que va del día local de la estación,
+    calculado sobre la serie completa de observaciones de
+    api.weather.gov/stations/{id}/observations, en vez de depender del
+    grupo de remarks METAR de 6h de fetch_metar (que solo se actualiza en
+    ciertos horarios sinópticos y se pierde si la observación puntual no
+    lo trae).
+
+    AUDITORÍA (05/09/2026): se evaluó weather.gov/wrh/timeseries como
+    fuente para esto y se descartó -- esa página arma la tabla/gráfico con
+    JavaScript en el navegador, no expone una API pública (el propio NWS
+    avisa ahí mismo que el export de datos está roto), y solo está pensada
+    para estaciones de la Región Oeste aunque cargue para otras. Un
+    ingeniero de NWS confirmó en el repo público de api.weather.gov que
+    para esto corresponde usar este mismo endpoint (/stations/{id}/observations),
+    que además ya es el mismo dominio que usa fetch_nws_guidance."""
+    try:
+        tz = ZoneInfo(station["tz"])
+        target_date = target_date or datetime.now(tz).date()
+        start_local = datetime.combine(target_date, datetime.min.time(), tzinfo=tz)
+        now_local = datetime.now(tz)
+        end_local = min(now_local, start_local.replace(hour=23, minute=59, second=59))
+        headers = _headers(config)
+        resp = requests.get(
+            f"{NWS_API}/stations/{icao}/observations",
+            params={
+                "start": start_local.astimezone(ZoneInfo("UTC")).isoformat(),
+                "end": end_local.astimezone(ZoneInfo("UTC")).isoformat(),
+            },
+            headers=headers, timeout=_capped_timeout(time_left_fn, ceiling=timeout),
+        )
+        resp.raise_for_status()
+        features = resp.json().get("features", [])
+        temps_f = []
+        for feat in features:
+            val_c = ((feat.get("properties") or {}).get("temperature") or {}).get("value")
+            if val_c is not None:
+                temps_f.append(val_c * 9 / 5 + 32)
+        if not temps_f:
+            return None
+        return {"max_so_far_f": round(max(temps_f), 1), "n_obs": len(temps_f)}
+    except Exception as e:
+        log.warning(f"Observaciones NWS fallaron para {icao}: {e}")
+        return None
+
+
 def _parse_six_hour_max_f(raw_ob):
     """Grupo de remarks METAR '1sTTT' = máxima de 6h (s: 0=+, 1=-; TTT en
     décimas de °C) — captura picos entre observaciones horarias que la
@@ -440,12 +489,18 @@ def _hour_sigma_multiplier(hour):
     return 0.85  # 15-18h: ventana de pico, trayectoria ya casi confirma
 
 
-def estimate_adjusted_high(nws, metar, taf, station):
+def estimate_adjusted_high(nws, metar, taf, station, station_max=None):
     """Parte de la guía de NWS como centro de masa y ajusta con la
-    trayectoria matutina (METAR vs. lo esperado a esta hora) y el timing de
-    tormenta (TAF) — mismo criterio que STEP 2 de la skill. Devuelve
-    (estimación_f, notas[], penalización_de_confianza, ensanche_situacional_f,
-    hora_local).
+    trayectoria matutina (METAR + observaciones NWS del día vs. lo
+    esperado a esta hora) y el timing de tormenta (TAF) — mismo criterio
+    que STEP 2 de la skill. Devuelve (estimación_f, notas[],
+    penalización_de_confianza, ensanche_situacional_f, hora_local).
+
+    `station_max`: dict de fetch_station_max_today (o None) -- máximo real
+    observado hasta el momento según la serie completa de observaciones de
+    api.weather.gov, más confiable que six_hr_max_f porque no depende de
+    que el remark de 6h esté presente en la última observación puntual de
+    METAR.
 
     `ensanche_situacional_f` es un ensanche ADITIVO (en °F) para sigma,
     separado de `penalización_de_confianza` (que es multiplicativo y solo
@@ -471,10 +526,14 @@ def estimate_adjusted_high(nws, metar, taf, station):
     hour = _station_local_hour(station)
 
     offset = _expected_offset_from_high(hour)
-    if metar and metar.get("temp_f") is not None and offset is not None:
-        current = metar["temp_f"]
-        six_hr_max = metar.get("six_hr_max_f")
-        reference = max(current, six_hr_max) if six_hr_max else current
+    current = metar.get("temp_f") if metar else None
+    six_hr_max = metar.get("six_hr_max_f") if metar else None
+    station_max_f = station_max.get("max_so_far_f") if station_max else None
+    candidates = [c for c in (current, six_hr_max, station_max_f) if c is not None]
+    if candidates and offset is not None:
+        reference = max(candidates)
+        if station_max_f is not None and station_max_f == reference and station_max_f != current:
+            notes.append(f"Máximo real de hoy según observaciones NWS: {station_max_f:.1f}°F (de {station_max.get('n_obs')} obs) — más alto que la lectura METAR puntual, se usó como referencia.")
         expected_at_this_hour = base - offset
         delta = reference - expected_at_this_hour
         if abs(delta) >= 2:
@@ -493,8 +552,12 @@ def estimate_adjusted_high(nws, metar, taf, station):
     if nws is None:
         penalty += 0.15
     if metar is None:
-        penalty += 0.15
-        notes.append("Sin observación METAR — no se pudo chequear trayectoria matutina, se ensancha la distribución.")
+        if station_max_f is not None:
+            penalty += 0.05
+            notes.append("Sin observación METAR puntual, pero sí observaciones NWS del día — trayectoria chequeada igual, penalización reducida.")
+        else:
+            penalty += 0.15
+            notes.append("Sin observación METAR ni observaciones NWS del día — no se pudo chequear trayectoria matutina, se ensancha la distribución.")
     if taf is None:
         penalty += 0.1
 
@@ -563,10 +626,13 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
 
     `time_left_fn`: función opcional que devuelve segundos restantes del
     budget global del ciclo (ver run_weather_cycle en app.py). Si se pasa,
-    los timeouts de NWS/METAR/TAF se ajustan dinámicamente a lo que quede
-    (FIX 02/09/2026, ver _capped_timeout) en vez de usar DEFAULT_TIMEOUT
-    fijo, que en el peor caso podía comerse ~24s solo para las 3 fuentes de
-    UN evento y provocar un 504 intermitente en Vercel.
+    los timeouts de NWS/METAR/TAF/observaciones se ajustan dinámicamente a
+    lo que quede (FIX 02/09/2026, ver _capped_timeout) en vez de usar
+    DEFAULT_TIMEOUT fijo, que en el peor caso podía comerse ~24s solo para
+    las 3 fuentes de UN evento y provocar un 504 intermitente en Vercel.
+    Con la 4ta fuente (fetch_station_max_today, 05/09/2026) el mismo riesgo
+    aplica multiplicado -- por eso también respeta time_left_fn y se salta
+    si queda menos de 1s de budget, igual que METAR/TAF.
 
     `client`: instancia de PolymarketClient, usada para verificar el
     candidato a best_trade contra el order book real (fetch_order_book_snapshot)
@@ -601,15 +667,19 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     nws = fetch_nws_guidance(station, config, time_left_fn=time_left_fn, target_date=target_date)
 
     if time_left_fn and time_left_fn() < 1.0:
-        metar, taf = None, None
+        metar, taf, station_max = None, None, None
     else:
         metar = fetch_metar(station["icao"], config, time_left_fn=time_left_fn)
         if time_left_fn and time_left_fn() < 1.0:
-            taf = None
+            taf, station_max = None, None
         else:
             taf = fetch_taf(station["icao"], config, time_left_fn=time_left_fn)
+            if time_left_fn and time_left_fn() < 1.0:
+                station_max = None
+            else:
+                station_max = fetch_station_max_today(station["icao"], station, config, target_date=target_date, time_left_fn=time_left_fn)
 
-    center, notes, penalty, extra_widen, hour = estimate_adjusted_high(nws, metar, taf, station)
+    center, notes, penalty, extra_widen, hour = estimate_adjusted_high(nws, metar, taf, station, station_max=station_max)
     if center is None:
         return {"status": "no_data", "title": title, "station": station}
 
