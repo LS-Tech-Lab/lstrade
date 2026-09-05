@@ -113,6 +113,38 @@ def _get(path, params=None, timeout=DEFAULT_TIMEOUT):
         return None
 
 
+_MLB_TAG_ID_CACHE = {"id": None, "resolved_at": 0.0}
+_MLB_TAG_ID_TTL_SECONDS = 86400.0  # el tag_id de una liga no cambia -- 24h de caché
+
+
+def resolve_mlb_tag_id(client):
+    """Cachea (por proceso, TTL 24h) el tag_id de MLB resuelto vía
+    client.resolve_tag_id('mlb') -- /tags/slug/mlb en Gamma.
+
+    AUDITORÍA (05/09/2026): antes, run_mlb_cycle() escaneaba el top-N de
+    fetch_active_markets ordenado por volume24hr de TODO Polymarket, sin
+    filtro de liga. Se detectó en producción un ciclo real con
+    games_today=15 y markets_scanned=0 -- los mercados de MLB de temporada
+    regular tienen volumen bajo frente a cripto/política y simplemente no
+    entraban en ese top-N. Mismo problema (y misma solución) que ya se
+    había resuelto para clima con WEATHER_TAG_ID -- ver
+    polymarket_client.py. A diferencia de WEATHER_TAG_ID, el de MLB no se
+    hardcodea porque no está confirmado a mano contra una respuesta real
+    todavía; se resuelve en vivo la primera vez y se cachea acá.
+
+    Si el cold start de una serverless function resetea este cache en
+    memoria, se vuelve a resolver -- un request extra ocasional, no un
+    problema funcional."""
+    now = time.monotonic()
+    if _MLB_TAG_ID_CACHE["id"] is not None and (now - _MLB_TAG_ID_CACHE["resolved_at"]) < _MLB_TAG_ID_TTL_SECONDS:
+        return _MLB_TAG_ID_CACHE["id"]
+    tag_id = client.resolve_tag_id("mlb")
+    if tag_id is not None:
+        _MLB_TAG_ID_CACHE["id"] = tag_id
+        _MLB_TAG_ID_CACHE["resolved_at"] = now
+    return tag_id
+
+
 def resolve_team_id(label):
     """
     Devuelve el team_id de MLB que matchea un outcome label de Polymarket
