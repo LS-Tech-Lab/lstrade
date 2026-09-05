@@ -367,13 +367,11 @@ function IndicatorCard({ symbol, snapshot }) {
   );
 }
 
-// NUEVO: envuelve cualquier tabla ancha para que en pantallas chicas se
-// pueda desplazar horizontalmente en vez de desbordar el layout o achicar
-// el texto hasta ser ilegible. El borde/degradé lateral es la señal visual
-// de "hay más contenido para el costado".
-function TableScroll({ children }) {
-  return <div className="table-scroll">{children}</div>;
-}
+// NOTA (05/09/2026): TableScroll (wrapper de scroll horizontal para
+// <table>) se sacó de acá -- clima y MLB eran los últimos dos módulos que
+// todavía usaban tablas HTML crudas; ahora los cuatro (cripto, Polymarket,
+// clima, MLB) comparten el mismo carrusel de tarjetas (RowCarousel más
+// abajo), que ya resuelve el mismo problema de forma más legible en mobile.
 
 // NUEVO: hook compartido por todos los carruseles (indicadores, posiciones
 // abiertas, bitácora de decisiones). Centraliza el cálculo de "qué tarjeta
@@ -717,74 +715,62 @@ function WeatherStatsRow({ stats }) {
   );
 }
 
+// CAMBIADO (05/09/2026): de tabla con scroll horizontal a carrusel de
+// tarjetas — mismo lenguaje visual que Polymarket/Cripto (una tarjeta por
+// señal, flechas y puntos para navegar), en vez de la tabla vieja que en
+// mobile se leía como una lista larga de filas apiladas por data-label.
 function WeatherOpenTable({ rows }) {
-  if (!rows || rows.length === 0) {
-    return <p className="empty">Sin señales de clima abiertas ahora mismo.</p>;
-  }
   return (
-    <TableScroll>
-      <table>
-        <thead>
-          <tr>
-            <th>Mercado</th>
-            <th>Estación</th>
-            <th>Mi prob.</th>
-            <th>Precio mkt</th>
-            <th>EV</th>
-            <th>Enviada</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
-              <td data-label="Estación">{r.station_icao || "—"}</td>
-              <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
-              <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
-              <td data-label="EV" className={r.ev >= 0 ? "ok" : "fail"}>{r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"}</td>
-              <td data-label="Enviada">{parseTs(r.ts_signaled).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </TableScroll>
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin señales de clima abiertas ahora mismo."
+      renderFields={(r) => (
+        <>
+          <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+          <RowField label="Estación" value={r.station_icao || "—"} />
+          <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+          <RowField label="EV" tone={r.ev >= 0 ? "ok" : "fail"}
+            value={r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
+        </>
+      )}
+    />
   );
 }
 
+// CAMBIADO (05/09/2026): mismo patrón de carrusel que el resto — ver
+// comentario de WeatherOpenTable arriba.
 function WeatherResolvedTable({ rows }) {
   if (!rows || rows.length === 0) {
     return <p className="empty">Todavía no hay señales de clima resueltas.</p>;
   }
   return (
-    <TableScroll>
-      <table>
-        <thead>
-          <tr>
-            <th>Mercado</th>
-            <th>Mi prob.</th>
-            <th>Precio mkt</th>
-            <th>Resultado</th>
-            <th>Retorno</th>
-            <th>Resuelta</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const ret = weatherReturnPct(r);
-            return (
-              <tr key={r.id}>
-                <td data-label="Mercado">{r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}</td>
-                <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
-                <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
-                <td data-label="Resultado" className={r.outcome === "yes" ? "ok" : "fail"}>{r.outcome === "yes" ? "SI OCURRIÓ" : "NO OCURRIÓ"}</td>
-                <td data-label="Retorno" className={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}>{ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"}</td>
-                <td data-label="Resuelta">{r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </TableScroll>
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Todavía no hay señales de clima resueltas."
+      renderFields={(r) => {
+        const ret = weatherReturnPct(r);
+        const isWin = r.outcome === "yes";
+        return (
+          <>
+            <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+            <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+            <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+            <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
+              value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+              <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
+                {isWin ? "✅ SI OCURRIÓ" : "❌ NO OCURRIÓ"}
+              </span>
+            } />
+            <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
+          </>
+        );
+      }}
+    />
   );
 }
 
@@ -845,79 +831,64 @@ function MlbStatsRow({ stats }) {
   );
 }
 
+// CAMBIADO (05/09/2026): de tabla con scroll horizontal a carrusel de
+// tarjetas — mismo patrón que Polymarket/Cripto/Clima (ver comentario de
+// WeatherOpenTable arriba).
 function MlbOpenTable({ rows }) {
-  if (!rows || rows.length === 0) {
-    return <p className="empty">Sin señales de MLB abiertas ahora mismo.</p>;
-  }
   return (
-    <TableScroll>
-      <table>
-        <thead>
-          <tr>
-            <th>Partido</th>
-            <th>Lado</th>
-            <th>Mi prob.</th>
-            <th>Precio mkt</th>
-            <th>EV</th>
-            <th>Confianza</th>
-            <th>Enviada</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td data-label="Partido">{r.away_team} @ {r.home_team}</td>
-              <td data-label="Lado">{r.direction === "YES" ? r.home_team : r.away_team}</td>
-              <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
-              <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
-              <td data-label="EV" className={r.ev >= 0 ? "ok" : "fail"}>{r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"}</td>
-              <td data-label="Confianza">{r.confidence !== null && r.confidence !== undefined ? `${r.confidence}/5` : "—"}</td>
-              <td data-label="Enviada">{parseTs(r.ts_signaled).toLocaleString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </TableScroll>
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin señales de MLB abiertas ahora mismo."
+      renderFields={(r) => (
+        <>
+          <RowField label="Partido" value={`${r.away_team} @ ${r.home_team}`} />
+          <RowField label="Lado" value={r.direction === "YES" ? r.home_team : r.away_team} />
+          <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+          <RowField label="EV" tone={r.ev >= 0 ? "ok" : "fail"}
+            value={r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Confianza" value={r.confidence !== null && r.confidence !== undefined ? `${r.confidence}/5` : "—"} />
+          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
+        </>
+      )}
+    />
   );
 }
 
+// CAMBIADO (05/09/2026): mismo patrón de carrusel que el resto — ver
+// comentario de WeatherOpenTable arriba.
 function MlbResolvedTable({ rows }) {
   if (!rows || rows.length === 0) {
     return <p className="empty">Todavía no hay señales de MLB resueltas.</p>;
   }
   return (
-    <TableScroll>
-      <table>
-        <thead>
-          <tr>
-            <th>Partido</th>
-            <th>Lado</th>
-            <th>Mi prob.</th>
-            <th>Precio mkt</th>
-            <th>Resultado</th>
-            <th>Retorno</th>
-            <th>Resuelta</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const ret = mlbReturnPct(r);
-            const sideTeam = r.direction === "YES" ? r.home_team : r.away_team;
-            return (
-              <tr key={r.id}>
-                <td data-label="Partido">{r.away_team} @ {r.home_team}</td>
-                <td data-label="Lado">{sideTeam}</td>
-                <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
-                <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
-                <td data-label="Resultado" className={r.outcome === "win" ? "ok" : "fail"}>{r.outcome === "win" ? `GANÓ (${sideTeam})` : `PERDIÓ (${sideTeam})`}</td>
-                <td data-label="Retorno" className={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}>{ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"}</td>
-                <td data-label="Resuelta">{r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </TableScroll>
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Todavía no hay señales de MLB resueltas."
+      renderFields={(r) => {
+        const ret = mlbReturnPct(r);
+        const sideTeam = r.direction === "YES" ? r.home_team : r.away_team;
+        const isWin = r.outcome === "win";
+        return (
+          <>
+            <RowField label="Partido" value={`${r.away_team} @ ${r.home_team}`} />
+            <RowField label="Lado" value={sideTeam} />
+            <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+            <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+            <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
+              value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+              <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
+                {isWin ? `✅ GANÓ (${sideTeam})` : `❌ PERDIÓ (${sideTeam})`}
+              </span>
+            } />
+            <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
+          </>
+        );
+      }}
+    />
   );
 }
 
