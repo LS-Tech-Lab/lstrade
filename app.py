@@ -49,6 +49,7 @@ from weather_signal_engine import (
 from mlb_signal_engine import (
     fetch_probable_pitchers_for_date,
     resolve_team_id,
+    resolve_mlb_tag_id,
     generate_mlb_signal,
     build_mlb_memo,
 )
@@ -650,7 +651,23 @@ def run_mlb_cycle():
         return {"status": "no_games_today"}
 
     scan_limit = int(os.environ.get("MLB_MARKET_SCAN_LIMIT", "150"))
-    markets_raw = client.fetch_active_markets(limit=scan_limit, timeout=8)
+
+    # AUDITORÍA (05/09/2026): antes esto era un único fetch_active_markets
+    # genérico (top-N por volume24hr de TODO Polymarket), y se detectó en
+    # producción un ciclo con games_today=15 y markets_scanned=0 -- los
+    # mercados de MLB de temporada regular tienen volumen bajo frente a
+    # cripto/política y simplemente no entraban en ese top-N. Se prueba
+    # primero por tag_id (targeted, mismo patrón que fetch_weather_events
+    # con WEATHER_TAG_ID) y solo si eso falla o no devuelve nada se cae al
+    # scan genérico de antes, como respaldo.
+    mlb_tag_id = resolve_mlb_tag_id(client)
+    markets_raw = []
+    fetch_path = "tag_id"
+    if mlb_tag_id is not None:
+        markets_raw = client.fetch_active_markets(limit=scan_limit, extra_params={"tag_id": mlb_tag_id}, timeout=8)
+    if not markets_raw:
+        fetch_path = "scan_generico_respaldo"
+        markets_raw = client.fetch_active_markets(limit=scan_limit, timeout=8)
     if not markets_raw:
         return {"status": "no_markets"}
 
@@ -724,6 +741,8 @@ def run_mlb_cycle():
         "games_today": len(today_games),
         "markets_scanned": scanned,
         "signals_sent": sent,
+        "mlb_market_fetch": fetch_path,
+        "mlb_tag_id": mlb_tag_id,
         "detail": detail,
     }
 
