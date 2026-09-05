@@ -457,6 +457,11 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         "min_ev_threshold": effective_min_ev,
         "confidence_penalty": penalty,
         "confidence": confidence,
+        # AUDITORÍA (05/09/2026, categoría 6): parse_market_for_analysis()
+        # en polymarket_client.py ya arma este link (vía _build_market_url,
+        # slug del evento) y lo deja en market["url"] -- acá se descartaba
+        # sin usarlo, así que build_mlb_memo() nunca podía mostrarlo.
+        "url": market.get("url"),
         "notes": notes,
         "token_id": token_id,
     }
@@ -467,8 +472,21 @@ def build_mlb_memo(signal, markdown=True):
     Mensaje de Telegram para una señal de MLB. Mismo formato que
     build_weather_memo() en weather_signal_engine.py -- decisión explícita
     primero (qué comprar y de qué equipo), edge en puntos porcentuales,
-    EV, tamaño sugerido por ½ Kelly, y las notas del modelo (log5,
-    localía, pitchers, alertas de momentum/liquidez si dispararon).
+    EV, tamaño sugerido por ½ Kelly, link directo al mercado, y las notas
+    del modelo (log5, localía, pitchers, alertas de momentum/liquidez si
+    dispararon) como sección aparte al final.
+
+    AUDITORÍA (05/09/2026): dos problemas del formato anterior:
+    1) Nunca incluía el link al mercado en Polymarket -- generate_mlb_signal()
+       descartaba market["url"] (ya parseado por parse_market_for_analysis(),
+       ver categoría 6) en vez de propagarlo. Sin el fix de ese lado, acá no
+       había nada que mostrar.
+    2) Todo el bloque de números (prob/mercado/edge/EV/umbral) iba en una
+       sola línea larga -- legible en desktop, pero en el celular (donde de
+       hecho se lee esto, es un bot de Telegram) se corta o se ve apretado.
+       Se separa en líneas cortas con su propia etiqueta, y las notas del
+       modelo pasan a una sección con su propio header ("📐 Cómo se armó la
+       probabilidad") en vez de bullets sueltos pegados abajo sin contexto.
     """
     if not signal or signal.get("status") != "ok":
         return None
@@ -483,16 +501,23 @@ def build_mlb_memo(signal, markdown=True):
     ]
     label = f"SEÑAL: COMPRAR \"{signal['direction']}\" — {side_team}"
     lines.append(f"🟢 *{label}*" if markdown else f"🟢 {label}")
-    lines.append(
-        f"   Mi prob: {signal['my_prob']*100:.0f}% | Mercado: {signal['market_price']*100:.1f}¢ | "
-        f"Edge: {edge_pp:+.0f}pp | EV: {signal['ev']*100:+.0f}% (mínimo exigido: {signal['min_ev_threshold']*100:.0f}%)"
-    )
+    lines.append("")
+    lines.append(f"   Mi prob: {signal['my_prob']*100:.0f}%  ·  Mercado: {signal['market_price']*100:.1f}¢")
+    lines.append(f"   Edge: {edge_pp:+.0f}pp  ·  EV: {signal['ev']*100:+.0f}% (mínimo exigido: {signal['min_ev_threshold']*100:.0f}%)")
     kelly = _half_kelly_fraction(signal["my_prob"], signal["market_price"])
     if kelly is not None:
         lines.append(f"   Tamaño sugerido (½ Kelly, informativo): {kelly*100:.1f}% del bankroll")
     lines.append(f"   Confianza: {signal['confidence']}/5 (penalty {signal['confidence_penalty']:.2f})")
-    lines.append("")
-    for note in signal.get("notes", []):
-        lines.append(f"   • {note}")
+
+    if signal.get("url"):
+        lines.append("")
+        link_text = "Ver en Polymarket"
+        lines.append(f"🔗 [{link_text}]({signal['url']})" if markdown else signal["url"])
+
+    if signal.get("notes"):
+        lines.append("")
+        lines.append("📐 *Cómo se armó la probabilidad:*" if markdown else "📐 Cómo se armó la probabilidad:")
+        for note in signal["notes"]:
+            lines.append(f"   • {note}")
 
     return "\n".join(lines)
