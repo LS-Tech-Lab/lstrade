@@ -418,7 +418,20 @@ def _parse_six_hour_max_f(raw_ob):
 
 def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT, time_left_fn=None):
     """Observación en vivo + máxima de 6h de los remarks, tal como pide
-    STEP 1 de la skill (watch the 6-hour max temperature group)."""
+    STEP 1 de la skill (watch the 6-hour max temperature group).
+
+    AUDITORÍA (05/09/2026, regla real de un mercado de LGA): además de
+    `temp_f` (la observación MÁS RECIENTE, sea METAR o SPECI), se agrega
+    `hourly_temp_f` -- la temperatura de la última observación RUTINARIA
+    (METAR, no SPECI) dentro de la ventana consultada. Si la más reciente
+    es un SPECI con un pico, `temp_f` puede reflejar algo que nunca
+    aparece en la tabla "Hourly Data" que cita la regla de settlement de
+    LGA; `hourly_temp_f` sí es comparable a esa tabla. Ver también la nota
+    sobre `six_hr_max_f` en estimate_adjusted_high: ese valor lo calcula
+    ASOS internamente por muestreo continuo (no solo de las observaciones
+    transmitidas), así que puede superar incluso a un SPECI real -- no hay
+    forma de "filtrarlo" a solo-horario como con rawMessage, por eso se
+    dejó de usar como referencia de settlement (ver más abajo)."""
     try:
         headers = _headers(config)
         resp = requests.get(
@@ -432,8 +445,23 @@ def fetch_metar(icao, config, hours=3, timeout=DEFAULT_TIMEOUT, time_left_fn=Non
             return None
         latest = obs[0]
         temp_c = latest.get("temp")
+        raw_latest = (latest.get("rawOb") or "")
+        is_latest_speci = raw_latest.strip().upper().startswith("SPECI")
+
+        hourly_temp_f = None
+        for ob in obs:
+            raw = (ob.get("rawOb") or "").strip().upper()
+            if raw.startswith("SPECI"):
+                continue
+            t_c = ob.get("temp")
+            if t_c is not None:
+                hourly_temp_f = t_c * 9 / 5 + 32
+                break  # obs viene ordenado más reciente primero
+
         return {
             "temp_f": (temp_c * 9 / 5 + 32) if temp_c is not None else None,
+            "hourly_temp_f": hourly_temp_f,
+            "is_latest_speci": is_latest_speci,
             "obs_time": latest.get("obsTime") or latest.get("reportTime"),
             "raw": latest.get("rawOb"),
             "six_hr_max_f": _parse_six_hour_max_f(latest.get("rawOb", "")),
@@ -556,16 +584,34 @@ def estimate_adjusted_high(nws, metar, taf, station, station_max=None):
     hour = _station_local_hour(station)
 
     offset = _expected_offset_from_high(hour)
-    current = metar.get("temp_f") if metar else None
+    # AUDITORÍA (05/09/2026, regla real de un mercado de LGA): la referencia
+    # de trayectoria usa `hourly_temp_f` (última observación RUTINARIA) en
+    # vez de `temp_f` (última observación, sea METAR o SPECI) -- si la más
+    # reciente es un SPECI con un pico, ese pico puede no aparecer nunca en
+    # la tabla "Hourly Data" que cita el settlement. `six_hr_max_f` queda
+    # afuera del cálculo de `reference` a propósito: ese valor lo computa
+    # ASOS internamente por muestreo continuo de todo el período de 6h, no
+    # solo de las observaciones transmitidas -- puede superar incluso a un
+    # SPECI real, así que no hay forma de "filtrarlo" a solo-horario como
+    # con rawMessage, y usarlo como referencia de settlement sobreestimaría
+    # sistemáticamente. Se deja como nota informativa cuando difiere fuerte
+    # de la referencia usada, por si la regla de un mercado puntual dijera
+    # "todas las lecturas" en vez de horarias.
+    hourly_current = metar.get("hourly_temp_f") if metar else None
     six_hr_max = metar.get("six_hr_max_f") if metar else None
     station_max_f = station_max.get("max_so_far_f") if station_max else None
-    candidates = [c for c in (current, six_hr_max, station_max_f) if c is not None]
+    candidates = [c for c in (hourly_current, station_max_f) if c is not None]
+    if metar and metar.get("is_latest_speci") and hourly_current is None:
+        penalty += 0.1
+        notes.append("La última observación es un SPECI y no se encontró ninguna lectura METAR rutinaria en la ventana consultada — no se pudo confirmar la trayectoria contra una referencia comparable al settlement.")
     if candidates and offset is not None:
         reference = max(candidates)
-        if station_max_f is not None and station_max_f == reference and station_max_f != current:
+        if station_max_f is not None and station_max_f == reference and station_max_f != hourly_current:
             dropped = station_max.get("n_speci_dropped", 0)
             dropped_note = f", se descartaron {dropped} SPECI" if dropped else ""
-            notes.append(f"Máximo real de hoy según observaciones NWS: {station_max_f:.1f}°F (de {station_max.get('n_obs')} obs horarias{dropped_note}) — más alto que la lectura METAR puntual, se usó como referencia.")
+            notes.append(f"Máximo real de hoy según observaciones NWS: {station_max_f:.1f}°F (de {station_max.get('n_obs')} obs horarias{dropped_note}) — más alto que la lectura METAR horaria puntual, se usó como referencia.")
+        if six_hr_max is not None and six_hr_max > reference + 0.5:
+            notes.append(f"Aviso: el grupo de 6h de ASOS marca {six_hr_max:.1f}°F, más alto que la referencia horaria usada ({reference:.1f}°F) — probablemente un pico interno que no llegó a un reporte transmitido; no se usó para no sobreestimar contra un settlement de 'Hourly Data', pero revisar si la regla del mercado puntual dijera otra cosa.")
         expected_at_this_hour = base - offset
         delta = reference - expected_at_this_hour
         if abs(delta) >= 2:
