@@ -52,6 +52,7 @@ from mlb_signal_engine import (
     resolve_mlb_tag_id,
     generate_mlb_signal,
     build_mlb_memo,
+    current_mlb_date,
 )
 
 app = FastAPI()
@@ -646,7 +647,13 @@ def run_mlb_cycle():
 
     open_condition_ids = {s["condition_id"] for s in db.get_open_mlb_signals()}
 
-    today_games = fetch_probable_pitchers_for_date(time.strftime("%Y-%m-%d"))
+    # AUDITORÍA (05/09/2026): ver comentario de current_mlb_date() en
+    # mlb_signal_engine.py -- time.strftime() usa la hora del servidor
+    # (UTC en Vercel), que durante el horario pico de partidos de MLB
+    # (7-10pm ET) ya está en el día calendario siguiente respecto a
+    # Eastern, y pedía el schedule del día equivocado.
+    mlb_date = current_mlb_date()
+    today_games = fetch_probable_pitchers_for_date(mlb_date)
     if not today_games:
         return {"status": "no_games_today"}
 
@@ -706,7 +713,7 @@ def run_mlb_cycle():
                 price_history = client.fetch_price_history(market["yes_token_id"], interval="1d", fidelity=60)
             signal = generate_mlb_signal(
                 market, min_ev=getattr(config, "MLB_MIN_EV", 0.05),
-                season=time.strftime("%Y"), today_games=today_games,
+                season=mlb_date[:4], today_games=today_games,
                 price_history=price_history,
             )
         except Exception as e:
