@@ -88,7 +88,16 @@ STATION_MAP = {
                  "Central Park, que no tiene METAR/TAF propio en vivo. Se usa "
                  "KLGA como proxy de observación — CONFIRMAR la estación real "
                  "en las reglas del mercado antes de operar; puede diferir "
-                 "varios grados de Central Park algunos días."),
+                 "varios grados de Central Park algunos días. CONFIRMADO "
+                 "05/09/2026 en un mercado real de KLGA: la regla cita "
+                 "weather.gov/wrh/timeseries?site=klga, liquida por el botón "
+                 "'Show Hourly Data' (SOLO reportes METAR rutinarios en "
+                 "punto, no SPECI), usa Weather Underground Daily "
+                 "Observations como fallback si no hay dato de NOAA antes de "
+                 "las 11:59pm ET del día siguiente, y resuelve al bracket "
+                 "más bajo si no hay dato de ninguna fuente para esa hora "
+                 "límite. Esta regla puede no ser la misma para todos los "
+                 "mercados de NYC -- revisar cada uno."),
     },
     "nyc": {  # alias
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
@@ -326,7 +335,7 @@ def fetch_nws_guidance(station, config, timeout=DEFAULT_TIMEOUT, time_left_fn=No
         return None
 
 
-def fetch_station_max_today(icao, station, config, target_date=None, timeout=DEFAULT_TIMEOUT, time_left_fn=None):
+def fetch_station_max_today(icao, station, config, target_date=None, timeout=DEFAULT_TIMEOUT, time_left_fn=None, hourly_only=True):
     """Máximo real observado en lo que va del día local de la estación,
     calculado sobre la serie completa de observaciones de
     api.weather.gov/stations/{id}/observations, en vez de depender del
@@ -341,7 +350,20 @@ def fetch_station_max_today(icao, station, config, target_date=None, timeout=DEF
     para estaciones de la Región Oeste aunque cargue para otras. Un
     ingeniero de NWS confirmó en el repo público de api.weather.gov que
     para esto corresponde usar este mismo endpoint (/stations/{id}/observations),
-    que además ya es el mismo dominio que usa fetch_nws_guidance."""
+    que además ya es el mismo dominio que usa fetch_nws_guidance.
+
+    AUDITORÍA (05/09/2026, regla real de un mercado de LGA): la regla de
+    resolución de Polymarket para KLGA cita textualmente esa misma página
+    de weather.gov/wrh/timeseries pero aclara que liquida sobre el botón
+    'Show Hourly Data' -- es decir, SOLO los reportes METAR rutinarios en
+    punto, no cada SPECI (reporte especial que ASOS emite entre horas ante
+    un cambio significativo, incluido un pico de temperatura). Si no se
+    filtra, este máximo puede quedar más alto que el que realmente cuenta
+    para el settlement, sesgando el modelo hacia arriba -- coherente con
+    el patrón de sobreconfianza detectado en el historial de trades
+    (~23% de prob. promedio vs. ~10% de acierto real). Por default
+    (`hourly_only=True`) se descartan los SPECI: un rawMessage de METAR
+    empieza con 'METAR', uno de reporte especial con 'SPECI'."""
     try:
         tz = ZoneInfo(station["tz"])
         target_date = target_date or datetime.now(tz).date()
@@ -360,13 +382,21 @@ def fetch_station_max_today(icao, station, config, target_date=None, timeout=DEF
         resp.raise_for_status()
         features = resp.json().get("features", [])
         temps_f = []
+        n_speci_dropped = 0
         for feat in features:
-            val_c = ((feat.get("properties") or {}).get("temperature") or {}).get("value")
-            if val_c is not None:
-                temps_f.append(val_c * 9 / 5 + 32)
+            props = feat.get("properties") or {}
+            val_c = (props.get("temperature") or {}).get("value")
+            if val_c is None:
+                continue
+            if hourly_only:
+                raw = (props.get("rawMessage") or "").strip().upper()
+                if raw.startswith("SPECI"):
+                    n_speci_dropped += 1
+                    continue
+            temps_f.append(val_c * 9 / 5 + 32)
         if not temps_f:
             return None
-        return {"max_so_far_f": round(max(temps_f), 1), "n_obs": len(temps_f)}
+        return {"max_so_far_f": round(max(temps_f), 1), "n_obs": len(temps_f), "n_speci_dropped": n_speci_dropped}
     except Exception as e:
         log.warning(f"Observaciones NWS fallaron para {icao}: {e}")
         return None
@@ -533,7 +563,9 @@ def estimate_adjusted_high(nws, metar, taf, station, station_max=None):
     if candidates and offset is not None:
         reference = max(candidates)
         if station_max_f is not None and station_max_f == reference and station_max_f != current:
-            notes.append(f"Máximo real de hoy según observaciones NWS: {station_max_f:.1f}°F (de {station_max.get('n_obs')} obs) — más alto que la lectura METAR puntual, se usó como referencia.")
+            dropped = station_max.get("n_speci_dropped", 0)
+            dropped_note = f", se descartaron {dropped} SPECI" if dropped else ""
+            notes.append(f"Máximo real de hoy según observaciones NWS: {station_max_f:.1f}°F (de {station_max.get('n_obs')} obs horarias{dropped_note}) — más alto que la lectura METAR puntual, se usó como referencia.")
         expected_at_this_hour = base - offset
         delta = reference - expected_at_this_hour
         if abs(delta) >= 2:
