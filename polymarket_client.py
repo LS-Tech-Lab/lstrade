@@ -35,6 +35,24 @@ class PolymarketClient:
             "Accept": "application/json"
         })
 
+    def resolve_tag_id(self, slug, timeout=8):
+        """Resuelve el id numérico de un tag de Gamma por su slug (ej.
+        'mlb', 'nba') -- mismo espíritu que WEATHER_TAG_ID de arriba, pero
+        resuelto en vivo contra /tags/slug/{slug} en vez de hardcodeado.
+        WEATHER_TAG_ID se pudo hardcodear porque alguien lo confirmó a
+        mano contra una respuesta real de la API (ver comentario arriba);
+        para MLB (y cualquier liga nueva) no hay esa confirmación todavía,
+        así que se resuelve acá y el caller lo cachea (ver
+        resolve_mlb_tag_id en mlb_signal_engine.py) para no pagar esta
+        request en cada ciclo."""
+        try:
+            resp = self.session.get(f"{GAMMA_API}/tags/slug/{slug}", timeout=timeout)
+            resp.raise_for_status()
+            return resp.json().get("id")
+        except Exception as e:
+            log.warning(f"No se pudo resolver tag_id para slug={slug}: {e}")
+            return None
+
     def fetch_active_markets(self, limit=50, offset=0, closed=False, active=None, extra_params=None, timeout=15):
         """
         `active` se ajusta automáticamente según `closed` si no se pasa
