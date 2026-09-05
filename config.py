@@ -151,10 +151,17 @@ class Config:
     # duplica exposición direccional a BTC/ETH sin agregar una fuente de
     # edge distinta. Se excluye por solapamiento de exposición, no porque
     # el corte de resultados ya la muestre negativa.
+    # "Clima" excluida (04/09/2026): backtest histórico mostró 25% de win
+    # rate y -6.46R en 16 trades para esta categoría en el motor GENÉRICO
+    # (ineficiencia de precio + momentum, polymarket_signal_engine.py) --
+    # la peor de todas las categorías medidas. Es una vía completamente
+    # aparte del módulo dedicado de clima (weather_signal_engine.py, que
+    # usa pronóstico NWS/METAR/TAF); esa exclusión no le pega, esa función
+    # nunca importa categorize() ni esta lista.
     POLYMARKET_EXCLUDED_CATEGORIES = [
         c.strip() for c in os.getenv(
             "POLYMARKET_EXCLUDED_CATEGORIES",
-            "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar,Cripto — objetivo de precio",
+            "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar,Cripto — objetivo de precio,Clima",
         ).split(",") if c.strip()
     ]
 
@@ -179,7 +186,7 @@ class Config:
     # endurecimiento de los umbrales primarios en polymarket_signal_engine.py
     # (ver ese archivo), para que pasen menos señales pero con ineficiencia o
     # momentum genuinamente más fuertes que el ruido típico del book.
-    POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 5)
+    POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 4)
 
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
     # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
