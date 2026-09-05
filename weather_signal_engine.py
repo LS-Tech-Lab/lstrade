@@ -82,27 +82,23 @@ STATION_MAP = {
     },
     "new york": {
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA) — proxy de Central Park",
-        "verified": False,
-        "note": ("Muchos mercados de 'NYC' asientan sobre el CLI report de "
-                 "Central Park, que no tiene METAR/TAF propio en vivo. Se usa "
-                 "KLGA como proxy de observación — CONFIRMAR la estación real "
-                 "en las reglas del mercado antes de operar; puede diferir "
-                 "varios grados de Central Park algunos días. CONFIRMADO "
-                 "05/09/2026 en un mercado real de KLGA: la regla cita "
-                 "weather.gov/wrh/timeseries?site=klga, liquida por el botón "
-                 "'Show Hourly Data' (SOLO reportes METAR rutinarios en "
-                 "punto, no SPECI), usa Weather Underground Daily "
-                 "Observations como fallback si no hay dato de NOAA antes de "
-                 "las 11:59pm ET del día siguiente, y resuelve al bracket "
-                 "más bajo si no hay dato de ninguna fuente para esa hora "
-                 "límite. Esta regla puede no ser la misma para todos los "
-                 "mercados de NYC -- revisar cada uno."),
+        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
+        "verified": True,
+        "note": ("CONFIRMADO 05/09/2026 en un mercado real de NYC: la regla "
+                 "de resolución cita weather.gov/wrh/timeseries?site=klga, "
+                 "liquida por el botón 'Show Hourly Data' (SOLO reportes "
+                 "METAR rutinarios en punto, no SPECI), usa Weather "
+                 "Underground Daily Observations como fallback si no hay "
+                 "dato de NOAA antes de las 11:59pm ET del día siguiente, y "
+                 "resuelve al bracket más bajo si no hay dato de ninguna "
+                 "fuente para esa hora límite. Muestra n=1 -- si aparece un "
+                 "mercado de NYC con texto de regla distinto, revisar de "
+                 "nuevo antes de asumir que aplica la misma."),
     },
     "nyc": {  # alias
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA) — proxy de Central Park",
-        "verified": False,
+        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
+        "verified": True,
         "note": "Ver nota de 'new york'.",
     },
     "chicago": {
@@ -791,9 +787,16 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     # Telegram (verified_flag en build_weather_memo) pero elegía best_trade
     # exactamente igual que con una estación verificada -- la advertencia
     # nunca cambiaba si el bot realmente operaba o no. Se exige el doble de
-    # EV para calificar cuando la estación es un proxy sin confirmar (ej.
-    # KLGA por NYC/Central Park), en vez de dejar que compita en igualdad
-    # de condiciones con estaciones confirmadas.
+    # EV para calificar cuando la estación es un proxy sin confirmar contra
+    # las reglas reales de un mercado, en vez de dejar que compita en
+    # igualdad de condiciones con estaciones confirmadas.
+    #
+    # AUDITORÍA (05/09/2026): KLGA/NYC pasó de sin confirmar a verified:True
+    # -- se confirmó contra la regla real de un mercado de Polymarket que
+    # asienta sobre KLGA vía "Hourly Data" (ver nota en STATION_MAP). Ya no
+    # es el ejemplo de estación-proxy-sin-confirmar; queda como ejemplo de
+    # ese caso cualquier ciudad que se agregue a STATION_MAP sin haber
+    # revisado antes la regla de resolución de un mercado real.
     effective_min_ev = min_ev if station.get("verified", False) else max(min_ev * 2, min_ev + 0.15)
     min_liquidity = getattr(config, "WEATHER_MIN_LIQUIDITY", 200.0)
     max_ev = getattr(config, "WEATHER_MAX_EV", 3.0)
