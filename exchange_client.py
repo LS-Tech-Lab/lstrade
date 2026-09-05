@@ -57,7 +57,43 @@ class ExchangeClient:
             return equity
         return sum(v for v in total.values() if isinstance(v, (int, float)))
 
+    # AUDITORÍA (05/09/2026, categoría 12): create_order() y
+    # create_stop_order() mandaban `amount`/`price`/`stopPrice` como floats
+    # crudos calculados por risk_manager/trade_planner (division de
+    # equity*risk_pct / stop_distance, aritmética de punto flotante común),
+    # sin pasar por el redondeo de precisión real del exchange (tick size /
+    # lot size de OKX para ese símbolo puntual). ccxt expone
+    # amount_to_precision()/price_to_precision() justamente para esto --
+    # sin ellos, cualquier orden cuyo amount/price tenga más decimales de
+    # los que el par admite (ej. 0.123456789 BTC en un par que solo acepta
+    # 6 decimales) puede ser rechazada por el exchange, o -- peor, según
+    # cómo cada exchange trunque internamente -- ejecutada con un tamaño
+    # ligeramente distinto al calculado por el motor de riesgo, sin que
+    # nada en el bot se entere de la diferencia. No mordió todavía porque
+    # LIVE_TRADING está en false (modo papel) desde que se configuró el
+    # bot, pero es el primer punto a romper apenas se pase a operar real.
+    # _to_precision() dispara load_markets() la primera vez si hace falta
+    # (cacheado por ccxt de ahí en más), así que no agrega una llamada de
+    # red extra en ciclos posteriores del mismo proceso.
+    def _fmt_amount(self, symbol, amount):
+        try:
+            return float(self.exchange.amount_to_precision(symbol, amount))
+        except Exception as e:
+            log.warning(f"No se pudo aplicar precisión de amount para {symbol} ({e}); se usa el valor crudo {amount}.")
+            return amount
+
+    def _fmt_price(self, symbol, price):
+        if price is None:
+            return None
+        try:
+            return float(self.exchange.price_to_precision(symbol, price))
+        except Exception as e:
+            log.warning(f"No se pudo aplicar precisión de price para {symbol} ({e}); se usa el valor crudo {price}.")
+            return price
+
     def create_order(self, symbol, side, amount, order_type="market", price=None):
+        amount = self._fmt_amount(symbol, amount)
+        price = self._fmt_price(symbol, price)
         log.warning(f"[ORDEN REAL] {side.upper()} {amount} {symbol} ({order_type})")
         if order_type == "market":
             return self.exchange.create_order(symbol, "market", side, amount)
@@ -65,6 +101,8 @@ class ExchangeClient:
             return self.exchange.create_order(symbol, order_type, side, amount, price)
 
     def create_stop_order(self, symbol, side, amount, stop_price):
+        amount = self._fmt_amount(symbol, amount)
+        stop_price = self._fmt_price(symbol, stop_price)
         log.info(f"[STOP ORDER] {side.upper()} {amount} {symbol} @ stop {stop_price}")
         return self.exchange.create_order(symbol, "stop_loss", side, amount, None, {"stopPrice": stop_price})
 
