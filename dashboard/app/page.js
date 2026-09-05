@@ -20,7 +20,8 @@ const GLOSSARY = [
   [ "Mi probabilidad", "Qué probabilidad le calcula el modelo del bot a que un bucket de temperatura ocurra, en base a los pronósticos (NWS, METAR, TAF) de la estación. Se compara contra el precio de mercado para ver si hay ventaja." ],
   [ "EV (valor esperado)", "La ventaja que ve el bot entre su probabilidad estimada y el precio de mercado, antes de tomar la señal. EV +15% significa que el bot cree que el mercado está subvalorando ese resultado en un 15%." ],
   [ "Retorno promedio (clima)", "Ganancia o pérdida promedio por señal de clima resuelta, si se hubiera apostado $1 a 'SI' al precio de mercado del momento. -100% significa perder toda la apuesta." ],
-  [ "Brier score", "Qué tan calibrada estuvo la probabilidad del modelo contra lo que realmente pasó, en cada señal de clima resuelta. 0 = predicciones perfectas, 0.25 = tan bueno como tirar una moneda, 1 = siempre confiado y siempre equivocado." ],
+  [ "Brier score", "Qué tan calibrada estuvo la probabilidad del modelo contra lo que realmente pasó, en cada señal resuelta (clima o MLB). 0 = predicciones perfectas, 0.25 = tan bueno como tirar una moneda, 1 = siempre confiado y siempre equivocado." ],
+  [ "Retorno promedio (MLB)", "Ganancia o pérdida promedio por señal de MLB resuelta, si se hubiera apostado $1 al lado (equipo) que eligió el modelo, al precio de mercado del momento. -100% significa que ese equipo perdió." ],
   [ "R-múltiple", "Cuántas veces el riesgo inicial se ganó o perdió. +1.5R significa que se ganó 1.5 veces lo que se arriesgó. -1R significa que se perdió todo el riesgo." ]
 ];
 
@@ -284,6 +285,9 @@ function Tabs({ active, onChange }) {
       </button>
       <button className={`tab ${active === "clima" ? "active" : ""}`} onClick={() => onChange("clima")}>
         Clima
+      </button>
+      <button className={`tab ${active === "mlb" ? "active" : ""}`} onClick={() => onChange("mlb")}>
+        MLB
       </button>
     </div>
   );
@@ -803,6 +807,139 @@ function WeatherTab({ data }) {
   );
 }
 
+// NUEVO (04/09/2026): mismo patrón que Clima -- mlb_signal_engine.py es el
+// primer draft, todavía sin señales resueltas para calibrar HOME_FIELD_EDGE
+// ni PITCHER_ERA_SCALE (ver AUDITORÍA en config.py). Este tab existe para
+// poder ir revisando a ojo lo que el motor manda antes de confiar en él.
+function mlbReturnPct(row) {
+  if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
+  return row.outcome === "win" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+}
+
+function MlbStatsRow({ stats }) {
+  if (!stats || stats.n === 0) {
+    return (
+      <div className="card">
+        <h2>Performance — MLB (señales resueltas)</h2>
+        <p className="empty">Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real.</p>
+      </div>
+    );
+  }
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
+  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
+  return (
+    <div className="card">
+      <h2>Performance — MLB (señales resueltas)</h2>
+      <p className="card-subtitle">Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal.</p>
+      <div className="stats-grid">
+        <StatCard label="Señales resueltas" value={stats.n} />
+        <StatCard label="Acertadas" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone} barPct={stats.win_rate}
+          info="Porcentaje de veces que el equipo/lado elegido por el modelo efectivamente ganó." />
+        <StatCard label="Retorno promedio" value={stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null}
+          suffix="%" tone={retTone} info={GLOSSARY.find(([k]) => k === "Retorno promedio (MLB)")[1]} />
+        <StatCard label="Brier score" value={stats.brier_score !== null ? stats.brier_score.toFixed(3) : null} tone={brierTone}
+          info={GLOSSARY.find(([k]) => k === "Brier score")[1]} />
+      </div>
+    </div>
+  );
+}
+
+function MlbOpenTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Sin señales de MLB abiertas ahora mismo.</p>;
+  }
+  return (
+    <TableScroll>
+      <table>
+        <thead>
+          <tr>
+            <th>Partido</th>
+            <th>Lado</th>
+            <th>Mi prob.</th>
+            <th>Precio mkt</th>
+            <th>EV</th>
+            <th>Confianza</th>
+            <th>Enviada</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td data-label="Partido">{r.away_team} @ {r.home_team}</td>
+              <td data-label="Lado">{r.direction === "YES" ? r.home_team : r.away_team}</td>
+              <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
+              <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
+              <td data-label="EV" className={r.ev >= 0 ? "ok" : "fail"}>{r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"}</td>
+              <td data-label="Confianza">{r.confidence !== null && r.confidence !== undefined ? `${r.confidence}/5` : "—"}</td>
+              <td data-label="Enviada">{parseTs(r.ts_signaled).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableScroll>
+  );
+}
+
+function MlbResolvedTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Todavía no hay señales de MLB resueltas.</p>;
+  }
+  return (
+    <TableScroll>
+      <table>
+        <thead>
+          <tr>
+            <th>Partido</th>
+            <th>Lado</th>
+            <th>Mi prob.</th>
+            <th>Precio mkt</th>
+            <th>Resultado</th>
+            <th>Retorno</th>
+            <th>Resuelta</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const ret = mlbReturnPct(r);
+            const sideTeam = r.direction === "YES" ? r.home_team : r.away_team;
+            return (
+              <tr key={r.id}>
+                <td data-label="Partido">{r.away_team} @ {r.home_team}</td>
+                <td data-label="Lado">{sideTeam}</td>
+                <td data-label="Mi prob.">{r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"}</td>
+                <td data-label="Precio mkt">{r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"}</td>
+                <td data-label="Resultado" className={r.outcome === "win" ? "ok" : "fail"}>{r.outcome === "win" ? `GANÓ (${sideTeam})` : `PERDIÓ (${sideTeam})`}</td>
+                <td data-label="Retorno" className={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}>{ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"}</td>
+                <td data-label="Resuelta">{r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </TableScroll>
+  );
+}
+
+function MlbTab({ data }) {
+  return (
+    <>
+      <PlainSummary halted={false} stats={data.mlb_stats} label="MLB" />
+      <MlbStatsRow stats={data.mlb_stats} />
+      <div className="card">
+        <h2>Señales abiertas ({data.mlb_open?.length || 0})</h2>
+        <p className="card-subtitle">Partidos de hoy donde el modelo (log5 + localía + pitchers probables) encontró ventaja contra el precio de Polymarket.</p>
+        <MlbOpenTable rows={data.mlb_open} />
+      </div>
+      <div className="card">
+        <h2>Historial reciente</h2>
+        <MlbResolvedTable rows={data.mlb_resolved} />
+      </div>
+      <Glossary />
+    </>
+  );
+}
+
 function Glossary() {
   return (
     <details className="glossary card">
@@ -961,6 +1098,8 @@ const SECTION_LABELS = {
   indicators: "indicadores técnicos",
   weather_open: "señales de clima abiertas",
   weather_resolved: "historial de clima",
+  mlb_open: "señales de MLB abiertas",
+  mlb_resolved: "historial de MLB",
 };
 
 export default function Dashboard() {
@@ -1058,6 +1197,7 @@ export default function Dashboard() {
       {tab === "cripto" && <CriptoTab data={data} />}
       {tab === "polymarket" && <PolymarketTab data={data} />}
       {tab === "clima" && <WeatherTab data={data} />}
+      {tab === "mlb" && <MlbTab data={data} />}
     </div>
   );
 }

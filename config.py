@@ -281,6 +281,18 @@ class Config:
     # oportunidad del ciclo.
     MAX_WEATHER_SIGNALS_PER_CYCLE = _int("MAX_WEATHER_SIGNALS_PER_CYCLE", 2)
 
+    # Motor de MLB (04/09/2026, primer draft -- ver mlb_signal_engine.py).
+    # MLB_MIN_EV en 0.05 (mucho más bajo que WEATHER_MIN_EV=0.15) a
+    # propósito: todavía no hay ninguna señal resuelta para saber si el
+    # modelo (log5 + localía + ERA de pitchers) está bien calibrado, así
+    # que se arranca permisivo para juntar datos rápido y, después de un
+    # puñado de semanas de señales resueltas, subir esto según lo que diga
+    # el backtest -- mismo camino que ya se recorrió con WEATHER_BASE_SIGMA_F.
+    MLB_ANALYSIS_ENABLED = _bool("MLB_ANALYSIS_ENABLED", True)
+    MLB_MIN_EV = _float("MLB_MIN_EV", 0.05)
+    MLB_MIN_CONFIDENCE = _int("MLB_MIN_CONFIDENCE", 2)
+    MAX_MLB_SIGNALS_PER_CYCLE = _int("MAX_MLB_SIGNALS_PER_CYCLE", 3)
+
     # AUDITORÍA (04/09/2026, tras 20 señales cerradas con 15% de aciertos):
     # best_trade se elegía con yes_price de Gamma (outcomePrices), que es el
     # ÚLTIMO PRECIO OPERADO, no el ask real -- en un bucket barato e ilíquido

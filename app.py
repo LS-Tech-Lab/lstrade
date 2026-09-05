@@ -4,10 +4,10 @@ Entrypoint único de Vercel Functions (Python runtime 2026+).
 Vercel ya no soporta un archivo = una función por cada módulo dentro de
 `api/`; construye una sola Vercel Function a partir de UN entrypoint
 Python en la raíz (`app.py`, `index.py`, `main.py`, etc.) que exponga
-una variable `app` (ASGI/WSGI). Por eso los 9 endpoints — cycle,
+una variable `app` (ASGI/WSGI). Por eso los 10 endpoints — cycle,
 manage_positions, polymarket_cycle, polymarket_resolve, polymarket_history,
-weather_cycle, weather_track_results, reset_halt y telegram_webhook —
-viven todos acá en una sola app FastAPI. (`polymarket_track_results`
+weather_cycle, weather_track_results, mlb_cycle, reset_halt y
+telegram_webhook — viven todos acá en una sola app FastAPI. (`polymarket_track_results`
 existió como alias de `polymarket_resolve` hasta el 03/09/2026 — se
 eliminó porque cron-job.org lo tenía dado de alta como job separado,
 disparando casi al mismo segundo que `polymarket_resolve` y duplicando
@@ -45,6 +45,12 @@ from weather_signal_engine import (
     build_weather_memo,
     resolve_station,
     WeatherNotifyStateStore,
+)
+from mlb_signal_engine import (
+    fetch_probable_pitchers_for_date,
+    resolve_team_id,
+    generate_mlb_signal,
+    build_mlb_memo,
 )
 
 app = FastAPI()
@@ -602,6 +608,144 @@ async def weather_cycle_get(request: Request):
 @app.post("/api/weather_cycle")
 async def weather_cycle_post(request: Request):
     return await _weather_cycle_endpoint(request)
+
+
+def run_mlb_cycle():
+    """
+    Ciclo de MLB: escanea mercados activos de Polymarket, se queda con los
+    que resolve_team_id() reconoce como moneyline de MLB (dos equipos
+    válidos en yes_label/no_label), y les corre generate_mlb_signal().
+
+    Mismo patrón de dedupe que run_weather_cycle(): un condition_id ya
+    abierto no se vuelve a insertar en mlb_signals aunque vuelva a
+    aparecer en el scan (el envío de Telegram si acaso sí se repite --
+    ver AUDITORÍA de should_notify en el flujo de clima; acá todavía no
+    hay ese reenvío por mejora de EV, se agrega si hace falta más adelante).
+
+    NOTA (04/09/2026): mientras este ciclo y el genérico de Polymarket
+    corran los dos, un mercado de MLB puede recibir señal de ambos --
+    todavía no se agregó el salteo en polymarket_main.py a propósito (ver
+    conversación de diseño), para no dejar una ventana sin ninguna señal
+    de MLB mientras esto se prueba. Agregar el salteo una vez que este
+    ciclo esté generando señales razonables.
+    """
+    config = Config
+    if not getattr(config, "MLB_ANALYSIS_ENABLED", True):
+        return {"status": "disabled"}
+
+    started = time.monotonic()
+    time_budget = float(os.environ.get("MLB_TIME_BUDGET_SECONDS", "18.0"))
+
+    def time_left():
+        return time_budget - (time.monotonic() - started)
+
+    db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    client = PolymarketClient(config)
+    notifier = TelegramNotifier(config)
+
+    open_condition_ids = {s["condition_id"] for s in db.get_open_mlb_signals()}
+
+    today_games = fetch_probable_pitchers_for_date(time.strftime("%Y-%m-%d"))
+    if not today_games:
+        return {"status": "no_games_today"}
+
+    scan_limit = int(os.environ.get("MLB_MARKET_SCAN_LIMIT", "150"))
+    markets_raw = client.fetch_active_markets(limit=scan_limit, timeout=8)
+    if not markets_raw:
+        return {"status": "no_markets"}
+
+    max_sent_per_cycle = getattr(config, "MAX_MLB_SIGNALS_PER_CYCLE", 3)
+    min_confidence = getattr(config, "MLB_MIN_CONFIDENCE", 2)
+
+    sent = 0
+    scanned = 0
+    detail = []
+    for market_raw in markets_raw:
+        if time_left() < 1.0:
+            detail.append({"status": "sin_tiempo"})
+            break
+        if sent >= max_sent_per_cycle:
+            detail.append({"status": "tope_de_ciclo_alcanzado"})
+            break
+
+        market = client.parse_market_for_analysis(market_raw)
+        if not market:
+            continue
+
+        # Filtro de "¿esto es MLB?" -- si no matchea dos equipos, no es de
+        # este motor, se lo deja pasar de largo (el genérico lo puede
+        # tomar, si corresponde, sin que este ciclo interfiera).
+        if not resolve_team_id(market.get("yes_label")) or not resolve_team_id(market.get("no_label")):
+            continue
+
+        scanned += 1
+        if market["condition_id"] in open_condition_ids:
+            detail.append({"question": market["question"], "status": "ya_abierta"})
+            continue
+
+        try:
+            price_history = []
+            if market.get("yes_token_id"):
+                price_history = client.fetch_price_history(market["yes_token_id"], interval="1d", fidelity=60)
+            signal = generate_mlb_signal(
+                market, min_ev=getattr(config, "MLB_MIN_EV", 0.05),
+                season=time.strftime("%Y"), today_games=today_games,
+                price_history=price_history,
+            )
+        except Exception as e:
+            detail.append({"question": market.get("question"), "status": "error", "error": str(e)})
+            continue
+
+        if not signal:
+            continue
+        if signal["confidence"] < min_confidence:
+            detail.append({"question": market["question"], "status": "confianza_insuficiente"})
+            continue
+
+        memo = build_mlb_memo(signal)
+        if not memo:
+            continue
+        try:
+            notifier.send_message(memo)
+            db.record_mlb_signal(
+                signal["condition_id"], signal["game_pk"], signal["question"],
+                signal["home_team"], signal["away_team"], signal["direction"],
+                signal["my_prob"], signal["market_price"], signal["ev"],
+                signal["confidence"], signal["confidence_penalty"], signal["token_id"],
+            )
+            open_condition_ids.add(signal["condition_id"])
+            sent += 1
+            detail.append({"question": market["question"], "status": "enviada"})
+        except Exception as e:
+            detail.append({"question": market["question"], "status": "error_registro_o_envio", "error": str(e)})
+
+    return {
+        "status": "ok",
+        "games_today": len(today_games),
+        "markets_scanned": scanned,
+        "signals_sent": sent,
+        "detail": detail,
+    }
+
+
+async def _mlb_cycle_endpoint(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = run_mlb_cycle()
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+@app.get("/api/mlb_cycle")
+async def mlb_cycle_get(request: Request):
+    return await _mlb_cycle_endpoint(request)
+
+@app.post("/api/mlb_cycle")
+async def mlb_cycle_post(request: Request):
+    return await _mlb_cycle_endpoint(request)
 
 # ────────────────────────────────────────────────────────────────────
 # /api/weather_track_results

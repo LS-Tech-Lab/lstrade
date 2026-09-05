@@ -230,6 +230,17 @@ class SupabaseDatabase:
     def resolve_weather_signal(self, signal_id, outcome):
         res = self.client.table("weather_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
         return bool(res.data)
+
+    def record_mlb_signal(self, condition_id, game_pk, question, home_team, away_team, direction,
+                           my_prob, market_price, ev, confidence, confidence_penalty, token_id):
+        self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "ts_signaled": _now_iso()}).execute()
+
+    def get_open_mlb_signals(self):
+        return self.client.table("mlb_signals").select("*").is_("outcome", "null").execute().data or []
+
+    def resolve_mlb_signal(self, signal_id, outcome):
+        res = self.client.table("mlb_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
+        return bool(res.data)
        
     def weather_calibration_summary(self, bucket_size=0.1):
         rows = self.client.table("weather_signals").select("my_prob,outcome").not_.is_("outcome", "null").execute().data or []

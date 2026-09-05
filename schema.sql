@@ -133,6 +133,33 @@ create table if not exists weather_signals (
     ts_resolved timestamptz
 );
 
+-- Motor de MLB (04/09/2026, ver mlb_signal_engine.py). A diferencia de
+-- weather_signals, `outcome` acá NO es "yes"/"no" -- es "win"/"loss" del
+-- LADO QUE SE COMPRÓ (direction/token_id), porque el motor puede tomar
+-- cualquiera de los dos equipos según de qué lado esté el EV, no siempre
+-- el mismo lado fijo como en clima. Ver resolve_mlb_signal() en
+-- supabase_db.py y el comentario equivalente en dashboard/app/page.js.
+create table if not exists mlb_signals (
+    id bigserial primary key,
+    condition_id text not null,
+    game_pk bigint,
+    question text,
+    home_team text,
+    away_team text,
+    direction text,
+    my_prob double precision not null,
+    market_price double precision not null,
+    ev double precision,
+    confidence smallint,
+    confidence_penalty double precision,
+    token_id text,
+    ts_signaled timestamptz not null,
+    outcome text,
+    ts_resolved timestamptz
+);
+
+create index if not exists idx_mlb_signals_resolved on mlb_signals (ts_resolved desc) where outcome is not null;
+
 create table if not exists indicator_snapshots (
     id bigserial primary key,
     symbol text not null,

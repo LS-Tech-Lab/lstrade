@@ -136,6 +136,34 @@ function computeWeatherStats(resolvedSignals) {
   };
 }
 
+// NUEVO: stats de MLB. A diferencia de Clima (que siempre compra "SI" del
+// bucket), mlb_signal_engine.py puede tomar YES o NO según de qué lado
+// esté el EV -- por eso `outcome` acá NO es "yes"/"no" del mercado, es
+// "win"/"loss" del LADO QUE SE COMPRÓ (ver resolve_mlb_signal en
+// supabase_db.py). `market_price` ya es el precio pagado por ese lado
+// puntual, así que la fórmula de retorno (1/precio - 1 si ganó, -100% si
+// perdió) queda igual que en Clima sin necesidad de saber qué equipo era.
+function mlbReturnPct(row) {
+  if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
+  return row.outcome === "win" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+}
+
+function computeMlbStats(resolvedSignals) {
+  const valid = (resolvedSignals || []).filter((r) => r.outcome && r.market_price > 0);
+  if (valid.length === 0) return { n: 0, win_rate: null, avg_return_pct: null, brier_score: null };
+  const wins = valid.filter((r) => r.outcome === "win");
+  const returns = valid.map(mlbReturnPct).filter((r) => r !== null);
+  const brierTerms = valid
+    .filter((r) => r.my_prob !== null && r.my_prob !== undefined)
+    .map((r) => Math.pow(r.my_prob - (r.outcome === "win" ? 1 : 0), 2));
+  return {
+    n: valid.length,
+    win_rate: (wins.length / valid.length) * 100,
+    avg_return_pct: returns.length > 0 ? returns.reduce((s, r) => s + r, 0) / returns.length : null,
+    brier_score: brierTerms.length > 0 ? brierTerms.reduce((s, b) => s + b, 0) / brierTerms.length : null,
+  };
+}
+
 // FIX: las listas de filas "abiertas" (sin resolver todavía) no tenían
 // .limit() — en operación normal son chicas (unas pocas posiciones/señales
 // esperando resolución), pero si el proceso que las resuelve se traba (cron
@@ -166,6 +194,8 @@ export async function GET() {
       indicatorsRes,
       weatherOpenRes,
       weatherResolvedRes,
+      mlbOpenRes,
+      mlbResolvedRes,
     ] = await Promise.all([
       // FIX: antes traía las 200 filas MÁS VIEJAS (ascending + limit sin
       // order by desc primero) — con 600+ filas acumuladas, esa ventana
@@ -194,6 +224,9 @@ export async function GET() {
       // diferencia de Cripto y Polymarket, Clima no tenía ningún tab).
       supabase.from("weather_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
       supabase.from("weather_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
+      // NUEVO: señales de MLB (ver mlb_signal_engine.py / run_mlb_cycle en app.py).
+      supabase.from("mlb_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
+      supabase.from("mlb_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
     ]);
 
     // FIX: antes un fallo puntual en cualquiera de estas 4 (equity_history,
@@ -215,6 +248,8 @@ export async function GET() {
       indicators: indicatorsRes,
       weather_open: weatherOpenRes,
       weather_resolved: weatherResolvedRes,
+      mlb_open: mlbOpenRes,
+      mlb_resolved: mlbResolvedRes,
     };
     const failedSections = Object.entries(namedResults)
       .filter(([, res]) => res.error)
@@ -234,6 +269,7 @@ export async function GET() {
 
     const resolvedSignals = polymarketResolvedRes.error ? [] : (polymarketResolvedRes.data || []);
     const weatherResolved = weatherResolvedRes.error ? [] : (weatherResolvedRes.data || []);
+    const mlbResolved = mlbResolvedRes.error ? [] : (mlbResolvedRes.data || []);
     // "Core" = sin las categorías excluidas (ver EXCLUDED_CATEGORIES) — es
     // lo que se muestra como indicador principal para que una categoría ya
     // identificada como mala no tape el desempeño real del resto.
@@ -268,6 +304,10 @@ export async function GET() {
       weather_resolved: weatherResolved.slice(0, 20),
       weather_stats: weatherResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
         : computeWeatherStats(weatherResolved),
+      mlb_open: mlbOpenRes.error ? [] : (mlbOpenRes.data || []),
+      mlb_resolved: mlbResolved.slice(0, 20),
+      mlb_stats: mlbResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
+        : computeMlbStats(mlbResolved),
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
