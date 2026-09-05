@@ -39,6 +39,8 @@ que se asume acá -- están tomados de documentación de terceros
 import logging
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -51,6 +53,31 @@ MLB_API = "https://statsapi.mlb.com/api/v1"
 DEFAULT_TIMEOUT = 6
 AL_LEAGUE_ID = 103
 NL_LEAGUE_ID = 104
+
+# AUDITORÍA (05/09/2026): MLB define el "día de partido" en huso horario
+# US/Eastern (así lo etiqueta la propia MLB en sus páginas públicas de
+# schedule/lineups -- "All Times Eastern"), no en UTC. El servidor donde
+# corre esto (función serverless de Vercel) usa UTC, que está 4-5 horas
+# adelantado de Eastern según horario de verano. La franja en la que UTC
+# ya cruzó medianoche pero en el Este de EE.UU. todavía es "ayer" es
+# exactamente 20:00-02:00 UTC (h. verano) / 21:00-03:00 UTC (h. invierno)
+# -- es decir, el horario pico de partidos de MLB (7-10pm ET). Antes esto
+# se resolvía con `time.strftime("%Y-%m-%d")` (fecha del servidor, UTC),
+# así que durante esa franja fetch_probable_pitchers_for_date() pedía la
+# fecha de MAÑANA -- typicamente sin partidos programados todavía o con un
+# cruce distinto de equipos -- y generate_mlb_signal() no encontraba el
+# partido real que se estaba jugando en ese momento (devuelve None en
+# "no hay partido HOY entre estos dos equipos"), perdiendo la señal
+# durante buena parte del horario en que más partidos hay en curso.
+MLB_SCHEDULE_TZ = ZoneInfo("America/New_York")
+
+
+def current_mlb_date():
+    """Fecha de "hoy" para efectos de schedule de MLB, en huso horario
+    US/Eastern -- ver AUDITORÍA arriba. Usar esto (no time.strftime) en
+    cualquier lugar que arme la fecha para /schedule o para el `season`
+    por defecto."""
+    return datetime.now(MLB_SCHEDULE_TZ).strftime("%Y-%m-%d")
 
 HOME_FIELD_EDGE = 0.04       # ver AUDITORÍA arriba -- sin calibrar
 PITCHER_ERA_SCALE = 0.10     # cuánta prob. mueve 1.0 de diferencia de ERA -- sin calibrar
@@ -353,7 +380,7 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         return None
 
     if today_games is None:
-        today_games = fetch_probable_pitchers_for_date(time.strftime("%Y-%m-%d"))
+        today_games = fetch_probable_pitchers_for_date(current_mlb_date())
 
     game = next(
         (g for g in today_games if {g["home_id"], g["away_id"]} == {team_yes, team_no}),
@@ -362,7 +389,7 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
     if not game:
         return None  # no hay partido HOY entre estos dos equipos
 
-    season = season or time.strftime("%Y")
+    season = season or current_mlb_date()[:4]
     prob_home, notes, penalty = estimate_win_probability(
         game["home_id"], game["away_id"], game["home_pitcher_id"], game["away_pitcher_id"], season,
     )
