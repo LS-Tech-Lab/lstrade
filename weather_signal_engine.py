@@ -423,13 +423,40 @@ def _expected_offset_from_high(hour):
     return None      # noche — la trayectoria del día ya no es informativa
 
 
+def _hour_sigma_multiplier(hour):
+    """Cuánto ensanchar sigma según qué tan madura está la trayectoria
+    intradía a esta hora -- referido a la CONFIANZA en el centro estimado
+    (a diferencia de _expected_offset_from_high, que dice cuánto falta
+    para la máxima). Temprano no hay trayectoria real que confirme el
+    pronóstico de NWS -> más ancho. Cerca del pico, el METAR ya casi
+    confirma la máxima -> más angosto. De noche, sin trayectoria del día
+    siguiente, se vuelve a ensanchar (mismo caso que 'hour is None')."""
+    if hour is None or hour < 9 or hour > 18:
+        return 1.6
+    if hour < 12:
+        return 1.35
+    if hour < 15:
+        return 1.1
+    return 0.85  # 15-18h: ventana de pico, trayectoria ya casi confirma
+
+
 def estimate_adjusted_high(nws, metar, taf, station):
     """Parte de la guía de NWS como centro de masa y ajusta con la
     trayectoria matutina (METAR vs. lo esperado a esta hora) y el timing de
     tormenta (TAF) — mismo criterio que STEP 2 de la skill. Devuelve
-    (estimación_f, notas[], penalización_de_confianza)."""
+    (estimación_f, notas[], penalización_de_confianza, ensanche_situacional_f,
+    hora_local).
+
+    `ensanche_situacional_f` es un ensanche ADITIVO (en °F) para sigma,
+    separado de `penalización_de_confianza` (que es multiplicativo y solo
+    refleja fuentes faltantes / fecha no confirmada). Sube cuando la
+    trayectoria real discrepa fuerte del pronóstico (mayor discrepancia =
+    menos seguro de dónde está el centro, no solo "corrijo el centro") y
+    cuando el TAF anticipa tormenta (mayor incertidumbre sobre magnitud y
+    timing del enfriamiento, más allá del ajuste ya aplicado al centro)."""
     notes = []
     penalty = 0.0
+    extra_widen = 0.0
     base = nws["forecast_high_f"] if nws and nws.get("forecast_high_f") is not None else None
 
     if base is None and metar and metar.get("temp_f") is not None:
@@ -438,7 +465,7 @@ def estimate_adjusted_high(nws, metar, taf, station):
         penalty += 0.3
 
     if base is None:
-        return None, ["Sin ninguna fuente de guía disponible."], 1.0
+        return None, ["Sin ninguna fuente de guía disponible."], 1.0, 0.0, None
 
     adjustment = 0.0
     hour = _station_local_hour(station)
@@ -452,11 +479,13 @@ def estimate_adjusted_high(nws, metar, taf, station):
         delta = reference - expected_at_this_hour
         if abs(delta) >= 2:
             adjustment += max(-3.0, min(3.0, delta * 0.4))
-            notes.append(f"Trayectoria del día {delta:+.1f}°F vs. lo esperado a las {hour}h — ajuste {adjustment:+.1f}°F.")
+            extra_widen += min(abs(delta) * 0.15, 1.0)
+            notes.append(f"Trayectoria del día {delta:+.1f}°F vs. lo esperado a las {hour}h — ajuste {adjustment:+.1f}°F, sigma +{min(abs(delta) * 0.15, 1.0):.2f}°F por la discrepancia.")
 
     if taf and taf.get("storm_signal") and hour < 16:
         adjustment -= 1.5
-        notes.append("TAF muestra tormenta/chubascos antes de cerrar la ventana de pico de calor (1-4pm) — techo a la baja (-1.5°F).")
+        extra_widen += 0.6
+        notes.append("TAF muestra tormenta/chubascos antes de cerrar la ventana de pico de calor (1-4pm) — techo a la baja (-1.5°F), sigma +0.60°F por incertidumbre de magnitud/timing.")
 
     if not notes:
         notes.append("Sin ajustes intradía significativos — se mantiene la guía de NWS.")
@@ -469,7 +498,7 @@ def estimate_adjusted_high(nws, metar, taf, station):
     if taf is None:
         penalty += 0.1
 
-    return round(base + adjustment, 1), notes, round(min(penalty, 1.0), 2)
+    return round(base + adjustment, 1), notes, round(min(penalty, 1.0), 2), round(extra_widen, 2), hour
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +609,7 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
         else:
             taf = fetch_taf(station["icao"], config, time_left_fn=time_left_fn)
 
-    center, notes, penalty = estimate_adjusted_high(nws, metar, taf, station)
+    center, notes, penalty, extra_widen, hour = estimate_adjusted_high(nws, metar, taf, station)
     if center is None:
         return {"status": "no_data", "title": title, "station": station}
 
@@ -594,8 +623,18 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
         penalty = min(1.0, penalty + 0.4)
         notes.append("No se pudo confirmar que el pronóstico de NWS usado corresponda al día que liquida este mercado -- confianza reducida.")
 
-    base_sigma = getattr(config, "WEATHER_BASE_SIGMA_F", 2.4)
-    distribution, sigma = build_bucket_distribution(center, buckets, base_sigma=base_sigma, confidence_penalty=penalty)
+    # AUDITORÍA (05/09/2026): WEATHER_BASE_SIGMA_F pasa a ser el sigma de
+    # "mejor caso" (ventana de pico, trayectoria calma) en vez de un valor
+    # fijo para todo el día. Se escala por hora (más ancho temprano, cuando
+    # todavía no hay trayectoria real que confirme el pronóstico de NWS) y
+    # se ensancha aditivamente si la trayectoria discrepa fuerte del
+    # pronóstico o si el TAF anticipa tormenta -- ambos calculados en
+    # estimate_adjusted_high. confidence_penalty se sigue aplicando encima,
+    # sin cambios, para fuentes faltantes / fecha de NWS no confirmada.
+    hour_mult = _hour_sigma_multiplier(hour)
+    situational_base_sigma = getattr(config, "WEATHER_BASE_SIGMA_F", 2.4) * hour_mult + extra_widen
+    notes.append(f"Sigma base situacional: {situational_base_sigma:.2f}°F (multiplicador horario x{hour_mult:.2f} + ensanche {extra_widen:.2f}°F).")
+    distribution, sigma = build_bucket_distribution(center, buckets, base_sigma=situational_base_sigma, confidence_penalty=penalty)
 
     # AUDITORÍA (03/09/2026): la skill de referencia (wu-airport-weather,
     # STEP 0) es explícita en que si la estación de asentamiento no está
