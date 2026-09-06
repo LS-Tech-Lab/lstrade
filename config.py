@@ -1,10 +1,28 @@
 """
 Configuración central de Trader IA 24/7.
 """
+import json
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# FIX (06/09/2026): default de POLYMARKET_EXCLUDED_CATEGORIES leído del
+# mismo JSON que ya es fuente única de las reglas de categorización (ver
+# dashboard/polymarket_categories.json) -- antes este string vivía
+# hardcodeado acá Y por separado en dashboard/app/api/data/route.js, y ya
+# se habían desincronizado una vez (route.js se había quedado sin
+# "Clima"). Si por lo que sea el JSON no se puede leer (ej. build sin ese
+# archivo presente), cae al mismo string de siempre como fallback.
+def _default_excluded_categories():
+    try:
+        path = Path(__file__).resolve().parent / "dashboard" / "polymarket_categories.json"
+        with open(path, encoding="utf-8") as f:
+            return ",".join(json.load(f)["excluded"])
+    except Exception:
+        return "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar,Cripto — objetivo de precio,Clima"
 
 def _bool(name, default=False):
     val = os.getenv(name)
@@ -161,7 +179,7 @@ class Config:
     POLYMARKET_EXCLUDED_CATEGORIES = [
         c.strip() for c in os.getenv(
             "POLYMARKET_EXCLUDED_CATEGORIES",
-            "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar,Cripto — objetivo de precio,Clima",
+            _default_excluded_categories(),
         ).split(",") if c.strip()
     ]
 
