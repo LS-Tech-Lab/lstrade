@@ -128,25 +128,11 @@ STATION_MAP = {
         "note": "Ver nota de 'new york'.",
     },
     "chicago": {
-        # AUDITORÍA 06/09/2026: el STATION_MAP original tenía KMDW
-        # (Midway) pero la regla real de Polymarket liquida contra KORD
-        # (O'Hare) -- confirmado contra múltiples mercados de Chicago en
-        # polymarket.com (patrón Wunderground idéntico al de Miami/NYC).
-        # ICAO ya corregido a KORD, junto con lat/lon/name que antes
-        # seguían apuntando a Midway. verified queda en False a
-        # propósito: la regla de resolución ya está confirmada (ver
-        # abajo), pero se deja la confirmación explícita del flag para
-        # cuando lo revises vos mismo, dado que este es justo el campo
-        # que duplica el EV mínimo exigido.
         "icao": "KORD", "lat": 41.97972, "lon": -87.90444,
         "tz": "America/Chicago", "name": "Chicago O'Hare Intl (KORD)",
         "verified": True,
         "note": ("REGLA CONFIRMADA 06/09/2026 en mercado real de Chicago "
-                 "(highest-temperature-in-chicago-on-august-10-2026): "
-                 "liquida por Wunderground, tabla 'Daily Observations' de "
-                 "KORD (O'Hare) -- NO Midway (KMDW), que era lo que este "
-                 "STATION_MAP asumía antes. Mismo patrón de redondeo, hora "
-                 "límite y fallback a bracket más bajo que Miami/NYC. "),
+                 "(highest-temperature-in-chicago-on-august-10-2026)"),
     },
     "los angeles": {
         "icao": "KLAX", "lat": 33.9425, "lon": -118.4081,
