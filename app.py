@@ -4,10 +4,10 @@ Entrypoint único de Vercel Functions (Python runtime 2026+).
 Vercel ya no soporta un archivo = una función por cada módulo dentro de
 `api/`; construye una sola Vercel Function a partir de UN entrypoint
 Python en la raíz (`app.py`, `index.py`, `main.py`, etc.) que exponga
-una variable `app` (ASGI/WSGI). Por eso los 10 endpoints — cycle,
+una variable `app` (ASGI/WSGI). Por eso los 11 endpoints — cycle,
 manage_positions, polymarket_cycle, polymarket_resolve, polymarket_history,
-weather_cycle, weather_track_results, mlb_cycle, reset_halt y
-telegram_webhook — viven todos acá en una sola app FastAPI. (`polymarket_track_results`
+weather_cycle, weather_track_results, mlb_cycle, mlb_track_results,
+reset_halt y telegram_webhook — viven todos acá en una sola app FastAPI. (`polymarket_track_results`
 existió como alias de `polymarket_resolve` hasta el 03/09/2026 — se
 eliminó porque cron-job.org lo tenía dado de alta como job separado,
 disparando casi al mismo segundo que `polymarket_resolve` y duplicando
@@ -53,6 +53,7 @@ from mlb_signal_engine import (
     generate_mlb_signal,
     build_mlb_memo,
     current_mlb_date,
+    fetch_game_result,
 )
 
 app = FastAPI()
@@ -791,6 +792,73 @@ async def mlb_cycle_get(request: Request):
 @app.post("/api/mlb_cycle")
 async def mlb_cycle_post(request: Request):
     return await _mlb_cycle_endpoint(request)
+
+# ────────────────────────────────────────────────────────────────────
+# /api/mlb_track_results
+# ────────────────────────────────────────────────────────────────────
+def run_mlb_track_results():
+    """NUEVO (06/09/2026): resolve_mlb_signal() existía en supabase_db.py
+    desde que se agregó el motor de MLB, pero nada lo llamaba -- las
+    señales quedaban abiertas para siempre incluso después de terminado
+    el partido, a diferencia de clima (run_weather_track_results) y
+    Polymarket (polymarket_track_results.check_open_signals), que sí
+    tienen su ciclo de cierre. Mismo patrón que esos dos: se revisa cada
+    señal abierta, se consulta si el partido real ya terminó
+    (fetch_game_result -- status Final), y si sí, se resuelve.
+
+    outcome: "win" si el lado comprado ganó el partido, "loss" si
+    perdió -- direction="YES" compró al home_team, "NO" compró al
+    away_team (mismo esquema que ya usa schema.sql para mlb_signals).
+    """
+    db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+
+    open_signals = db.get_open_mlb_signals()
+    if not open_signals:
+        return {"status": "no_open_signals"}
+
+    resolved = []
+    for sig in open_signals:
+        game_pk = sig.get("game_pk")
+        if not game_pk:
+            continue
+        result = fetch_game_result(game_pk)
+        if not result:
+            continue  # partido todavía no terminó -- se reintenta en el próximo ciclo
+
+        bought_home = sig.get("direction") == "YES"
+        won = result["home_won"] if bought_home else result["away_won"]
+        outcome = "win" if won else "loss"
+
+        if not db.resolve_mlb_signal(sig["id"], outcome):
+            continue
+        resolved.append({
+            "game_pk": game_pk,
+            "question": sig.get("question"),
+            "outcome": outcome,
+            "final_score": f"{result['away_score']}-{result['home_score']} (visita-local)",
+        })
+
+    return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
+
+
+async def _mlb_track_results_endpoint(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        result = run_mlb_track_results()
+        return JSONResponse(result, status_code=200)
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+@app.get("/api/mlb_track_results")
+async def mlb_track_results_get(request: Request):
+    return await _mlb_track_results_endpoint(request)
+
+@app.post("/api/mlb_track_results")
+async def mlb_track_results_post(request: Request):
+    return await _mlb_track_results_endpoint(request)
 
 # ────────────────────────────────────────────────────────────────────
 # /api/weather_track_results
