@@ -79,6 +79,50 @@ def current_mlb_date():
     por defecto."""
     return datetime.now(MLB_SCHEDULE_TZ).strftime("%Y-%m-%d")
 
+
+def fetch_game_result(game_pk, timeout=DEFAULT_TIMEOUT):
+    """Resultado final de un partido puntual por gamePk, para resolver una
+    señal ya generada -- NUEVO (06/09/2026): generate_mlb_signal() existía
+    desde ayer pero nada en el repo consultaba si el partido ya terminó
+    para cerrar la señal (a diferencia de weather_track_results.py y
+    polymarket_track_results.py, que sí existen para clima/Polymarket);
+    las señales de MLB se quedaban abiertas para siempre. Esto es la
+    pieza que faltaba conectar.
+
+    Devuelve None si el partido todavía no terminó (en curso, pospuesto,
+    suspendido) o si falla la llamada -- el caller debe reintentar en el
+    próximo ciclo, mismo contrato que fetch_clob_market()/`closed` en el
+    flujo de clima."""
+    try:
+        resp = requests.get(
+            f"{MLB_API}/schedule",
+            params={"gamePk": game_pk, "hydrate": "linescore"},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        log.warning(f"Error fetching game result for gamePk={game_pk}: {e}")
+        return None
+
+    games = [g for d in data.get("dates", []) for g in d.get("games", [])]
+    if not games:
+        return None
+    game = games[0]
+    if game.get("status", {}).get("detailedState") != "Final":
+        return None  # en curso / pospuesto / suspendido -- se reintenta en el próximo ciclo
+
+    home = game.get("teams", {}).get("home", {})
+    away = game.get("teams", {}).get("away", {})
+    return {
+        "home_id": home.get("team", {}).get("id"),
+        "away_id": away.get("team", {}).get("id"),
+        "home_score": home.get("score"),
+        "away_score": away.get("score"),
+        "home_won": bool(home.get("isWinner")),
+        "away_won": bool(away.get("isWinner")),
+    }
+
 HOME_FIELD_EDGE = 0.04       # ver AUDITORÍA arriba -- sin calibrar
 PITCHER_ERA_SCALE = 0.10     # cuánta prob. mueve 1.0 de diferencia de ERA -- sin calibrar
 SEASON_FORM_WEIGHT = 0.7     # peso de win% de temporada vs. últimos-10 en blended_win_pct
