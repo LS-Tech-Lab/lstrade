@@ -487,7 +487,26 @@ def run_weather_cycle():
     # contaba como dos ensayos independientes en vez de uno. Se trackean acá
     # los condition_id ya abiertos para no duplicar el registro (el reenvío
     # de Telegram sigue funcionando igual, solo no se vuelve a insertar).
-    open_condition_ids = {s["condition_id"] for s in db.get_open_weather_signals()}
+    open_signals_now = db.get_open_weather_signals()
+    open_condition_ids = {s["condition_id"] for s in open_signals_now}
+
+    # AUDITORÍA (06/09/2026, usuario reportó varias señales abiertas por
+    # ciudad el mismo día): el dedupe de arriba es por condition_id (un
+    # bucket puntual), pero cada evento de clima trae varios buckets
+    # (rangos de temperatura) que son resultados MUTUAMENTE EXCLUYENTES
+    # de un mismo número real -- la máxima del día. Nada impedía que el
+    # ciclo abriera un bucket, y en una corrida posterior abriera OTRO
+    # bucket distinto para el mismo (estación, día) -- confirmado en
+    # producción: NYC y Miami llegaron a tener 4 señales abiertas
+    # simultáneas cada una para el mismo día. No es el mismo bug que el
+    # de MLB (ahí eran dos mercados apostando exactamente lo mismo dos
+    # veces); acá cada bucket es una apuesta distinta y en principio
+    # válida -- pero todas dependen del mismo número real, así que
+    # acumularlas sin límite es exposición correlacionada sin ningún tope,
+    # justo lo que MAX_CORRELATED_POSITIONS evita del lado de cripto.
+    # Mismo criterio que game_pk en MLB: como mucho una señal abierta por
+    # (estación, evento) a la vez.
+    open_events = {(s["station_icao"], s["event_title"]) for s in open_signals_now}
 
     events = client.fetch_weather_events(limit=20, time_budget_seconds=time_budget * 0.5)
     if not events:
@@ -559,6 +578,10 @@ def run_weather_cycle():
             continue
 
         best = signal["best_trade"]
+        event_key = (signal["station"].get("icao"), event["title"])
+        if event_key in open_events and best["condition_id"] not in open_condition_ids:
+            detail.append({"title": event["title"], "status": "ya_hay_señal_abierta_para_este_dia_ciudad"})
+            continue
         if not state_store.should_notify(best["condition_id"], best["ev"]):
             continue
 
@@ -581,6 +604,7 @@ def run_weather_cycle():
                         best.get("yes_token_id"), stop=stop,
                     )
                     open_condition_ids.add(best["condition_id"])
+                    open_events.add(event_key)
                 except Exception as e:
                     detail.append({"title": event["title"], "status": "error_registro", "error": str(e)})
         except Exception as e:
