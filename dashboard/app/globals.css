@@ -79,6 +79,11 @@ h1,h2{font-family:'Archivo Black', sans-serif; letter-spacing:-0.01em; margin:0;
 .card h2{font-size:12.5px; margin-bottom:10px; text-transform:uppercase; letter-spacing:0.03em;}
 .card-subtitle{font-size:11.5px; color:var(--ink-soft); margin:-6px 0 14px; line-height:1.45;}
 
+/* NUEVO (06/09/2026): toggle chico para mostrar/ocultar categorías
+   excluidas en la tabla de performance por categoría de Polymarket. */
+.link-toggle{background:none; border:none; padding:0; margin:-6px 0 14px; font-size:11.5px; color:var(--accent); cursor:pointer; text-decoration:underline; text-underline-offset:2px;}
+.link-toggle:hover{opacity:0.8;}
+
 /* NUEVO: resumen en una frase, en español simple, arriba de cada pestaña */
 .plain-summary{
   background:var(--paper); border:1px solid var(--line); border-left:3px solid var(--line-soft);
