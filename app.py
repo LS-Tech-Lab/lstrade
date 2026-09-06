@@ -624,6 +624,19 @@ def run_mlb_cycle():
     ver AUDITORÍA de should_notify en el flujo de clima; acá todavía no
     hay ese reenvío por mejora de EV, se agrega si hace falta más adelante).
 
+    AUDITORÍA (05/09/2026, usuario reportó 18 señales abiertas para 15
+    partidos): el dedupe de arriba es por condition_id, pero Polymarket
+    puede listar más de un mercado moneyline para el mismo partido con
+    condition_id DISTINTO (confirmado en producción: game_pk 823335 tenía
+    dos filas abiertas, mismo partido y misma pregunta "Los Angeles Angels
+    vs. Pittsburgh Pirates", condition_id distinto, 15 minutos de
+    diferencia). Deduplicar solo por condition_id no detecta esto -- se
+    agrega un segundo dedupe por game_pk (un partido = una sola señal
+    abierta a la vez, sin importar cuántos mercados/condition_id distintos
+    lo referencien), mismo espíritu que has_open_trade_for_symbol() en
+    risk_manager.py para cripto: no duplicar exposición al mismo riesgo
+    subyacente por venir de una fuente distinta.
+
     NOTA (04/09/2026): mientras este ciclo y el genérico de Polymarket
     corran los dos, un mercado de MLB puede recibir señal de ambos --
     todavía no se agregó el salteo en polymarket_main.py a propósito (ver
@@ -645,7 +658,9 @@ def run_mlb_cycle():
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
 
-    open_condition_ids = {s["condition_id"] for s in db.get_open_mlb_signals()}
+    open_signals_now = db.get_open_mlb_signals()
+    open_condition_ids = {s["condition_id"] for s in open_signals_now}
+    open_game_pks = {s["game_pk"] for s in open_signals_now}
 
     # AUDITORÍA (05/09/2026): ver comentario de current_mlb_date() en
     # mlb_signal_engine.py -- time.strftime() usa la hora del servidor
@@ -722,6 +737,9 @@ def run_mlb_cycle():
 
         if not signal:
             continue
+        if signal["game_pk"] in open_game_pks:
+            detail.append({"question": market["question"], "status": "partido_ya_tiene_señal_abierta"})
+            continue
         if signal["confidence"] < min_confidence:
             detail.append({"question": market["question"], "status": "confianza_insuficiente"})
             continue
@@ -738,6 +756,7 @@ def run_mlb_cycle():
                 signal["confidence"], signal["confidence_penalty"], signal["token_id"],
             )
             open_condition_ids.add(signal["condition_id"])
+            open_game_pks.add(signal["game_pk"])
             sent += 1
             detail.append({"question": market["question"], "status": "enviada"})
         except Exception as e:
