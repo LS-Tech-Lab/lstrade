@@ -188,6 +188,54 @@ def resolve_team_id(label):
     return None
 
 
+# AUDITORÍA (05/09/2026, usuario reportó 18 señales abiertas para 15
+# partidos del día): resolve_team_id() de arriba SOLO confirma que hay dos
+# nombres de equipo distintos en yes_label/no_label -- eso también es
+# cierto para mercados derivados del mismo partido que NO son moneyline
+# ("Spread: Seattle Mariners (-1.5)", con outcomes=["Seattle Mariners",
+# "Oakland Athletics"] igual que el moneyline real de ese mismo partido).
+# Confirmado en producción (Supabase, tabla mlb_signals): 6 de las 18
+# señales abiertas eran mercados "Spread: ..." -- el modelo de fundamentos
+# calcula P(el equipo gana el partido), que es un número MÁS ALTO que
+# P(el equipo gana por 2+ carreras) exigido por un mercado de -1.5, así
+# que aplicar esa probabilidad para pricear el spread infla el EV
+# calculado sin que exista ventaja real -- mismo patrón de fondo que la
+# categoría 1 del prompt de auditoría (probabilidad de una pregunta
+# aplicada para pricear una pregunta distinta), aunque acá no es una
+# cuenta de unidades sino de qué evento se está pricenado.
+#
+# Los derivados observados en producción se identifican todos por un
+# calificador de línea entre paréntesis o antes del nombre del equipo
+# ("Spread: ...", "Total: ...", "O/U ...") -- el moneyline real es
+# sencillamente "Equipo A vs. Equipo B" sin calificador ni número.
+_NON_MONEYLINE_KEYWORDS = ("spread", "total:", " o/u", "over/under", "run line", "moneyline -")
+
+
+def is_moneyline_question(question, home_id, away_id):
+    """True si `question` es el moneyline real "A vs B" de este partido, no
+    un mercado derivado (spread/línea de carreras/total) que también trae
+    los dos nombres de equipo y por lo tanto pasa resolve_team_id() igual
+    que el moneyline -- ver AUDITORÍA arriba.
+
+    Usa el nombre CORTO de TEAMS (ej. "Athletics", no "Oakland Athletics")
+    para el chequeo de presencia: Polymarket a veces arma la pregunta del
+    moneyline con el nombre corto ("Athletics vs. Seattle Mariners"), y
+    exigir el nombre completo ahí rechazaba moneylines reales."""
+    if not question:
+        return False
+    q = question.lower()
+    if any(kw in q for kw in _NON_MONEYLINE_KEYWORDS):
+        return False
+    # Blindaje adicional: cualquier derivado con línea numérica entre
+    # paréntesis (formato típico de spread/total, ej. "(-1.5)", "(O/U 8.5)")
+    # -- un moneyline real nunca lleva un paréntesis con número.
+    if re.search(r"\(-?\d", question):
+        return False
+    home_short = TEAMS[home_id][1].lower()
+    away_short = TEAMS[away_id][1].lower()
+    return home_short in q and away_short in q and " vs" in q
+
+
 def fetch_probable_pitchers_for_date(date_str):
     """
     Todos los partidos de MLB de una fecha (YYYY-MM-DD) con el pitcher
@@ -389,6 +437,11 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
     if not game:
         return None  # no hay partido HOY entre estos dos equipos
 
+    home_name = TEAMS[game["home_id"]][0]
+    away_name = TEAMS[game["away_id"]][0]
+    if not is_moneyline_question(market.get("question"), game["home_id"], game["away_id"]):
+        return None  # mercado derivado (spread/total) del mismo partido, no el moneyline real
+
     season = season or current_mlb_date()[:4]
     prob_home, notes, penalty = estimate_win_probability(
         game["home_id"], game["away_id"], game["home_pitcher_id"], game["away_pitcher_id"], season,
@@ -446,8 +499,8 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         "condition_id": market.get("condition_id"),
         "game_pk": game["game_pk"],
         "question": market.get("question"),
-        "home_team": TEAMS[game["home_id"]][0],
-        "away_team": TEAMS[game["away_id"]][0],
+        "home_team": home_name,
+        "away_team": away_name,
         "home_pitcher_id": game["home_pitcher_id"],
         "away_pitcher_id": game["away_pitcher_id"],
         "direction": "YES" if direction_is_yes else "NO",
