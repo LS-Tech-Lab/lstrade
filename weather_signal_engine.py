@@ -77,47 +77,94 @@ def _capped_timeout(time_left_fn, ceiling=DEFAULT_TIMEOUT, floor=1.0, safety_mar
 STATION_MAP = {
     # AUDITORÍA (06/09/2026, tras 34 señales cerradas con 9% de aciertos):
     # TODAS las estaciones de acá abajo tenían "verified": True, pero solo
-    # "new york"/"nyc" (KLGA) tiene una nota documentando qué se confirmó
-    # realmente y contra qué mercado puntual (ver su "note"). Las demás
-    # nunca pasaron por esa verificación -- alguien las agregó con
-    # verified=True por defecto, lo cual anula el propósito del flag: la
-    # AUDITORÍA del 03/09/2026 (ver más abajo en generate_weather_signal)
-    # exige el DOBLE de EV cuando verified=False justamente para no operar
-    # con la misma confianza contra una regla de resolución sin confirmar
-    # -- con todas en True, esa protección nunca se activaba para ninguna
-    # de las 11 estaciones sin verificación real. Se bajan a False hasta
-    # confirmar cada una individualmente contra el texto de reglas real de
-    # un mercado de esa ciudad (mismo proceso que ya se hizo para KLGA).
+    # "new york"/"nyc" (KLGA) tenía una nota documentando qué se confirmó
+    # realmente y contra qué mercado puntual. Las demás nunca pasaron por
+    # esa verificación -- alguien las agregó con verified=True por
+    # defecto, lo cual anula el propósito del flag: la AUDITORÍA del
+    # 03/09/2026 (ver más abajo en generate_weather_signal) exige el DOBLE
+    # de EV cuando verified=False justamente para no operar con la misma
+    # confianza contra una regla de resolución sin confirmar -- con todas
+    # en True, esa protección nunca se activaba para ninguna de las 11
+    # estaciones sin verificación real. Se recortó la lista (06/09/2026)
+    # a solo las ciudades confirmadas una por una contra el texto de
+    # reglas real de un mercado puntual de esa ciudad en polymarket.com
+    # (mismo proceso que ya se había hecho para KLGA); el resto se sacó
+    # del mapa hasta confirmarse -- resolve_station devuelve None para
+    # cualquier ciudad no listada acá, y eso ya se trata como "no
+    # operable" más abajo, así que no hace falta un verified=False
+    # explícito para las que no están.
     "miami": {
         "icao": "KMIA", "lat": 25.7617, "lon": -80.1918,
         "tz": "America/New_York", "name": "Miami Intl (KMIA)",
-        "verified": true,
+        "verified": True,
+        "note": ("CONFIRMADO 06/09/2026 en mercado real de Miami "
+                 "(highest-temperature-in-miami-on-august-21-2026): liquida "
+                 "por Wunderground, tabla 'Daily Observations' de KMIA (no "
+                 "'Day High & Low'), redondeo a grados enteros F, no puede "
+                 "resolver hasta el primer dato del día siguiente / "
+                 "11:59pm ET del día siguiente (lo que ocurra primero), y "
+                 "cae al bracket más bajo si no hay dato para esa hora "
+                 "límite. Mismo patrón que NYC/KLGA."),
     },
     "new york": {
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
         "tz": "America/New_York", "name": "LaGuardia (KLGA)",
-        "verified": True,    
+        "verified": True,
+        "note": ("CONFIRMADO 05/09/2026 en un mercado real de NYC: la regla "
+                 "de resolución cita weather.gov/wrh/timeseries?site=klga, "
+                 "liquida por el botón 'Show Hourly Data' (SOLO reportes "
+                 "METAR rutinarios en punto, no SPECI), usa Weather "
+                 "Underground Daily Observations como fallback si no hay "
+                 "dato de NOAA antes de las 11:59pm ET del día siguiente, y "
+                 "resuelve al bracket más bajo si no hay dato de ninguna "
+                 "fuente para esa hora límite. Muestra n=1 -- si aparece un "
+                 "mercado de NYC con texto de regla distinto, revisar de "
+                 "nuevo antes de asumir que aplica la misma."),
     },
     "nyc": {  # alias
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA)","verified": True,
+        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
+        "verified": True,
         "note": "Ver nota de 'new york'.",
     },
     "chicago": {
-        "icao": "KORD", "lat": 41.7868, "lon": -87.7522,
-        "tz": "America/Chicago", "name": "Midway (KMDW)", "verified": False,
+        # AUDITORÍA 06/09/2026: el STATION_MAP original tenía KMDW
+        # (Midway) pero la regla real de Polymarket liquida contra KORD
+        # (O'Hare) -- confirmado contra múltiples mercados de Chicago en
+        # polymarket.com (patrón Wunderground idéntico al de Miami/NYC).
+        # ICAO ya corregido a KORD, junto con lat/lon/name que antes
+        # seguían apuntando a Midway. verified queda en False a
+        # propósito: la regla de resolución ya está confirmada (ver
+        # abajo), pero se deja la confirmación explícita del flag para
+        # cuando lo revises vos mismo, dado que este es justo el campo
+        # que duplica el EV mínimo exigido.
+        "icao": "KORD", "lat": 41.9742, "lon": -87.9073,
+        "tz": "America/Chicago", "name": "Chicago O'Hare Intl (KORD)",
+        "verified": False,
+        "note": ("REGLA CONFIRMADA 06/09/2026 en mercado real de Chicago "
+                 "(highest-temperature-in-chicago-on-august-10-2026): "
+                 "liquida por Wunderground, tabla 'Daily Observations' de "
+                 "KORD (O'Hare) -- NO Midway (KMDW), que era lo que este "
+                 "STATION_MAP asumía antes. Mismo patrón de redondeo, hora "
+                 "límite y fallback a bracket más bajo que Miami/NYC. "
+                 "verified se deja en False hasta que se confirme "
+                 "manualmente y se pase a True."),
     },
     "los angeles": {
         "icao": "KLAX", "lat": 33.9425, "lon": -118.4081,
-        "tz": "America/Los_Angeles", "name": "LAX (KLAX)","verified": True, 
-    },
-    "dallas": {
-        "icao": "KDAL", "lat": 32.85416, "lon": -96.85506,
-        "tz": "America/Chicago", "name": "DFW (KDFW)", "verified": True,
+        "tz": "America/Los_Angeles", "name": "LAX (KLAX)",
+        "verified": True,
+        "note": ("CONFIRMADO 06/09/2026 en mercado real de Los Angeles "
+                 "(highest-temperature-in-los-angeles-on-august-15-2026): "
+                 "Wunderground KLAX, mismo patrón que Miami/NYC."),
     },
     "seattle": {
         "icao": "KSEA", "lat": 47.4502, "lon": -122.3088,
-        "tz": "America/Los_Angeles", "name": "Sea-Tac (KSEA)", "verified": True,
+        "tz": "America/Los_Angeles", "name": "Sea-Tac (KSEA)",
+        "verified": True,
+        "note": ("CONFIRMADO 06/09/2026 en mercado real de Seattle "
+                 "(highest-temperature-in-seattle-on-august-19-2026): "
+                 "Wunderground KSEA, mismo patrón que Miami/NYC."),
     },
 }
 
