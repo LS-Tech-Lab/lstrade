@@ -221,25 +221,37 @@ class SupabaseDatabase:
         return history
 
 
-    def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id):
-        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "ts_signaled": _now_iso()}).execute()
+    def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id, stop=None):
+        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "stop": stop, "ts_signaled": _now_iso()}).execute()
 
     def get_open_weather_signals(self):
         return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
 
-    def resolve_weather_signal(self, signal_id, outcome):
-        res = self.client.table("weather_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
+    def resolve_weather_signal(self, signal_id, outcome, exit_price=None):
+        # NUEVO (06/09/2026): exit_price opcional -- outcome="stop" lo pasa
+        # (precio de salida anticipada, no siempre -100%), outcome="yes"/"no"
+        # de una resolución completa normal no lo necesita (queda None).
+        update = {"outcome": outcome, "ts_resolved": _now_iso()}
+        if exit_price is not None:
+            update["exit_price"] = exit_price
+        res = self.client.table("weather_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute()
         return bool(res.data)
 
     def record_mlb_signal(self, condition_id, game_pk, question, home_team, away_team, direction,
-                           my_prob, market_price, ev, confidence, confidence_penalty, token_id):
-        self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "ts_signaled": _now_iso()}).execute()
+                           my_prob, market_price, ev, confidence, confidence_penalty, token_id, stop=None):
+        self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "ts_signaled": _now_iso()}).execute()
 
     def get_open_mlb_signals(self):
         return self.client.table("mlb_signals").select("*").is_("outcome", "null").execute().data or []
 
-    def resolve_mlb_signal(self, signal_id, outcome):
-        res = self.client.table("mlb_signals").update({"outcome": outcome, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
+    def resolve_mlb_signal(self, signal_id, outcome, exit_price=None):
+        # NUEVO (06/09/2026): mismo agregado que resolve_weather_signal --
+        # outcome="stop" pasa exit_price, "win"/"loss" de resolución
+        # completa normal no lo necesita.
+        update = {"outcome": outcome, "ts_resolved": _now_iso()}
+        if exit_price is not None:
+            update["exit_price"] = exit_price
+        res = self.client.table("mlb_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute()
         return bool(res.data)
        
     def weather_calibration_summary(self, bucket_size=0.1):

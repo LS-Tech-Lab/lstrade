@@ -129,6 +129,16 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 
 .ok{color:var(--good); font-weight:700;}
 .fail{color:var(--bad); font-weight:700;}
+
+/* NUEVO (06/09/2026): .result-badge nunca había tenido estilo propio (los
+   spans con esta clase en WeatherResolvedTable/MlbResolvedTable/
+   PolymarketResolvedTable rendereaban como texto plano) -- se agrega acá
+   junto con el estado result-stop (salida anticipada por stop-loss,
+   distinto de un win/loss de resolución completa). */
+.result-badge{display:inline-block; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:700; white-space:nowrap;}
+.result-badge.result-win{background:var(--good-dim); color:var(--good); box-shadow:inset 0 0 0 1px rgba(61,220,151,0.35);}
+.result-badge.result-loss{background:var(--bad-dim); color:var(--bad); box-shadow:inset 0 0 0 1px rgba(255,93,108,0.35);}
+.result-badge.result-stop{background:var(--accent-2-dim); color:var(--accent-2); box-shadow:inset 0 0 0 1px rgba(255,122,69,0.4);}
 .decision-approved, .decision-auto_executed{color:var(--good); font-weight:700;}
 .decision-rejected, .decision-blocked{color:var(--bad); font-weight:700;}
 .decision-watchlist, .decision-paper_logged, .decision-paper_logged_no_telegram, .decision-pending_approval{color:var(--ink-soft); font-weight:700;}

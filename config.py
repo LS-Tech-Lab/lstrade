@@ -293,6 +293,20 @@ class Config:
     MLB_MIN_CONFIDENCE = _int("MLB_MIN_CONFIDENCE", 2)
     MAX_MLB_SIGNALS_PER_CYCLE = _int("MAX_MLB_SIGNALS_PER_CYCLE", 3)
 
+    # NUEVO (06/09/2026): Clima y MLB simulaban "comprar y aguantar hasta
+    # la resolución" sin ningún mecanismo de salida anticipada -- a
+    # diferencia de Polymarket genérico (que sí calcula stop/target al
+    # generar la señal, ver polymarket_signal_engine.py) y de cripto (que
+    # sí tiene stop-loss real vía risk_manager.py), una señal perdedora
+    # de clima/MLB siempre resolvía -100% del nocional, sin importar el
+    # precio pagado -- eso es correcto para un mercado binario que se
+    # sostiene hasta la resolución, pero no hay ninguna razón para
+    # sostenerlo ciegamente si el precio ya se movió fuerte en contra
+    # antes de que el evento termine. Umbral elegido por el usuario:
+    # cerrar la señal si el precio cae 20% desde el precio de entrada.
+    # Ver run_weather_track_results / run_mlb_track_results en app.py.
+    WEATHER_MLB_STOP_LOSS_PCT = _float("WEATHER_MLB_STOP_LOSS_PCT", 0.20)
+
     # AUDITORÍA (04/09/2026, tras 20 señales cerradas con 15% de aciertos):
     # best_trade se elegía con yes_price de Gamma (outcomePrices), que es el
     # ÚLTIMO PRECIO OPERADO, no el ask real -- en un bucket barato e ilíquido

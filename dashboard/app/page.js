@@ -680,10 +680,17 @@ function PolymarketResolvedTable({ rows }) {
 // corre en el servidor y este en el cliente, mismo patrón que
 // CATEGORY_RULES/categorize más arriba). Comprar "SI" a market_price:
 // si resuelve 'yes' se cobra $1 (retorno = 1/precio - 1), si resuelve
-// 'no' se pierde toda la apuesta (-100%).
+// 'no' se pierde toda la apuesta (-100%). outcome='stop' (06/09/2026):
+// salida anticipada por stop-loss, retorno real contra exit_price en vez
+// de -100 fijo -- ver mismo comentario en route.js.
 function weatherReturnPct(row) {
   if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
-  return row.outcome === "yes" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+  if (row.outcome === "yes") return ((1 - row.market_price) / row.market_price) * 100;
+  if (row.outcome === "stop") {
+    if (row.exit_price === null || row.exit_price === undefined) return -100;
+    return ((row.exit_price - row.market_price) / row.market_price) * 100;
+  }
+  return -100;
 }
 
 function WeatherStatsRow({ stats }) {
@@ -754,6 +761,9 @@ function WeatherResolvedTable({ rows }) {
       renderFields={(r) => {
         const ret = weatherReturnPct(r);
         const isWin = r.outcome === "yes";
+        const isStop = r.outcome === "stop";
+        const badgeClass = isWin ? "result-win" : isStop ? "result-stop" : "result-loss";
+        const badgeText = isWin ? "✅ SI OCURRIÓ" : isStop ? "🛑 STOP-LOSS" : "❌ NO OCURRIÓ";
         return (
           <>
             <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
@@ -762,9 +772,7 @@ function WeatherResolvedTable({ rows }) {
             <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
               value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
             <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
-              <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
-                {isWin ? "✅ SI OCURRIÓ" : "❌ NO OCURRIÓ"}
-              </span>
+              <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
             } />
             <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
           </>
@@ -797,9 +805,15 @@ function WeatherTab({ data }) {
 // primer draft, todavía sin señales resueltas para calibrar HOME_FIELD_EDGE
 // ni PITCHER_ERA_SCALE (ver AUDITORÍA en config.py). Este tab existe para
 // poder ir revisando a ojo lo que el motor manda antes de confiar en él.
+// outcome='stop' (06/09/2026): mismo agregado que weatherReturnPct arriba.
 function mlbReturnPct(row) {
   if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
-  return row.outcome === "win" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+  if (row.outcome === "win") return ((1 - row.market_price) / row.market_price) * 100;
+  if (row.outcome === "stop") {
+    if (row.exit_price === null || row.exit_price === undefined) return -100;
+    return ((row.exit_price - row.market_price) / row.market_price) * 100;
+  }
+  return -100;
 }
 
 function MlbStatsRow({ stats }) {
@@ -871,6 +885,9 @@ function MlbResolvedTable({ rows }) {
         const ret = mlbReturnPct(r);
         const sideTeam = r.direction === "YES" ? r.home_team : r.away_team;
         const isWin = r.outcome === "win";
+        const isStop = r.outcome === "stop";
+        const badgeClass = isWin ? "result-win" : isStop ? "result-stop" : "result-loss";
+        const badgeText = isWin ? `✅ GANÓ (${sideTeam})` : isStop ? `🛑 STOP-LOSS (${sideTeam})` : `❌ PERDIÓ (${sideTeam})`;
         return (
           <>
             <RowField label="Partido" value={`${r.away_team} @ ${r.home_team}`} />
@@ -880,9 +897,7 @@ function MlbResolvedTable({ rows }) {
             <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
               value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
             <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
-              <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
-                {isWin ? `✅ GANÓ (${sideTeam})` : `❌ PERDIÓ (${sideTeam})`}
-              </span>
+              <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
             } />
             <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
           </>

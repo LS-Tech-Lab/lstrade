@@ -116,6 +116,16 @@ create table if not exists polymarket_signals (
 -- weather_track_results resuelve outcome ('yes'/'no') mirando si el precio
 -- del token convergió a ~1 o ~0, y con eso se puede medir calibración real
 -- (Brier score) en vez de confiar a ciegas en la estimación.
+-- NUEVO (06/09/2026): stop/exit_price -- antes esta tabla no tenía ninguna
+-- salida anticipada (a diferencia de polymarket_signals, que sí calculaba
+-- stop/target desde el principio): una señal perdedora siempre resolvía
+-- -100% del nocional sin importar el precio pagado. outcome='stop' +
+-- exit_price es la salida anticipada si el precio cae WEATHER_MLB_STOP_LOSS_PCT
+-- (config.py) desde el precio de entrada, antes de que el evento resuelva
+-- del todo -- mismo patrón que ya usaba Polymarket genérico.
+-- Migración aplicada en Supabase: alter table weather_signals add column
+-- if not exists stop double precision; alter table weather_signals add
+-- column if not exists exit_price double precision;
 create table if not exists weather_signals (
     id bigserial primary key,
     condition_id text not null,
@@ -128,6 +138,8 @@ create table if not exists weather_signals (
     center_estimate_f double precision,
     sigma double precision,
     yes_token_id text,
+    stop double precision,
+    exit_price double precision,
     ts_signaled timestamptz not null,
     outcome text,
     ts_resolved timestamptz
@@ -139,6 +151,12 @@ create table if not exists weather_signals (
 -- cualquiera de los dos equipos según de qué lado esté el EV, no siempre
 -- el mismo lado fijo como en clima. Ver resolve_mlb_signal() en
 -- supabase_db.py y el comentario equivalente en dashboard/app/page.js.
+-- NUEVO (06/09/2026): stop/exit_price, mismo motivo y mismo mecanismo que
+-- weather_signals -- ver comentario ahí arriba. outcome='stop' es un
+-- tercer valor posible además de 'win'/'loss'.
+-- Migración aplicada en Supabase: alter table mlb_signals add column if
+-- not exists stop double precision; alter table mlb_signals add column
+-- if not exists exit_price double precision;
 create table if not exists mlb_signals (
     id bigserial primary key,
     condition_id text not null,
@@ -153,6 +171,8 @@ create table if not exists mlb_signals (
     confidence smallint,
     confidence_penalty double precision,
     token_id text,
+    stop double precision,
+    exit_price double precision,
     ts_signaled timestamptz not null,
     outcome text,
     ts_resolved timestamptz

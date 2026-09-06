@@ -115,9 +115,20 @@ function computePolymarketStatsByCategory(resolvedSignals) {
 // calibrada está una probabilidad estimada contra el resultado real — la
 // tabla weather_signals se diseñó justo para esto (ver el comentario en
 // schema.sql), pero hasta ahora nada lo calculaba.
+// NUEVO (06/09/2026): outcome='stop' -- salida anticipada por stop-loss
+// (ver WEATHER_MLB_STOP_LOSS_PCT en config.py y run_weather_track_results
+// en app.py). Antes una señal perdedora siempre resolvía -100% del
+// nocional sin importar el precio pagado; ahora, si el precio cayó el
+// umbral de stop ANTES de que el evento resolviera del todo, se cierra ahí
+// y el retorno usa el precio real de salida (exit_price), no -100 fijo.
 function weatherReturnPct(row) {
   if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
-  return row.outcome === "yes" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+  if (row.outcome === "yes") return ((1 - row.market_price) / row.market_price) * 100;
+  if (row.outcome === "stop") {
+    if (row.exit_price === null || row.exit_price === undefined) return -100;
+    return ((row.exit_price - row.market_price) / row.market_price) * 100;
+  }
+  return -100; // "no"
 }
 
 function computeWeatherStats(resolvedSignals) {
@@ -125,8 +136,11 @@ function computeWeatherStats(resolvedSignals) {
   if (valid.length === 0) return { n: 0, win_rate: null, avg_return_pct: null, brier_score: null };
   const wins = valid.filter((r) => r.outcome === "yes");
   const returns = valid.map(weatherReturnPct).filter((r) => r !== null);
+  // outcome='stop' es una salida ANTES de saber el resultado real del
+  // evento -- no hay ground truth binario que comparar contra my_prob,
+  // así que se excluye del Brier score (sí cuenta para n/win_rate/retorno).
   const brierTerms = valid
-    .filter((r) => r.my_prob !== null && r.my_prob !== undefined)
+    .filter((r) => r.my_prob !== null && r.my_prob !== undefined && r.outcome !== "stop")
     .map((r) => Math.pow(r.my_prob - (r.outcome === "yes" ? 1 : 0), 2));
   return {
     n: valid.length,
@@ -143,9 +157,16 @@ function computeWeatherStats(resolvedSignals) {
 // supabase_db.py). `market_price` ya es el precio pagado por ese lado
 // puntual, así que la fórmula de retorno (1/precio - 1 si ganó, -100% si
 // perdió) queda igual que en Clima sin necesidad de saber qué equipo era.
+// NUEVO (06/09/2026): mismo agregado de outcome='stop' que weatherReturnPct
+// -- ver comentario ahí arriba.
 function mlbReturnPct(row) {
   if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
-  return row.outcome === "win" ? ((1 - row.market_price) / row.market_price) * 100 : -100;
+  if (row.outcome === "win") return ((1 - row.market_price) / row.market_price) * 100;
+  if (row.outcome === "stop") {
+    if (row.exit_price === null || row.exit_price === undefined) return -100;
+    return ((row.exit_price - row.market_price) / row.market_price) * 100;
+  }
+  return -100; // "loss"
 }
 
 function computeMlbStats(resolvedSignals) {
@@ -154,7 +175,7 @@ function computeMlbStats(resolvedSignals) {
   const wins = valid.filter((r) => r.outcome === "win");
   const returns = valid.map(mlbReturnPct).filter((r) => r !== null);
   const brierTerms = valid
-    .filter((r) => r.my_prob !== null && r.my_prob !== undefined)
+    .filter((r) => r.my_prob !== null && r.my_prob !== undefined && r.outcome !== "stop")
     .map((r) => Math.pow(r.my_prob - (r.outcome === "win" ? 1 : 0), 2));
   return {
     n: valid.length,

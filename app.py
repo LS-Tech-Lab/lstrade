@@ -573,11 +573,12 @@ def run_weather_cycle():
                 detail.append({"title": event["title"], "status": "reenvio_sin_duplicar_registro"})
             else:
                 try:
+                    stop = best["market_price"] * (1 - config.WEATHER_MLB_STOP_LOSS_PCT)
                     db.record_weather_signal(
                         best["condition_id"], best["question"], event["title"],
                         signal["station"].get("icao"), best["my_prob"], best["market_price"],
                         best["ev"], signal["center_estimate_f"], signal["sigma"],
-                        best.get("yes_token_id"),
+                        best.get("yes_token_id"), stop=stop,
                     )
                     open_condition_ids.add(best["condition_id"])
                 except Exception as e:
@@ -750,11 +751,13 @@ def run_mlb_cycle():
             continue
         try:
             notifier.send_message(memo)
+            stop = signal["market_price"] * (1 - config.WEATHER_MLB_STOP_LOSS_PCT)
             db.record_mlb_signal(
                 signal["condition_id"], signal["game_pk"], signal["question"],
                 signal["home_team"], signal["away_team"], signal["direction"],
                 signal["my_prob"], signal["market_price"], signal["ev"],
                 signal["confidence"], signal["confidence_penalty"], signal["token_id"],
+                stop=stop,
             )
             open_condition_ids.add(signal["condition_id"])
             open_game_pks.add(signal["game_pk"])
@@ -811,6 +814,7 @@ def run_mlb_track_results():
     away_team (mismo esquema que ya usa schema.sql para mlb_signals).
     """
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+    client = PolymarketClient(Config)
 
     open_signals = db.get_open_mlb_signals()
     if not open_signals:
@@ -818,6 +822,20 @@ def run_mlb_track_results():
 
     resolved = []
     for sig in open_signals:
+        # NUEVO (06/09/2026): mismo mecanismo de stop-loss que
+        # run_weather_track_results -- ver comentario ahí. Se chequea
+        # antes de gastar la llamada a fetch_game_result.
+        stop = sig.get("stop")
+        if stop is not None and sig.get("token_id"):
+            book = client.fetch_order_book_snapshot(sig["token_id"])
+            if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
+                if db.resolve_mlb_signal(sig["id"], "stop", exit_price=stop):
+                    resolved.append({
+                        "game_pk": sig.get("game_pk"), "question": sig.get("question"),
+                        "outcome": "stop", "exit_price": stop,
+                    })
+                continue
+
         game_pk = sig.get("game_pk")
         if not game_pk:
             continue
@@ -893,6 +911,22 @@ def run_weather_track_results():
         condition_id = sig.get("condition_id")
         if not condition_id:
             continue
+
+        # NUEVO (06/09/2026): stop-loss -- antes de chequear si el mercado
+        # ya resolvió del todo, ver si el precio actual ya cayó por debajo
+        # del stop calculado al emitir la señal (WEATHER_MLB_STOP_LOSS_PCT
+        # en config.py). Se usa el book real (best_bid = lo que se podría
+        # cobrar vendiendo AHORA), no el último precio operado, mismo
+        # criterio que ya usa check_open_signals() en
+        # polymarket_track_results.py para Polymarket genérico.
+        stop = sig.get("stop")
+        if stop is not None and sig.get("yes_token_id"):
+            book = client.fetch_order_book_snapshot(sig["yes_token_id"])
+            if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
+                if db.resolve_weather_signal(sig["id"], "stop", exit_price=stop):
+                    resolved.append({"condition_id": condition_id, "outcome": "stop", "exit_price": stop})
+                continue
+
         # FIX (02/09/2026): fetch_market_by_condition_id() pega a la Gamma API
         # con un filtro que Gamma no soporta (ver nota en polymarket_client.py)
         # y nunca traía el mercado real -- se usa fetch_clob_market(), que
