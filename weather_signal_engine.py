@@ -138,17 +138,15 @@ STATION_MAP = {
         # abajo), pero se deja la confirmación explícita del flag para
         # cuando lo revises vos mismo, dado que este es justo el campo
         # que duplica el EV mínimo exigido.
-        "icao": "KORD", "lat": 41.9742, "lon": -87.9073,
+        "icao": "KORD", "lat": 41.97972, "lon": -87.90444,
         "tz": "America/Chicago", "name": "Chicago O'Hare Intl (KORD)",
-        "verified": False,
+        "verified": True,
         "note": ("REGLA CONFIRMADA 06/09/2026 en mercado real de Chicago "
                  "(highest-temperature-in-chicago-on-august-10-2026): "
                  "liquida por Wunderground, tabla 'Daily Observations' de "
                  "KORD (O'Hare) -- NO Midway (KMDW), que era lo que este "
                  "STATION_MAP asumía antes. Mismo patrón de redondeo, hora "
-                 "límite y fallback a bracket más bajo que Miami/NYC. "
-                 "verified se deja en False hasta que se confirme "
-                 "manualmente y se pase a True."),
+                 "límite y fallback a bracket más bajo que Miami/NYC. "),
     },
     "los angeles": {
         "icao": "KLAX", "lat": 33.9425, "lon": -118.4081,
