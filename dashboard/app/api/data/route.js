@@ -46,28 +46,22 @@ function categorize(question) {
   return FALLBACK_CATEGORY;
 }
 
-// FIX: este default tiene que ser IDÉNTICO char por char al de
-// config.POLYMARKET_EXCLUDED_CATEGORIES (Python) — no comparten código (uno
-// corre en el motor de señales, este en el dashboard serverless). Hasta
-// ahora se habían ido desincronizando cada vez que se agregaba una
-// categoría nueva de un solo lado: este default se había quedado en solo 2
-// categorías mientras config.py ya tenía 4 ("Otros / sin clasificar" y
-// "Cripto — objetivo de precio" faltaban acá). Si POLYMARKET_EXCLUDED_CATEGORIES
-// no está seteada como env var real en Vercel, cada lado cae en SU PROPIO
-// default y el panel termina mostrando un indicador "sin categorías
-// excluidas" que no coincide con lo que el motor de señales realmente
-// excluye. Se usa para que el indicador principal (win rate/expectancy/PF
-// de arriba) no quede arrastrado por categorías ya identificadas como
+// Se usa para que el indicador principal (win rate/expectancy/PF de
+// arriba) no quede arrastrado por categorías ya identificadas como
 // perdedoras — el historial completo sigue disponible sin filtrar en
 // polymarket_resolved y en la tabla por categoría, esto solo afecta el
 // resumen agregado.
 //
-// Mientras no compartan una sola fuente (ver el mismo comentario en
-// config.py), cualquier cambio a esta lista se tiene que reflejar A MANO
-// en AMBOS archivos.
+// FIX (06/09/2026): default leído de categorySpec.excluded (mismo JSON
+// que ya es fuente única de las reglas de categorización) en vez de un
+// string hardcodeado acá aparte del que tiene config.py (Python) -- ya
+// se habían desincronizado una vez (este default se había quedado sin
+// "Clima", agregada del lado de Python el 04/09/2026 y nunca replicada
+// acá). Se sigue permitiendo override real por env var
+// POLYMARKET_EXCLUDED_CATEGORIES si hace falta cambiarla sin deploy.
 const EXCLUDED_CATEGORIES = (
   process.env.POLYMARKET_EXCLUDED_CATEGORIES ||
-  "Política / geopolítica,Redes sociales / figuras públicas,Otros / sin clasificar,Cripto — objetivo de precio"
+  categorySpec.excluded.join(",")
 ).split(",").map((c) => c.trim()).filter(Boolean);
 
 function computePolymarketStats(rows) {
