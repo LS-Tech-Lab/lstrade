@@ -1,5 +1,13 @@
 {
   "_comment": "Fuente única de reglas de categorización de mercados de Polymarket. La lee polymarket_categories.py (Python, motor de señales) y dashboard/app/api/data/route.js (JS, dashboard). Se evalúa en orden: la primera regla que matchea gana.",
+  "excluded_comment": "FIX (06/09/2026): antes esta lista vivía hardcodeada por separado en config.py (Python) y en dashboard/app/api/data/route.js (JS) -- el propio comentario en route.js ya advertía que se iban a desincronizar, y de hecho el default del dashboard le faltaba 'Clima' (se agregó a config.py el 04/09/2026 y nunca se replicó ahí). Se centraliza acá; ambos lados la leen de este JSON como default y siguen permitiendo override por env var POLYMARKET_EXCLUDED_CATEGORIES si hace falta.",
+  "excluded": [
+    "Política / geopolítica",
+    "Redes sociales / figuras públicas",
+    "Otros / sin clasificar",
+    "Cripto — objetivo de precio",
+    "Clima"
+  ],
   "fallback": "Otros / sin clasificar",
   "rules": [
     {
