@@ -486,6 +486,27 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
     if not is_moneyline_question(market.get("question"), game["home_id"], game["away_id"]):
         return None  # mercado derivado (spread/total) del mismo partido, no el moneyline real
 
+    # AUDITORÍA (06/09/2026, usuario reportó "RETORNO PROMEDIO +8315.5%" sin
+    # lógica en el dashboard): confirmado en producción -- una vez que un
+    # partido termina y su señal se resuelve, el game_pk queda libre en el
+    # dedupe de open_game_pks (correcto, ya no hay señal ABIERTA para ese
+    # partido), pero el mercado de Polymarket sigue técnicamente operable
+    # un rato más mientras liquida. Si el ciclo vuelve a correr en esa
+    # ventana, generate_mlb_signal() no tenía forma de saber que el
+    # partido YA se jugó -- seguía comparando el precio (ya desplomado a
+    # ~0 o ~1 porque el mercado real SÍ sabe el resultado) contra una
+    # probabilidad de fundamentos calculada como si el partido fuera
+    # incierto, generando una "señal" fantasma con edge artificialmente
+    # gigante. Ejemplo real: Diamondbacks @ Astros, generada a las 03:00
+    # del día siguiente (el partido ya había terminado horas antes),
+    # market_price=0.0005 -- esa fila sola generó un retorno simulado de
+    # +199.900% (turn (1-0.0005)/0.0005) que, promediado sobre 24 señales
+    # resueltas, es justamente el +8315.5% que se ve en el dashboard.
+    # Se corta de raíz consultando si el partido ya está Final antes de
+    # seguir.
+    if fetch_game_result(game["game_pk"]) is not None:
+        return None  # el partido real ya terminó -- el mercado quedó desactualizado/en liquidación, no es una oportunidad real
+
     season = season or current_mlb_date()[:4]
     prob_home, notes, penalty = estimate_win_probability(
         game["home_id"], game["away_id"], game["home_pitcher_id"], game["away_pitcher_id"], season,
@@ -495,6 +516,16 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
     yes_price = market.get("yes_price")
     no_price = market.get("no_price")
     if yes_price is None:
+        return None
+
+    # Blindaje adicional (independiente del chequeo de partido terminado de
+    # arriba, por si el status "Final" de la MLB Stats API todavía no
+    # propagó o el partido está suspendido en un estado raro): un precio
+    # ya en el extremo significa que el mercado real ya está prácticamente
+    # decidido, sea por qué sea -- no hay edge real que capturar ahí, solo
+    # ruido de un mercado en vías de liquidación.
+    MLB_EXTREME_PRICE_FLOOR = 0.02
+    if yes_price <= MLB_EXTREME_PRICE_FLOOR or yes_price >= (1 - MLB_EXTREME_PRICE_FLOOR):
         return None
 
     # Evaluar los dos lados y quedarse con el de mejor EV -- el edge puede
