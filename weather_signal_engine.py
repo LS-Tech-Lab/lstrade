@@ -75,75 +75,49 @@ def _capped_timeout(time_left_fn, ceiling=DEFAULT_TIMEOUT, floor=1.0, safety_mar
 # pronóstico correcto. Revisar `note` y las reglas de resolución del mercado
 # puntual antes de operar con esos casos.
 STATION_MAP = {
+    # AUDITORÍA (06/09/2026, tras 34 señales cerradas con 9% de aciertos):
+    # TODAS las estaciones de acá abajo tenían "verified": True, pero solo
+    # "new york"/"nyc" (KLGA) tiene una nota documentando qué se confirmó
+    # realmente y contra qué mercado puntual (ver su "note"). Las demás
+    # nunca pasaron por esa verificación -- alguien las agregó con
+    # verified=True por defecto, lo cual anula el propósito del flag: la
+    # AUDITORÍA del 03/09/2026 (ver más abajo en generate_weather_signal)
+    # exige el DOBLE de EV cuando verified=False justamente para no operar
+    # con la misma confianza contra una regla de resolución sin confirmar
+    # -- con todas en True, esa protección nunca se activaba para ninguna
+    # de las 11 estaciones sin verificación real. Se bajan a False hasta
+    # confirmar cada una individualmente contra el texto de reglas real de
+    # un mercado de esa ciudad (mismo proceso que ya se hizo para KLGA).
     "miami": {
         "icao": "KMIA", "lat": 25.7617, "lon": -80.1918,
         "tz": "America/New_York", "name": "Miami Intl (KMIA)",
-        "verified": True,
+        "verified": true,
     },
     "new york": {
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
         "tz": "America/New_York", "name": "LaGuardia (KLGA)",
-        "verified": True,
-        "note": ("CONFIRMADO 05/09/2026 en un mercado real de NYC: la regla "
-                 "de resolución cita weather.gov/wrh/timeseries?site=klga, "
-                 "liquida por el botón 'Show Hourly Data' (SOLO reportes "
-                 "METAR rutinarios en punto, no SPECI), usa Weather "
-                 "Underground Daily Observations como fallback si no hay "
-                 "dato de NOAA antes de las 11:59pm ET del día siguiente, y "
-                 "resuelve al bracket más bajo si no hay dato de ninguna "
-                 "fuente para esa hora límite. Muestra n=1 -- si aparece un "
-                 "mercado de NYC con texto de regla distinto, revisar de "
-                 "nuevo antes de asumir que aplica la misma."),
+        "verified": True,    
     },
     "nyc": {  # alias
         "icao": "KLGA", "lat": 40.7769, "lon": -73.8740,
-        "tz": "America/New_York", "name": "LaGuardia (KLGA)",
-        "verified": True,
+        "tz": "America/New_York", "name": "LaGuardia (KLGA)","verified": True,
         "note": "Ver nota de 'new york'.",
     },
     "chicago": {
-        "icao": "KMDW", "lat": 41.7868, "lon": -87.7522,
-        "tz": "America/Chicago", "name": "Midway (KMDW)", "verified": True,
+        "icao": "KORD", "lat": 41.7868, "lon": -87.7522,
+        "tz": "America/Chicago", "name": "Midway (KMDW)", "verified": False,
     },
     "los angeles": {
         "icao": "KLAX", "lat": 33.9425, "lon": -118.4081,
-        "tz": "America/Los_Angeles", "name": "LAX (KLAX)", "verified": True,
-    },
-    "philadelphia": {
-        "icao": "KPHL", "lat": 39.8721, "lon": -75.2411,
-        "tz": "America/New_York", "name": "Philadelphia Intl (KPHL)", "verified": True,
-    },
-    "austin": {
-        "icao": "KAUS", "lat": 30.1975, "lon": -97.6664,
-        "tz": "America/Chicago", "name": "Austin-Bergstrom (KAUS)", "verified": True,
-    },
-    "denver": {
-        "icao": "KDEN", "lat": 39.8617, "lon": -104.6731,
-        "tz": "America/Denver", "name": "Denver Intl (KDEN)", "verified": True,
-    },
-    "houston": {
-        "icao": "KHOU", "lat": 29.6454, "lon": -95.2789,
-        "tz": "America/Chicago", "name": "Houston Hobby (KHOU)", "verified": True,
-    },
-    "phoenix": {
-        "icao": "KPHX", "lat": 33.4342, "lon": -112.0116,
-        "tz": "America/Phoenix", "name": "Phoenix Sky Harbor (KPHX)", "verified": True,
+        "tz": "America/Los_Angeles", "name": "LAX (KLAX)","verified": True, 
     },
     "dallas": {
-        "icao": "KDFW", "lat": 32.8998, "lon": -97.0403,
+        "icao": "KDAL", "lat": 32.85416, "lon": -96.85506,
         "tz": "America/Chicago", "name": "DFW (KDFW)", "verified": True,
-    },
-    "boston": {
-        "icao": "KBOS", "lat": 42.3656, "lon": -71.0096,
-        "tz": "America/New_York", "name": "Logan (KBOS)", "verified": True,
     },
     "seattle": {
         "icao": "KSEA", "lat": 47.4502, "lon": -122.3088,
         "tz": "America/Los_Angeles", "name": "Sea-Tac (KSEA)", "verified": True,
-    },
-    "atlanta": {
-        "icao": "KATL", "lat": 33.6407, "lon": -84.4277,
-        "tz": "America/New_York", "name": "Hartsfield-Jackson (KATL)", "verified": True,
     },
 }
 
@@ -663,13 +637,32 @@ def build_bucket_distribution(center, buckets, base_sigma=1.6, confidence_penalt
     solo — la skill marca esto explícitamente como el error más común
     ('overconfident single-bucket distributions'). `confidence_penalty`
     (0-1, viene de estimate_adjusted_high) ensancha sigma cuando faltó
-    alguna fuente de datos."""
+    alguna fuente de datos.
+
+    AUDITORÍA (06/09/2026, tras 34 señales cerradas con 9% de aciertos):
+    normalizar para que sume 1 sobre los buckets que llegaron es correcto
+    SOLO si esos buckets cubren todo el rango real del evento (incluidos
+    los dos buckets de cola "X°F or below"/"Y°F or higher" que Polymarket
+    sí incluye en sus mercados de clima reales -- confirmado 06/09/2026
+    contra un evento real: 11 outcomes totales, 2 de cola + 9 de rango).
+    Si por lo que sea (parseo que falla en una frase nueva, un bucket que
+    no llegó en el batch de Gamma, etc.) faltan buckets que deberían
+    absorber masa real, `total` queda bien por debajo de 1 y dividir por
+    él INFLA artificialmente cada bucket que sí llegó -- exactamente el
+    patrón que explicaría my_prob sistemáticamente por encima de lo que
+    después ocurre en la realidad. No se pudo confirmar en vivo si esto es
+    lo que está pasando hoy (sin acceso directo a la respuesta cruda de
+    Gamma desde acá) -- se agrega `total` al retorno para poder verlo en
+    cada señal de ahora en adelante y confirmar o descartar la hipótesis
+    con datos reales en vez de a ciegas.
+    """
     sigma = base_sigma * (1 + confidence_penalty)
     raw = {}
     for b in buckets:
         raw[b["condition_id"]] = _bucket_probability(center, sigma, b["parsed_bucket"])
-    total = sum(raw.values()) or 1.0
-    return {cid: p / total for cid, p in raw.items()}, sigma
+    total = sum(raw.values())
+    safe_total = total or 1.0
+    return {cid: p / safe_total for cid, p in raw.items()}, sigma, total
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +771,26 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     hour_mult = _hour_sigma_multiplier(hour)
     situational_base_sigma = getattr(config, "WEATHER_BASE_SIGMA_F", 2.4) * hour_mult + extra_widen
     notes.append(f"Sigma base situacional: {situational_base_sigma:.2f}°F (multiplicador horario x{hour_mult:.2f} + ensanche {extra_widen:.2f}°F).")
-    distribution, sigma = build_bucket_distribution(center, buckets, base_sigma=situational_base_sigma, confidence_penalty=penalty)
+    distribution, sigma, raw_total_mass = build_bucket_distribution(center, buckets, base_sigma=situational_base_sigma, confidence_penalty=penalty)
+
+    # AUDITORÍA (06/09/2026): ver comentario en build_bucket_distribution.
+    # Si la masa cruda (antes de normalizar) es baja, significa que los
+    # buckets que llegaron para este evento no cubren bien la campana
+    # centrada en `center` -- o falta algún bucket (posible bug de parseo/
+    # fetch, ver comentario arriba) o el propio `center` está bastante
+    # lejos del rango que Polymarket armó para este evento. En cualquiera
+    # de los dos casos, normalizar y confiar en el resultado es peligroso:
+    # se estaría inflando probabilidad sobre una base incompleta. Se
+    # penaliza fuerte la confianza en vez de operar ciego.
+    if raw_total_mass < 0.5:
+        penalty = min(1.0, penalty + 0.5)
+        notes.append(
+            f"Masa de probabilidad cruda antes de normalizar: {raw_total_mass:.2f} (sobre "
+            f"{len(buckets)} buckets recibidos) -- por debajo de 0.5, puede faltar algún "
+            f"bucket real del evento (revisar manualmente); confianza reducida fuerte."
+        )
+    else:
+        notes.append(f"Masa de probabilidad cruda antes de normalizar: {raw_total_mass:.2f} (sobre {len(buckets)} buckets recibidos).")
 
     # AUDITORÍA (03/09/2026): la skill de referencia (wu-airport-weather,
     # STEP 0) es explícita en que si la estación de asentamiento no está
@@ -856,10 +868,23 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     # es autómaticamente malo, solo el que no resiste verificación real.
     best = None
     discard_notes = []
-    candidates = [
-        r for r in rows
-        if r["ev"] is not None and r["ev"] >= effective_min_ev and r["market_price"] >= min_price
-    ][:3]
+    # AUDITORÍA (06/09/2026): no alcanza con anotar raw_total_mass bajo en
+    # las notas -- mientras no se confirme con datos reales si esto
+    # explica el 9% de aciertos sobre 34 señales cerradas, lo prudente es
+    # no operar sobre una distribución que se sabe potencialmente inflada
+    # por normalización sobre buckets incompletos, no solo penalizar la
+    # confianza y seguir igual.
+    if raw_total_mass < 0.5:
+        candidates = []
+        discard_notes.append(
+            f"Masa cruda {raw_total_mass:.2f} < 0.5 -- distribución probablemente inflada "
+            f"por normalización sobre buckets incompletos, no se opera hasta confirmar."
+        )
+    else:
+        candidates = [
+            r for r in rows
+            if r["ev"] is not None and r["ev"] >= effective_min_ev and r["market_price"] >= min_price
+        ][:3]
 
     if client is None and candidates:
         discard_notes.append(
