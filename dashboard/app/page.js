@@ -390,4 +390,826 @@ function useCarouselNav() {
   function handleScroll() {
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
-      
+      rafRef.current = null;
+      const el = containerRef.current;
+      if (!el || el.children.length === 0) return;
+      const cardWidth = el.children[0].offsetWidth + 12; // + gap
+      setActive(Math.round(el.scrollLeft / cardWidth));
+    });
+  }
+  function goTo(i) {
+    const el = containerRef.current;
+    if (!el || !el.children.length) return;
+    const idx = Math.max(0, Math.min(el.children.length - 1, i));
+    el.children[idx].scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+  }
+  useEffect(() => () => {
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+  }, []);
+  return { containerRef, active, handleScroll, goTo };
+}
+
+// NUEVO: flechas + puntos (o contador, si hay muchos elementos) debajo de
+// cualquier carrusel horizontal. Antes solo existían los puntos, que no
+// alcanzan para "adelante/atrás" sin deslizar con el dedo — esto agrega
+// una forma explícita de navegar, y con más de `maxDots` elementos (p.ej.
+// la bitácora de decisiones puede tener decenas) evita una fila de puntos
+// imposible de leer, mostrando "3 / 47" en su lugar.
+function CarouselNav({ count, active, goTo, maxDots = 10 }) {
+  if (count <= 1) return null;
+  return (
+    <div className="carousel-nav">
+      <button type="button" className="carousel-arrow" onClick={() => goTo(active - 1)}
+        disabled={active === 0} aria-label="Anterior">‹</button>
+      {count <= maxDots ? (
+        <div className="carousel-dots">
+          {Array.from({ length: count }).map((_, i) => (
+            <button key={i} type="button" className={`carousel-dot ${i === active ? "active" : ""}`}
+              aria-label={`Ir a la tarjeta ${i + 1}`} onClick={() => goTo(i)} />
+          ))}
+        </div>
+      ) : (
+        <span className="carousel-counter">{active + 1} / {count}</span>
+      )}
+      <button type="button" className="carousel-arrow" onClick={() => goTo(active + 1)}
+        disabled={active === count - 1} aria-label="Siguiente">›</button>
+    </div>
+  );
+}
+
+// NUEVO: fila de una tarjeta (etiqueta arriba, valor abajo) — mismo patrón
+// visual que antes usaban las filas de tabla apiladas en mobile (data-label),
+// ahora reutilizado dentro de una tarjeta de carrusel.
+function RowField({ label, value, tone }) {
+  return (
+    <div className="row-field">
+      <span className="row-field-label">{label}</span>
+      <span className={`row-field-value ${tone || ""}`}>{value ?? "—"}</span>
+    </div>
+  );
+}
+
+// NUEVO: detalle expandible de los checks de riesgo dentro de cada tarjeta
+// de la bitácora. Antes la tarjeta solo mostraba "Bloqueada" sin decir cuál
+// filtro falló — el dato completo (risk_detail.checks, con label + ok/fail
+// por cada chequeo: spread, exposición, drawdown, volatilidad, correlación,
+// circuit breaker) ya venía en la respuesta de la API pero no se usaba acá.
+function RiskChecklist({ detail }) {
+  const checks = detail?.checks;
+  if (!checks || checks.length === 0) return null;
+  return (
+    <details className="risk-detail">
+      <summary>Ver detalle del riesgo</summary>
+      <ul className="risk-detail-list">
+        {checks.map((c, i) => (
+          <li key={i} className={c.ok ? "ok" : "fail"}>
+            <span className="risk-detail-icon">{c.ok ? "✓" : "✕"}</span>
+            <span>{c.label}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
+// NUEVO: reemplaza la tabla ancha (que en mobile se convertía en una lista
+// vertical larga, una tarjeta debajo de la otra) por un carrusel horizontal
+// de tarjetas — una por fila, con scroll lateral, flechas y puntos, igual
+// que el carrusel de indicadores. Así la página no se alarga tanto hacia
+// abajo sin importar cuántas filas haya.
+function RowCarousel({ items, keyExtractor, renderFields, emptyMessage, maxDots }) {
+  const { containerRef, active, handleScroll, goTo } = useCarouselNav();
+  if (!items || items.length === 0) {
+    return <p className="empty">{emptyMessage}</p>;
+  }
+  return (
+    <div className="row-carousel">
+      <div className="row-carousel-track" ref={containerRef} onScroll={handleScroll}>
+        {items.map((item) => (
+          <div className="row-card" key={keyExtractor(item)}>
+            {renderFields(item)}
+          </div>
+        ))}
+      </div>
+      <CarouselNav count={items.length} active={active} goTo={goTo} maxDots={maxDots} />
+    </div>
+  );
+}
+
+// NUEVO: % de riesgo y de objetivo, más el ratio R:B, calculados a partir de
+// entry/stop/target que ya vienen guardados en open_trades — antes la
+// tarjeta mostraba los tres precios pelados y había que hacer la cuenta a
+// mano para saber qué tan lejos está el stop o si el setup vale la pena.
+function riskRewardStats(entry, stop, target) {
+  if (!entry) return null;
+  const riskPct = (Math.abs(entry - stop) / entry) * 100;
+  const rewardPct = (Math.abs(target - entry) / entry) * 100;
+  const rr = riskPct > 0 ? rewardPct / riskPct : null;
+  return { riskPct, rewardPct, rr };
+}
+
+function CryptoOpenTable({ rows }) {
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin posiciones cripto abiertas ahora mismo."
+      renderFields={(r) => {
+        const rrStats = riskRewardStats(r.entry_price, r.current_stop, r.target_price);
+        return (
+          <>
+            <RowField label="Símbolo" value={r.symbol} />
+            <RowField label="Dirección" value={directionLabel(r.direction)} />
+            <RowField label="Entrada" value={r.entry_price?.toFixed(6)} />
+            <RowField
+              label="Target"
+              value={rrStats ? `${r.target_price?.toFixed(6)} (+${rrStats.rewardPct.toFixed(1)}%)` : r.target_price?.toFixed(6)}
+              tone="ok"
+            />
+            <RowField
+              label="Stop"
+              value={rrStats ? `${r.current_stop?.toFixed(6)} (-${rrStats.riskPct.toFixed(1)}%)` : r.current_stop?.toFixed(6)}
+              tone="fail"
+            />
+            <RowField label="Ratio R:B" value={rrStats?.rr ? `1 : ${rrStats.rr.toFixed(2)}` : "—"} />
+            <RowField label="Tamaño" value={r.position_size?.toFixed(6)} />
+            <RowField label="Abierta" value={parseTs(r.ts_opened).toLocaleString()} />
+          </>
+        );
+      }}
+    />
+  );
+}
+
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// lenguaje visual que los indicadores en vivo de cripto (una tarjeta por
+// categoría, flechas y puntos para navegar) en vez de una tabla ancha que
+// en mobile achicaba el texto o forzaba scroll lateral.
+// CAMBIADO (06/09/2026): antes mostraba SIEMPRE las categorías excluidas
+// mezcladas en el carrusel (marcadas 🚫) -- el usuario lo reportó como
+// ruido visual: Clima/Política/etc. ya están descartadas del indicador
+// principal, verlas repetidas acá abajo no aporta nada la mayoría de las
+// veces. Se sacan del carrusel por defecto; un toggle chico las trae de
+// vuelta para cuando sí hace falta compararlas (ej. decidir si sacar
+// alguna del filtro de exclusión).
+function PolymarketCategoryTable({ byCategory, excludedCategories = [] }) {
+  const [showExcluded, setShowExcluded] = useState(false);
+  const allRows = Object.entries(byCategory || {}).sort((a, b) => b[1].total_r - a[1].total_r);
+  const rows = showExcluded ? allRows : allRows.filter(([cat]) => !excludedCategories.includes(cat));
+  const hiddenCount = allRows.length - rows.length;
+  if (allRows.length === 0) {
+    return <p className="empty">Todavía no hay señales resueltas para desglosar por categoría.</p>;
+  }
+  const maxAbs = Math.max(...rows.map(([, s]) => Math.abs(s.total_r)), 0.01);
+  return (
+    <>
+      {hiddenCount > 0 && (
+        <button className="link-toggle" onClick={() => setShowExcluded(true)}>
+          + mostrar {hiddenCount} categoría{hiddenCount === 1 ? "" : "s"} excluida{hiddenCount === 1 ? "" : "s"}
+        </button>
+      )}
+      {showExcluded && hiddenCount === 0 && excludedCategories.length > 0 && (
+        <button className="link-toggle" onClick={() => setShowExcluded(false)}>
+          − ocultar categorías excluidas
+        </button>
+      )}
+      {rows.length === 0 ? (
+        <p className="empty">Todas las categorías con señales resueltas están excluidas del filtro — tocá "mostrar" arriba para verlas.</p>
+      ) : (
+        <RowCarousel
+          items={rows}
+          keyExtractor={([cat]) => cat}
+          emptyMessage="Todavía no hay señales resueltas para desglosar por categoría."
+          renderFields={([cat, s]) => {
+        const tone = s.total_r >= 0 ? "ok" : "fail";
+        const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
+        const isExcluded = excludedCategories.includes(cat);
+        return (
+          <>
+            <RowField label="Categoría" value={`${isExcluded ? "🚫 " : ""}${cat}${s.n < 5 ? " ⚠️" : ""}`} />
+            <RowField label="n" value={s.n} />
+            <RowField label="Win%" value={`${s.win_rate.toFixed(0)}%`} />
+            <RowField label="Expectancy" value={`${s.expectancy_r >= 0 ? "+ " : ""}${s.expectancy_r.toFixed(2)}R`} tone={tone} />
+            <RowField label="PF" value={s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"} />
+            <RowField
+              label="Total R"
+              value={
+                <div className="cell-bar-wrap">
+                  <span>{s.total_r >= 0 ? "+ " : ""}{s.total_r.toFixed(2)}R</span>
+                  <div className="cell-bar-track">
+                    <div className={`cell-bar-fill ${tone}`} style={{ width: `${barPct}%` }} />
+                  </div>
+                </div>
+              }
+              tone={tone}
+            />
+          </>
+        );
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// patrón que CryptoOpenTable (posiciones cripto abiertas).
+function PolymarketOpenTable({ rows }) {
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin señales de Polymarket abiertas ahora mismo."
+      renderFields={(r) => (
+        <>
+          <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+          <RowField label="Dirección" value={directionLabel(r.direction)} />
+          <RowField label="Entrada" value={r.entry?.toFixed(3)} />
+          <RowField label="Target" value={r.target?.toFixed(3)} tone="ok" />
+          <RowField label="Stop" value={r.stop?.toFixed(3)} tone="fail" />
+          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
+        </>
+      )}
+    />
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// MEJORADO (Semana 3.5): Historial de señales resueltas de Polymarket
+// con métricas de rendimiento detalladas: R-múltiple, retorno %, tiempo
+// hasta resolución, precios de entrada/salida.
+// ────────────────────────────────────────────────────────────────────
+// CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
+// patrón que el resto de los carruseles (indicadores, posiciones, bitácora).
+function PolymarketResolvedTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Todavía no hay señales resueltas.</p>;
+  }
+
+  // Calcular métricas para cada fila
+  const enrichedRows = rows.map((r) => {
+    const stopDistance = Math.abs(r.entry - r.stop);
+    const rMultiple = stopDistance > 0 && r.exit_price !== null
+      ? ((r.exit_price - r.entry) / stopDistance) * (r.direction === "YES" ? 1 : -1)
+      : null;
+    
+    const returnPct = r.entry > 0 && r.exit_price !== null
+      ? ((r.exit_price - r.entry) / r.entry) * 100
+      : null;
+    
+    const tsSignaled = r.ts_signaled ? parseTs(r.ts_signaled) : null;
+    const tsResolved = r.ts_resolved ? parseTs(r.ts_resolved) : null;
+    const timeToResolve = tsSignaled && tsResolved
+      ? (tsResolved.getTime() - tsSignaled.getTime()) / (1000 * 60 * 60) // horas
+      : null;
+    
+    return { ...r, rMultiple, returnPct, timeToResolve };
+  });
+
+  return (
+    <RowCarousel
+      items={enrichedRows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Todavía no hay señales resueltas."
+      renderFields={(r) => {
+        const isWin = r.outcome === "target";
+        const rTone = r.rMultiple !== null ? (r.rMultiple >= 0 ? "ok" : "fail") : "";
+        const retTone = r.returnPct !== null ? (r.returnPct >= 0 ? "ok" : "fail") : "";
+        return (
+          <>
+            <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+            <RowField label="Dirección" value={directionLabel(r.direction)} />
+            <RowField label="Entrada" value={r.entry?.toFixed(3)} />
+            <RowField label="Salida" value={r.exit_price?.toFixed(3)} />
+            <RowField label="R-Múltiple" tone={rTone}
+              value={r.rMultiple !== null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"} />
+            <RowField label="Retorno" tone={retTone}
+              value={r.returnPct !== null ? `${r.returnPct >= 0 ? "+" : ""}${r.returnPct.toFixed(1)}%` : "—"} />
+            <RowField label="Tiempo"
+              value={r.timeToResolve !== null
+                ? (r.timeToResolve < 24 ? `${r.timeToResolve.toFixed(1)}h` : `${(r.timeToResolve / 24).toFixed(1)}d`)
+                : "—"} />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+              <span className={isWin ? "result-badge result-win" : "result-badge result-loss"}>
+                {isWin ? "✅ GANADA" : "❌ PERDIDA"}
+              </span>
+            } />
+          </>
+        );
+      }}
+    />
+  );
+}
+
+// NUEVO: retorno simulado por señal de clima resuelta — mismo cálculo que
+// weatherReturnPct() en api/data/route.js (no comparten código porque uno
+// corre en el servidor y este en el cliente, mismo patrón que
+// CATEGORY_RULES/categorize más arriba). Comprar "SI" a market_price:
+// si resuelve 'yes' se cobra $1 (retorno = 1/precio - 1), si resuelve
+// 'no' se pierde toda la apuesta (-100%). outcome='stop' (06/09/2026):
+// salida anticipada por stop-loss, retorno real contra exit_price en vez
+// de -100 fijo -- ver mismo comentario en route.js.
+function weatherReturnPct(row) {
+  if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
+  if (row.outcome === "yes") return ((1 - row.market_price) / row.market_price) * 100;
+  if (row.outcome === "stop") {
+    if (row.exit_price === null || row.exit_price === undefined) return -100;
+    return ((row.exit_price - row.market_price) / row.market_price) * 100;
+  }
+  return -100;
+}
+
+function WeatherStatsRow({ stats }) {
+  if (!stats || stats.n === 0) {
+    return (
+      <div className="card">
+        <h2>Performance — Clima (señales resueltas)</h2>
+        <p className="empty">Sin señales de clima resueltas todavía — las métricas aparecen cuando el mercado cierre y se pueda comparar con el resultado real.</p>
+      </div>
+    );
+  }
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
+  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
+  return (
+    <div className="card">
+      <h2>Performance — Clima (señales resueltas)</h2>
+      <p className="card-subtitle">Simulando comprar "SI" al precio de mercado del momento de la señal, $1 nocional por operación.</p>
+      <div className="stats-grid">
+        <StatCard label="Señales resueltas" value={stats.n} />
+        <StatCard label="Acertadas (SI)" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone} barPct={stats.win_rate}
+          info="Porcentaje de buckets de temperatura que efectivamente ocurrieron." />
+        <StatCard label="Retorno promedio" value={stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null}
+          suffix="%" tone={retTone} info={GLOSSARY.find(([k]) => k === "Retorno promedio (clima)")[1]} />
+        <StatCard label="Brier score" value={stats.brier_score !== null ? stats.brier_score.toFixed(3) : null} tone={brierTone}
+          info={GLOSSARY.find(([k]) => k === "Brier score")[1]} />
+      </div>
+    </div>
+  );
+}
+
+// CAMBIADO (05/09/2026): de tabla con scroll horizontal a carrusel de
+// tarjetas — mismo lenguaje visual que Polymarket/Cripto (una tarjeta por
+// señal, flechas y puntos para navegar), en vez de la tabla vieja que en
+// mobile se leía como una lista larga de filas apiladas por data-label.
+function WeatherOpenTable({ rows }) {
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin señales de clima abiertas ahora mismo."
+      renderFields={(r) => (
+        <>
+          <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+          <RowField label="Estación" value={r.station_icao || "—"} />
+          <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+          <RowField label="EV" tone={r.ev >= 0 ? "ok" : "fail"}
+            value={r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
+        </>
+      )}
+    />
+  );
+}
+
+// CAMBIADO (05/09/2026): mismo patrón de carrusel que el resto — ver
+// comentario de WeatherOpenTable arriba.
+function WeatherResolvedTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Todavía no hay señales de clima resueltas.</p>;
+  }
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Todavía no hay señales de clima resueltas."
+      renderFields={(r) => {
+        const ret = weatherReturnPct(r);
+        const isWin = r.outcome === "yes";
+        const isStop = r.outcome === "stop";
+        const badgeClass = isWin ? "result-win" : isStop ? "result-stop" : "result-loss";
+        const badgeText = isWin ? "✅ SI OCURRIÓ" : isStop ? "🛑 STOP-LOSS" : "❌ NO OCURRIÓ";
+        return (
+          <>
+            <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+            <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+            <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+            <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
+              value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+              <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
+            } />
+            <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
+          </>
+        );
+      }}
+    />
+  );
+}
+
+function WeatherTab({ data }) {
+  return (
+    <>
+      <PlainSummary halted={false} stats={data.weather_stats} label="clima" />
+      <WeatherStatsRow stats={data.weather_stats} />
+      <div className="card">
+        <h2>Señales abiertas ({data.weather_open?.length || 0})</h2>
+        <p className="card-subtitle">Buckets de temperatura que el bot encontró con ventaja y todavía no se resolvieron.</p>
+        <WeatherOpenTable rows={data.weather_open} />
+      </div>
+      <div className="card">
+        <h2>Historial reciente</h2>
+        <WeatherResolvedTable rows={data.weather_resolved} />
+      </div>
+      <Glossary />
+    </>
+  );
+}
+
+// NUEVO (04/09/2026): mismo patrón que Clima -- mlb_signal_engine.py es el
+// primer draft, todavía sin señales resueltas para calibrar HOME_FIELD_EDGE
+// ni PITCHER_ERA_SCALE (ver AUDITORÍA en config.py). Este tab existe para
+// poder ir revisando a ojo lo que el motor manda antes de confiar en él.
+// outcome='stop' (06/09/2026): mismo agregado que weatherReturnPct arriba.
+function mlbReturnPct(row) {
+  if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
+  if (row.outcome === "win") return ((1 - row.market_price) / row.market_price) * 100;
+  if (row.outcome === "stop") {
+    if (row.exit_price === null || row.exit_price === undefined) return -100;
+    return ((row.exit_price - row.market_price) / row.market_price) * 100;
+  }
+  return -100;
+}
+
+function MlbStatsRow({ stats }) {
+  if (!stats || stats.n === 0) {
+    return (
+      <div className="card">
+        <h2>Performance — MLB (señales resueltas)</h2>
+        <p className="empty">Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real.</p>
+      </div>
+    );
+  }
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
+  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
+  return (
+    <div className="card">
+      <h2>Performance — MLB (señales resueltas)</h2>
+      <p className="card-subtitle">Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal.</p>
+      <div className="stats-grid">
+        <StatCard label="Señales resueltas" value={stats.n} />
+        <StatCard label="Acertadas" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone} barPct={stats.win_rate}
+          info="Porcentaje de veces que el equipo/lado elegido por el modelo efectivamente ganó." />
+        <StatCard label="Retorno promedio" value={stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null}
+          suffix="%" tone={retTone} info={GLOSSARY.find(([k]) => k === "Retorno promedio (MLB)")[1]} />
+        <StatCard label="Brier score" value={stats.brier_score !== null ? stats.brier_score.toFixed(3) : null} tone={brierTone}
+          info={GLOSSARY.find(([k]) => k === "Brier score")[1]} />
+      </div>
+    </div>
+  );
+}
+
+// CAMBIADO (05/09/2026): de tabla con scroll horizontal a carrusel de
+// tarjetas — mismo patrón que Polymarket/Cripto/Clima (ver comentario de
+// WeatherOpenTable arriba).
+function MlbOpenTable({ rows }) {
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Sin señales de MLB abiertas ahora mismo."
+      renderFields={(r) => (
+        <>
+          <RowField label="Partido" value={`${r.away_team} @ ${r.home_team}`} />
+          <RowField label="Lado" value={r.direction === "YES" ? r.home_team : r.away_team} />
+          <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+          <RowField label="EV" tone={r.ev >= 0 ? "ok" : "fail"}
+            value={r.ev !== null && r.ev !== undefined ? `${r.ev >= 0 ? "+" : ""}${(r.ev * 100).toFixed(1)}%` : "—"} />
+          <RowField label="Confianza" value={r.confidence !== null && r.confidence !== undefined ? `${r.confidence}/5` : "—"} />
+          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
+        </>
+      )}
+    />
+  );
+}
+
+// CAMBIADO (05/09/2026): mismo patrón de carrusel que el resto — ver
+// comentario de WeatherOpenTable arriba.
+function MlbResolvedTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Todavía no hay señales de MLB resueltas.</p>;
+  }
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Todavía no hay señales de MLB resueltas."
+      renderFields={(r) => {
+        const ret = mlbReturnPct(r);
+        const sideTeam = r.direction === "YES" ? r.home_team : r.away_team;
+        const isWin = r.outcome === "win";
+        const isStop = r.outcome === "stop";
+        const badgeClass = isWin ? "result-win" : isStop ? "result-stop" : "result-loss";
+        const badgeText = isWin ? `✅ GANÓ (${sideTeam})` : isStop ? `🛑 STOP-LOSS (${sideTeam})` : `❌ PERDIÓ (${sideTeam})`;
+        return (
+          <>
+            <RowField label="Partido" value={`${r.away_team} @ ${r.home_team}`} />
+            <RowField label="Lado" value={sideTeam} />
+            <RowField label="Mi prob." value={r.my_prob !== null && r.my_prob !== undefined ? `${(r.my_prob * 100).toFixed(1)}%` : "—"} />
+            <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
+            <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
+              value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+              <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
+            } />
+            <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
+          </>
+        );
+      }}
+    />
+  );
+}
+
+function MlbTab({ data }) {
+  return (
+    <>
+      <PlainSummary halted={false} stats={data.mlb_stats} label="MLB" />
+      <MlbStatsRow stats={data.mlb_stats} />
+      <div className="card">
+        <h2>Señales abiertas ({data.mlb_open?.length || 0})</h2>
+        <p className="card-subtitle">Partidos de hoy donde el modelo (log5 + localía + pitchers probables) encontró ventaja contra el precio de Polymarket.</p>
+        <MlbOpenTable rows={data.mlb_open} />
+      </div>
+      <div className="card">
+        <h2>Historial reciente</h2>
+        <MlbResolvedTable rows={data.mlb_resolved} />
+      </div>
+      <Glossary />
+    </>
+  );
+}
+
+function Glossary() {
+  return (
+    <details className="glossary card">
+      <summary>¿Qué significan estos términos?</summary>
+      <dl className="glossary-list">
+        {GLOSSARY.map(([term, def]) => (
+          <div key={term} className="glossary-item">
+            <dt>{term}</dt>
+            <dd>{def}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
+}
+
+// NUEVO: carrusel horizontal para las tarjetas de indicadores. Antes era
+// una grilla que en mobile terminaba siendo una lista vertical larga —
+// se vuelve incómodo apenas se agregan más símbolos en SYMBOLS (.env).
+// Es scroll nativo con snap (sin librerías). Cada tarjeta ocupa el 100%
+// del ancho disponible (mobile y escritorio) para que se vea siempre
+// completa y no cortada por la tarjeta vecina asomando al costado;
+// las flechas y los puntos de abajo son la forma de moverse entre ellas.
+function IndicatorCarousel({ symbols, indicatorsBySymbol }) {
+  const { containerRef, active, handleScroll, goTo } = useCarouselNav();
+  return (
+    <div className="indicator-carousel">
+      <div className="indicator-carousel-track" ref={containerRef} onScroll={handleScroll}>
+        {symbols.map((symbol) => (
+          <IndicatorCard key={symbol} symbol={symbol} snapshot={indicatorsBySymbol[symbol]} />
+        ))}
+      </div>
+      <CarouselNav count={symbols.length} active={active} goTo={goTo} />
+    </div>
+  );
+}
+
+function CriptoTab({ data }) {
+  const indicatorsBySymbol = Object.fromEntries((data.indicators || []).map((s) => [s.symbol, s]));
+  // Símbolos a mostrar: unión de lo configurado (inferido de los snapshots
+  // recibidos) y lo que aparece en la bitácora, así no queda un símbolo
+  // fuera solo porque nunca tuvo señal de trading.
+  const symbols = Array.from(
+    new Set([...(data.indicators || []).map((s) => s.symbol), ...data.decisions.map((d) => d.symbol)])
+  );
+  const staleSymbols = symbols.filter((s) => {
+    const f = freshnessState(indicatorsBySymbol[s]?.ts);
+    return f.tone === "warn" || f.tone === "fail";
+  });
+  return (
+    <>
+      <PlainSummary halted={data.halted} haltReason={data.halt_reason} stats={data.stats} label="cripto" />
+      <div className="card">
+        <h2>Indicadores en vivo</h2>
+        <p className="card-subtitle">Cómo está el mercado ahora mismo para cada símbolo que sigue el bot — no implica que vaya a operar.</p>
+        {staleSymbols.length > 0 && (
+          <div className="stale-banner">
+            ⚠ {staleSymbols.join(", ")} no se {staleSymbols.length > 1 ? "actualizan" : "actualiza"} desde hace rato — puede que el cron externo no esté corriendo.
+          </div>
+        )}
+        {symbols.length > 0 ? (
+          <IndicatorCarousel symbols={symbols} indicatorsBySymbol={indicatorsBySymbol} />
+        ) : (
+          <p className="empty">
+            Esperando el primer ciclo exitoso — las tarjetas aparecen solas apenas se guarde el primer snapshot.
+          </p>
+        )}
+      </div>
+      <StatsRow title="Performance — Cripto (trades cerrados)" stats={data.stats} showProfitFactor />
+      <div className="card">
+        <h2>Posiciones abiertas</h2>
+        <p className="card-subtitle">Operaciones en modo papel que el bot ya "abrió" y todavía no llegaron a su target ni a su stop.</p>
+        <CryptoOpenTable rows={data.crypto_open} />
+      </div>
+      <div className="card">
+        <h2>Equity</h2>
+        <p className="card-subtitle">Evolución del capital simulado a lo largo del tiempo.</p>
+        <EquityChart points={data.equity} />
+      </div>
+      <div className="card">
+        <h2>Bitácora de decisiones</h2>
+        <p className="card-subtitle">Cada vez que el bot detecta una señal, queda registrado acá qué decidió hacer con ella.</p>
+        <RowCarousel
+          items={data.decisions}
+          keyExtractor={(d) => d.id}
+          emptyMessage="Todavía no hay decisiones registradas."
+          maxDots={8}
+          renderFields={(d) => (
+            <>
+              <RowField label="Fecha" value={parseTs(d.ts).toLocaleString()} />
+              <RowField label="Símbolo" value={d.symbol} />
+              <RowField label="Señal" value={d.signal_type || "—"} />
+              <RowField label="Dirección" value={directionLabel(d.direction)} />
+              <RowField label="Confianza" value={d.confidence ? "★".repeat(d.confidence) : "—"} />
+              <RowField label="Riesgo" value={d.risk_pass ? "OK" : "Bloqueada"} tone={d.risk_pass ? "ok" : "fail"} />
+              <RowField label="Decisión" value={decisionLabel(d.decision)} tone={`decision-${d.decision}`} />
+              <RiskChecklist detail={d.risk_detail} />
+            </>
+          )}
+        />
+      </div>
+      <Glossary />
+    </>
+  );
+}
+
+function PolymarketTab({ data }) {
+  const excluded = data.polymarket_excluded_categories || [];
+  return (
+    <>
+      <PlainSummary halted={false} stats={data.polymarket_stats} label="Polymarket" />
+      <StatsRow title="Performance — Polymarket (sin categorías excluidas)" stats={data.polymarket_stats}
+        emptyMessage="Sin señales resueltas todavía — las métricas aparecen cuando el motor encuentre y cierre alguna." />
+      {excluded.length > 0 && (
+        <p className="card-subtitle">
+          Excluidas del indicador de arriba por bajo desempeño: {excluded.join(", ")}.{" "}
+          {data.polymarket_stats_all_categories?.n > 0 && (
+            <>Con esas categorías incluidas, el win rate real es {data.polymarket_stats_all_categories.win_rate.toFixed(1)}%
+            {" "}sobre {data.polymarket_stats_all_categories.n} señales.</>
+          )}
+        </p>
+      )}
+      <div className="card">
+        <h2>Performance por categoría</h2>
+        <p className="card-subtitle">Categorías activas (no excluidas del filtro). Las excluidas quedan ocultas por defecto — hay un botón para mostrarlas si hace falta compararlas.</p>
+        <PolymarketCategoryTable byCategory={data.polymarket_stats_by_category} excludedCategories={excluded} />
+      </div>
+      <div className="card">
+        <h2>Señales abiertas ({data.polymarket_open?.length || 0})</h2>
+        <p className="card-subtitle">Mercados de predicción que el bot encontró y todavía no se resolvieron.</p>
+        <PolymarketOpenTable rows={data.polymarket_open} />
+      </div>
+      <div className="card">
+        <h2>Historial reciente</h2>
+        <PolymarketResolvedTable rows={data.polymarket_resolved} />
+      </div>
+      <Glossary />
+    </>
+  );
+}
+
+// Nombres técnicos de failed_sections (ver api/data/route.js) traducidos
+// a algo legible para el banner.
+const SECTION_LABELS = {
+  // FIX: estas 4 antes tumbaban todo el panel con un error genérico si
+  // fallaban (ver el comentario junto a namedResults en api/data/route.js)
+  // — ahora degradan igual que el resto, así que necesitan su label acá.
+  equity: "historial de equity",
+  decisions: "bitácora de decisiones",
+  bot_state: "estado del bot",
+  pending: "decisiones pendientes",
+  crypto_open: "posiciones cripto abiertas",
+  crypto_stats: "estadísticas de cripto",
+  polymarket_open: "señales de Polymarket abiertas",
+  polymarket_resolved: "historial de Polymarket",
+  indicators: "indicadores técnicos",
+  weather_open: "señales de clima abiertas",
+  weather_resolved: "historial de clima",
+  mlb_open: "señales de MLB abiertas",
+  mlb_resolved: "historial de MLB",
+};
+
+export default function Dashboard() {
+  const [data, setData] = useState(null);
+  // Error solo de la carga MÁS RECIENTE — si ya había datos de una carga
+  // anterior exitosa, un fallo transitorio (timeout, blip de red) ya no
+  // borra la pantalla entera; se sigue mostrando el último dato bueno
+  // con un aviso de que está desactualizado, en vez de perderlo.
+  const [error, setError] = useState("");
+  const [tab, setTab] = useState("cripto");
+  
+  async function load() {
+    try {
+      const res = await fetch("/api/data", { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "No se pudo cargar el panel");
+      setData(json);
+      setError("");
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+  
+  useEffect(() => {
+    load();
+    // FIX: antes el setInterval de 15s corría siempre, aunque la pestaña
+    // estuviera en background — cada pestaña abierta y olvidada seguía
+    // pegándole a /api/data (y de ahí a 11 queries en Supabase) cada 15s
+    // sin que nadie la estuviera mirando. Se pausa con
+    // document.visibilityState y se relanza (con una carga inmediata, para
+    // no esperar hasta el próximo tick de 15s) al volver a la pestaña.
+    let id = setInterval(load, 15000);
+    function handleVisibility() {
+      if (document.visibilityState === "hidden") {
+        clearInterval(id);
+      } else {
+        load();
+        id = setInterval(load, 15000);
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, []);
+  
+  // Sin datos todavía (primera carga) y ya falló: ahí sí no hay nada que
+  // mostrar más que el error.
+  if (error && !data) {
+    return (
+      <div className="wrap">
+        <p className="error">{error}</p>
+      </div>
+    );
+  }
+  
+  if (!data) {
+    return (
+      <div className="wrap">
+        <p className="label">Cargando…</p>
+      </div>
+    );
+  }
+  
+  const failedLabels = (data.failed_sections || []).map((s) => SECTION_LABELS[s] || s);
+  
+  return (
+    <div className="wrap">
+      <div className="header">
+        <div>
+          <h1>Trader IA 24/7</h1>
+          <p className="header-subtitle">Panel de control del bot — operaciones en cripto y mercados de predicción</p>
+        </div>
+        <span className={`status ${data.halted ? "halted" : "online"}`}>
+          {data.halted ? `Detenido — ${data.halt_reason}` : "Sistema en línea"}
+        </span>
+      </div>
+      {error && (
+        <div className="pending-banner">
+          Última actualización falló ({error}) — mostrando el último dato disponible.
+        </div>
+      )}
+      {failedLabels.length > 0 && (
+        <div className="pending-banner">
+          No se pudo cargar: {failedLabels.join(", ")}. Esas secciones pueden verse vacías o desactualizadas.
+        </div>
+      )}
+      {data.pending.length > 0 && (
+        <div className="pending-banner">
+          Esperando tu respuesta en Telegram para: {data.pending.map((p) => p.symbol).join(", ")}
+        </div>
+      )}
+      <Tabs active={tab} onChange={setTab} />
+      {tab === "cripto" && <CriptoTab data={data} />}
+      {tab === "polymarket" && <PolymarketTab data={data} />}
+      {tab === "clima" && <WeatherTab data={data} />}
+      {tab === "mlb" && <MlbTab data={data} />}
+    </div>
+  );
+}
