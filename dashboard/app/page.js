@@ -221,6 +221,40 @@ function EquityChart({ points }) {
   );
 }
 
+// Selector de módulo para el gráfico de equity — AUDITORÍA (07/09/2026,
+// pedido del usuario): ahora hay 4 series de equity independientes (cripto/
+// clima/Polymarket/MLB, cada una arrancando en $100 -- ver
+// apply_binary_signal_pnl/apply_r_multiple_pnl en supabase_db.py), así que
+// el gráfico único de antes necesita una forma de elegir cuál mostrar sin
+// ocupar 4 cards separadas.
+const EQUITY_MODULES = [
+  { key: "equity", label: "Cripto" },
+  { key: "equity_weather", label: "Clima" },
+  { key: "equity_polymarket", label: "Polymarket" },
+  { key: "equity_mlb", label: "MLB" },
+];
+
+function EquityModuleTabs({ data }) {
+  const [active, setActive] = useState("equity");
+  return (
+    <div>
+      <div className="equity-module-tabs">
+        {EQUITY_MODULES.map((m) => (
+          <button
+            key={m.key}
+            type="button"
+            className={`equity-module-tab ${active === m.key ? "active" : ""}`}
+            onClick={() => setActive(m.key)}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <EquityChart points={data[active]} />
+    </div>
+  );
+}
+
 function StatCard({ label, value, suffix = "", tone, info, barPct }) {
   return (
     <div className={`stat-card ${tone || ""}`}>
@@ -1190,8 +1224,8 @@ function CriptoTab({ data }) {
       </div>
       <div className="card">
         <h2>Equity</h2>
-        <p className="card-subtitle">Evolución del capital simulado a lo largo del tiempo.</p>
-        <EquityChart points={data.equity} />
+        <p className="card-subtitle">Evolución del capital simulado a lo largo del tiempo, por módulo (cada uno arranca en $100).</p>
+        <EquityModuleTabs data={data} />
       </div>
       <div className="card">
         <h2>Bitácora de decisiones</h2>
@@ -1263,7 +1297,10 @@ const SECTION_LABELS = {
   // FIX: estas 4 antes tumbaban todo el panel con un error genérico si
   // fallaban (ver el comentario junto a namedResults en api/data/route.js)
   // — ahora degradan igual que el resto, así que necesitan su label acá.
-  equity: "historial de equity",
+  equity: "historial de equity (cripto)",
+  equity_weather: "historial de equity (clima)",
+  equity_polymarket: "historial de equity (Polymarket)",
+  equity_mlb: "historial de equity (MLB)",
   decisions: "bitácora de decisiones",
   bot_state: "estado del bot",
   pending: "decisiones pendientes",
