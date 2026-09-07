@@ -878,6 +878,21 @@ def run_mlb_track_results():
         if not result:
             continue  # partido todavía no terminó -- se reintenta en el próximo ciclo
 
+        # FIX (07/09/2026): fetch_game_result ahora puede devolver un
+        # partido terminado sin ganador real (cancelado, ver comentario en
+        # mlb_signal_engine.py) -- antes esto no existía como caso posible
+        # porque solo se aceptaba detailedState=="Final" con isWinner
+        # siempre en alguno de los dos lados. Se resuelve como "void" en
+        # vez de contarlo como derrota por default.
+        if result.get("voided"):
+            if not db.resolve_mlb_signal(sig["id"], "void"):
+                continue
+            resolved.append({
+                "game_pk": game_pk, "question": sig.get("question"),
+                "outcome": "void", "note": "Partido cancelado/sin resultado jugado",
+            })
+            continue
+
         bought_home = sig.get("direction") == "YES"
         won = result["home_won"] if bought_home else result["away_won"]
         outcome = "win" if won else "loss"
@@ -954,10 +969,35 @@ def run_weather_track_results():
         # cobrar vendiendo AHORA), no el último precio operado, mismo
         # criterio que ya usa check_open_signals() en
         # polymarket_track_results.py para Polymarket genérico.
+        #
+        # FIX (07/09/2026, usuario reportó señales de clima perdidas al
+        # 100% pese al stop del 20%): best_bid sale de max(bids) del book
+        # -- si el book no tiene NINGÚN bid, da None y este chequeo se
+        # salteaba entero, cayendo directo al chequeo de "¿ya cerró del
+        # todo?" de más abajo. El problema: un bucket barato e ilíquido
+        # (el perfil que este motor busca a propósito) es justo el que se
+        # queda sin bids cuando el precio se derrumba hacia 0 -- nadie
+        # quiere comprar algo que el mercado ya da por descartado. O sea,
+        # el book se vacía EXACTAMENTE cuando más hace falta el stop, y la
+        # señal terminaba corriendo hasta la resolución completa (-100%)
+        # en vez de cortarse en -20%. Se agrega un respaldo: si no hay
+        # bid contra qué comparar, se usa el último precio operado
+        # (fetch_clob_market -- mismo dato que ya se pedía más abajo para
+        # el chequeo de cierre, ahora reusado acá para no duplicar la
+        # llamada) como proxy de que el precio ya cruzó el stop.
         stop = sig.get("stop")
-        if stop is not None and sig.get("yes_token_id"):
-            book = client.fetch_order_book_snapshot(sig["yes_token_id"])
-            if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
+        market = None
+        if stop is not None:
+            triggered_stop = False
+            if sig.get("yes_token_id"):
+                book = client.fetch_order_book_snapshot(sig["yes_token_id"])
+                if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
+                    triggered_stop = True
+            if not triggered_stop:
+                market = client.fetch_clob_market(condition_id)
+                if market and market.get("yes_price") is not None and market["yes_price"] <= stop:
+                    triggered_stop = True
+            if triggered_stop:
                 if db.resolve_weather_signal(sig["id"], "stop", exit_price=stop):
                     resolved.append({"condition_id": condition_id, "outcome": "stop", "exit_price": stop})
                 continue
@@ -967,7 +1007,8 @@ def run_weather_track_results():
         # y nunca traía el mercado real -- se usa fetch_clob_market(), que
         # busca por condition_id vía la CLOB API (donde sí es un path param
         # válido) y por eso resuelve de verdad.
-        market = client.fetch_clob_market(condition_id)
+        if market is None:
+            market = client.fetch_clob_market(condition_id)
         if not market or not market.get("closed"):
             continue  # todavía no resolvió de verdad -- se revisa en el próximo ciclo
 
