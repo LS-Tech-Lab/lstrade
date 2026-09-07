@@ -90,10 +90,17 @@ def check_open_signals(db, client, notifier, config):
                     f"nunca se detectó cruce de stop/target antes del cierre."
                 )
                 if notifier.enabled:
+                    late_return_pct = ((final_price - sig["entry"]) / sig["entry"]) * 100 if sig["entry"] > 0 else None
+                    late_profit_line = (
+                        f"{'Ganaste' if late_return_pct >= 0 else 'Perdiste'} {abs(late_return_pct):.1f}% "
+                        f"(entrada ${sig['entry']:.3f} → cierre ${final_price:.3f})"
+                        if late_return_pct is not None
+                        else f"Entrada: ${sig['entry']:.3f} → Cierre: ${final_price:.3f}"
+                    )
                     notifier.send_message(
                         f"⚠️ *Señal Polymarket resuelta sin aviso previo* — {sig['question'][:70]}\n"
                         f"Dirección: {sig['direction']} | El mercado ya cerró antes de cruzar stop/target.\n"
-                        f"Entrada: `{sig['entry']:.3f}` → Cierre: `{final_price:.3f}`\n"
+                        f"{late_profit_line}\n"
                         f"Revisar manualmente si esta posición se sostuvo hasta acá en la práctica."
                     )
             continue
@@ -103,24 +110,43 @@ def check_open_signals(db, client, notifier, config):
         if not db.resolve_polymarket_signal(sig["id"], exit_price, outcome):
             continue  # otra invocación ya la había resuelto
 
-        # Liquidez sólo como dato informativo en el mensaje, no como gate.
-        current_liquidity = client.fetch_order_book_liquidity(sig["token_id"])
-        liquidity_note = (
-            f"Liquidez al cierre: `${current_liquidity:,.0f}`" if current_liquidity is not None
-            else "Liquidez al cierre: sin datos"
-        )
-        if current_liquidity is not None and current_liquidity < min_liquidity:
-            liquidity_note += " ⚠️ liquidez baja — puede haber slippage al salir en Polymarket."
+        # FIX (07/09/2026, pedido explícito del usuario): el mensaje mostraba
+        # "Liquidez al cierre" siempre, pero no el beneficio real -- lo único
+        # que de verdad importa una vez resuelta la señal. La liquidez del
+        # book sigue siendo útil, pero solo como AVISO cuando está baja
+        # (riesgo real de slippage al salir); si está bien, no se menciona.
+        # Misma fórmula de retorno que ya usa el dashboard (route.js
+        # computePolymarketStats) para que el número coincida con las
+        # estadísticas agregadas: (salida - entrada) / entrada.
+        return_pct = ((exit_price - sig["entry"]) / sig["entry"]) * 100 if sig["entry"] > 0 else None
+        if return_pct is not None:
+            result_word = "Ganaste" if return_pct >= 0 else "Perdiste"
+            profit_line = f"{result_word} {abs(return_pct):.1f}% (entrada ${sig['entry']:.3f} → salida ${exit_price:.3f})"
+        else:
+            profit_line = f"Entrada: ${sig['entry']:.3f} → Salida: ${exit_price:.3f}"
 
-        emoji = "✅" if outcome == "target" else "🛑"
-        log.info(f"[{outcome.upper()}] {sig['question'][:60]} ({sig['direction']})")
+        current_liquidity = client.fetch_order_book_liquidity(sig["token_id"])
+        liquidity_warning = (
+            f"⚠️ Liquidez baja al cierre (${current_liquidity:,.0f}) — puede haber costado más "
+            f"caro salir de esta posición en la práctica."
+            if current_liquidity is not None and current_liquidity < min_liquidity
+            else None
+        )
+
+        # Mismo criterio que el fix de Cripto: el resultado real lo dice el
+        # signo del retorno, no cuál nivel (target/stop) fue el que se tocó.
+        won = return_pct >= 0 if return_pct is not None else outcome == "target"
+        emoji = "✅" if won else "🛑"
+        log.info(f"[{outcome.upper()}] {sig['question'][:60]} ({sig['direction']}) — {profit_line}")
         if notifier.enabled:
-            notifier.send_message(
+            message = (
                 f"{emoji} *Señal Polymarket resuelta* — {sig['question'][:70]}\n"
-                f"Dirección: {sig['direction']} | Resultado: {outcome.upper()}\n"
-                f"Entrada: `{sig['entry']:.3f}` → Salida: `{exit_price:.3f}`\n"
-                f"{liquidity_note}"
+                f"Dirección: {sig['direction']}\n"
+                f"{profit_line}"
             )
+            if liquidity_warning:
+                message += f"\n{liquidity_warning}"
+            notifier.send_message(message)
         time.sleep(0.2)
 
 def main():
