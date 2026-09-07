@@ -5,6 +5,8 @@ import sqlite3
 import time
 import json
 
+from weather_signal_engine import _half_kelly_fraction
+
 class Database:
     def __init__(self, path):
         self.conn = sqlite3.connect(path)
@@ -14,7 +16,15 @@ class Database:
     def _migrate(self):
         c = self.conn.cursor()
         c.execute("""CREATE TABLE IF NOT EXISTS equity_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, equity REAL NOT NULL)""")
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, equity REAL NOT NULL,
+            module TEXT NOT NULL DEFAULT 'crypto')""")
+        # AUDITORÍA (07/09/2026): columna `module` en bases ya existentes --
+        # mismo motivo/mecanismo que el ALTER TABLE de stop_distance de abajo
+        # (SQLite no soporta "ADD COLUMN IF NOT EXISTS").
+        try:
+            c.execute("ALTER TABLE equity_history ADD COLUMN module TEXT NOT NULL DEFAULT 'crypto'")
+        except sqlite3.OperationalError:
+            pass
         c.execute("""CREATE TABLE IF NOT EXISTS decisions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, symbol TEXT NOT NULL,
             signal_type TEXT, direction TEXT, confidence INTEGER, risk_pass INTEGER,
@@ -113,21 +123,56 @@ class Database:
             ts_resolved REAL)""")
         self.conn.commit()
 
-    def record_equity(self, equity):
-        self.conn.execute("INSERT INTO equity_history (ts, equity) VALUES (?,?)", (time.time(), equity))
+    def record_equity(self, equity, module="crypto"):
+        self.conn.execute("INSERT INTO equity_history (ts, equity, module) VALUES (?,?,?)", (time.time(), equity, module))
         self.conn.commit()
 
-    def peak_equity(self):
-        row = self.conn.execute("SELECT MAX(equity) as peak FROM equity_history").fetchone()
+    def peak_equity(self, module="crypto"):
+        row = self.conn.execute("SELECT MAX(equity) as peak FROM equity_history WHERE module = ?", (module,)).fetchone()
         return row["peak"] if row and row["peak"] is not None else None
 
-    def last_equity(self):
-        """Último equity registrado (no el pico histórico). Es el que hay que
-        usar como base para aplicar el P&L de un trade que se acaba de cerrar."""
+    def last_equity(self, module="crypto"):
+        """Último equity registrado (no el pico histórico) PARA ESE MÓDULO.
+        Es el que hay que usar como base para aplicar el P&L de un trade
+        que se acaba de cerrar en ese mismo módulo."""
         row = self.conn.execute(
-            "SELECT equity FROM equity_history ORDER BY ts DESC LIMIT 1"
+            "SELECT equity FROM equity_history WHERE module = ? ORDER BY ts DESC LIMIT 1", (module,)
         ).fetchone()
         return row["equity"] if row and row["equity"] is not None else None
+
+    def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None):
+        """Ver apply_binary_signal_pnl en supabase_db.py (misma lógica, esta
+        es la variante SQLite para el modo VPS/local)."""
+        base = self.last_equity(module)
+        if base is None:
+            base = 100.0
+
+        kelly = _half_kelly_fraction(my_prob, market_price)
+        pnl = 0.0
+        if kelly and kelly > 0 and market_price and market_price > 0:
+            stake = base * kelly
+            if outcome in ("yes", "win"):
+                pnl = stake * (1 - market_price) / market_price
+            elif outcome in ("no", "loss"):
+                pnl = -stake
+            elif outcome == "stop" and exit_price is not None:
+                pnl = stake * (exit_price - market_price) / market_price
+
+        new_equity = base + pnl
+        self.record_equity(new_equity, module=module)
+        return new_equity
+
+    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0):
+        """Ver apply_r_multiple_pnl en supabase_db.py (misma lógica, esta es
+        la variante SQLite para el modo VPS/local)."""
+        base = self.last_equity(module)
+        if base is None:
+            base = 100.0
+        risk_amount = base * (risk_pct / 100.0)
+        pnl = risk_amount * r_multiple
+        new_equity = base + pnl
+        self.record_equity(new_equity, module=module)
+        return new_equity
 
     def current_exposure_pct(self, equity):
         cutoff = time.time() - 24 * 3600
@@ -246,14 +291,16 @@ class Database:
         # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
         # equity de modo papel se quedaba pegado en el pico histórico sin
         # importar el resultado de los trades cerrados (ver auditoría).
+        # AUDITORÍA (07/09/2026): base bajada de 10000.0 a 100.0 -- ver mismo
+        # cambio en supabase_db.py.
         position_size = trade.get("position_size")
         if position_size:
             sign = 1 if direction == "LONG" else -1
             pnl_dollars = (exit_price - entry) * position_size * sign
-            base_equity = self.last_equity()
+            base_equity = self.last_equity("crypto")
             if base_equity is None:
-                base_equity = 10000.0
-            self.record_equity(base_equity + pnl_dollars)
+                base_equity = 100.0
+            self.record_equity(base_equity + pnl_dollars, module="crypto")
 
         return r_multiple
 
