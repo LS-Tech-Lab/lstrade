@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
 
+from weather_signal_engine import _half_kelly_fraction
+
 def _now_iso():
     """Timestamps ISO 8601 nativos de PostgreSQL (timestamptz)."""
     return datetime.now(timezone.utc).isoformat()
@@ -15,18 +17,89 @@ class SupabaseDatabase:
     def __init__(self, url, key):
         self.client = create_client(url, key)
 
-    def record_equity(self, equity):
-        self.client.table("equity_history").insert({"ts": _now_iso(), "equity": equity}).execute()
+    def record_equity(self, equity, module="crypto"):
+        # AUDITORÍA (07/09/2026, pedido del usuario): se agrega `module` --
+        # antes equity_history era una sola serie global que en la práctica
+        # solo actualizaba cripto (close_trade_with_outcome más abajo). El
+        # usuario pidió una serie de equity POR MÓDULO (cripto/clima/
+        # Polymarket/MLB), cada una arrancando en $100 -- ver migración
+        # add_module_to_equity_history (agrega la columna + rescala el
+        # historial de cripto de base 10000 a base 100) y los métodos
+        # apply_binary_signal_pnl/apply_r_multiple_pnl más abajo, que son
+        # los que alimentan las series de clima/Polymarket/MLB.
+        self.client.table("equity_history").insert({"ts": _now_iso(), "equity": equity, "module": module}).execute()
 
-    def peak_equity(self):
-        res = self.client.table("equity_history").select("equity").order("equity", desc=True).limit(1).execute()
+    def peak_equity(self, module="crypto"):
+        res = self.client.table("equity_history").select("equity").eq("module", module).order("equity", desc=True).limit(1).execute()
         return res.data[0]["equity"] if res.data else None
 
-    def last_equity(self):
-        """Último equity registrado (no el pico histórico). Es el que hay que
-        usar como base para aplicar el P&L de un trade que se acaba de cerrar."""
-        res = self.client.table("equity_history").select("equity").order("ts", desc=True).limit(1).execute()
+    def last_equity(self, module="crypto"):
+        """Último equity registrado (no el pico histórico) PARA ESE MÓDULO.
+        Es el que hay que usar como base para aplicar el P&L de un trade
+        que se acaba de cerrar en ese mismo módulo."""
+        res = self.client.table("equity_history").select("equity").eq("module", module).order("ts", desc=True).limit(1).execute()
         return res.data[0]["equity"] if res.data else None
+
+    def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None):
+        """
+        NUEVO (07/09/2026, pedido del usuario): simula el equity de un
+        módulo de mercados binarios (clima, MLB -- ambos con my_prob/
+        market_price ya armados sobre el lado comprado) aplicando ½ Kelly
+        como tamaño de apuesta, igual que ya se le sugiere informativamente
+        al usuario en build_weather_memo()/build_mlb_memo() vía
+        _half_kelly_fraction(). Arranca en $100 si el módulo no tiene
+        historial todavía (mismo default que la base de cripto post-rescale).
+
+        outcome esperado: "yes"/"win" (ganó el lado comprado), "no"/"loss"
+        (perdió), "stop" (salida anticipada a `exit_price`, ver
+        WEATHER_MLB_STOP_LOSS_PCT en config.py), "void"/cualquier otro
+        (sin P&L real -- partido cancelado o similar, no mueve el equity
+        pero tampoco rompe si se llama).
+
+        Devuelve el nuevo equity del módulo.
+        """
+        base = self.last_equity(module)
+        if base is None:
+            base = 100.0
+
+        kelly = _half_kelly_fraction(my_prob, market_price)
+        pnl = 0.0
+        if kelly and kelly > 0 and market_price and market_price > 0:
+            stake = base * kelly
+            if outcome in ("yes", "win"):
+                pnl = stake * (1 - market_price) / market_price
+            elif outcome in ("no", "loss"):
+                pnl = -stake
+            elif outcome == "stop" and exit_price is not None:
+                pnl = stake * (exit_price - market_price) / market_price
+            # "void" u otro outcome: pnl se queda en 0.0 -- sin apuesta real que resolver.
+
+        new_equity = base + pnl
+        self.record_equity(new_equity, module=module)
+        return new_equity
+
+    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0):
+        """
+        NUEVO (07/09/2026, pedido del usuario): equivalente de
+        apply_binary_signal_pnl() para Polymarket genérico, que no arma
+        una probabilidad de fundamentos (`my_prob`) sino un plan de
+        entrada/target/stop -- ahí ½ Kelly no aplica (no hay `prob` con
+        qué calcularlo), así que se reusa el mismo esquema de riesgo fijo
+        por operación que ya usa risk_manager.py para cripto
+        (RISK_PCT_PER_TRADE, default 1.0% -- ver config.py): se arriesga
+        ese % del equity del módulo por señal, y el resultado (r_multiple,
+        ya calculado igual que en polymarket_stats_summary/
+        polymarket_recent_history) determina la ganancia o pérdida real.
+        Arranca en $100 si el módulo no tiene historial todavía.
+        """
+        base = self.last_equity(module)
+        if base is None:
+            base = 100.0
+        risk_amount = base * (risk_pct / 100.0)
+        pnl = risk_amount * r_multiple
+        new_equity = base + pnl
+        self.record_equity(new_equity, module=module)
+        return new_equity
 
     def current_exposure_pct(self, equity):
         cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -119,14 +192,19 @@ class SupabaseDatabase:
         # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
         # equity de modo papel se quedaba pegado en el pico histórico sin
         # importar el resultado de los trades cerrados (ver auditoría).
+        # AUDITORÍA (07/09/2026): base bajada de 10000.0 a 100.0 -- pedido
+        # del usuario de arrancar el equity de cripto en $100 (el historial
+        # ya existente en Supabase se rescaló x0.01 en la misma migración
+        # que baja este default, para que la curva completa siga siendo
+        # consistente con la nueva base).
         position_size = trade.get("position_size")
         if position_size:
             sign = 1 if direction == "LONG" else -1
             pnl_dollars = (exit_price - entry) * position_size * sign
-            base_equity = self.last_equity()
+            base_equity = self.last_equity("crypto")
             if base_equity is None:
-                base_equity = 10000.0
-            self.record_equity(base_equity + pnl_dollars)
+                base_equity = 100.0
+            self.record_equity(base_equity + pnl_dollars, module="crypto")
 
         return r_multiple
 
