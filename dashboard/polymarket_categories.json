@@ -6,7 +6,10 @@
     "Redes sociales / figuras públicas",
     "Otros / sin clasificar",
     "Cripto — objetivo de precio",
-    "Clima"
+    "Clima",
+    "Macro / tasas de interés",
+    "Macro / eventos cripto",
+    "IA / tech"
   ],
   "fallback": "Otros / sin clasificar",
   "rules": [
