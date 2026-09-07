@@ -3,6 +3,8 @@ Módulo de riesgo — con filtro de Spread/Liquidez añadido.
 """
 import logging
 
+from format_utils import format_money, direction_label
+
 log = logging.getLogger("risk_manager")
 
 
@@ -33,11 +35,15 @@ def format_blocked_message(symbol, signal, failed_checks):
     mandaban este mensaje por separado con el mismo texto.
     """
     stars = "★" * signal.get("confidence", 0)
-    price = signal.get("price")
-    price_str = f"{price:,.6g}" if isinstance(price, (int, float)) else "—"
+    price_str = format_money(signal.get("price"))
     lines = [
         f"\u26D4 *{symbol} bloqueado por riesgo*",
-        f"{signal.get('type', '—')} · {signal.get('direction', '—')} · Confianza {stars or '—'} · Precio {price_str}",
+        # AUDITORÍA (06/09/2026): se agrega esta frase en criollo antes de
+        # la lista de checks — antes iba directo a la lista técnica y no
+        # quedaba explícito que la conclusión es "el bot vio la señal pero
+        # NO va a operar esto".
+        "El bot detectó esta señal pero decidió no operarla — no pasó estos controles de seguridad:",
+        f"{signal.get('type', '—')} · {direction_label(signal.get('direction'))} · Confianza {stars or '—'} · Precio {price_str}",
         "",
     ]
     lines.extend(f"\u2715 {label}" for label in failed_checks)
