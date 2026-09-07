@@ -14,32 +14,30 @@ from trade_planner import compute_plan
 from executor import Executor
 from telegram_notifier import TelegramNotifier
 from position_manager import PositionManager  # NUEVO
+from format_utils import build_crypto_memo, format_money
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("main")
 
-def build_memo_text(symbol, signal, risk_report, plan, markdown=False):
-    lines = []
-    title = f"MEMO DE DECISIÓN FINAL — {symbol}"
-    lines.append(f"**{title}**" if markdown else title)
-    lines.append(f"Señal: {signal['type']} ({signal['direction']}) — confianza {signal['confidence']}/5")
-    lines.append(f"Precio: {signal['price']:.6f}")
-    if plan:
-        lines.append(f"Entrada: {plan['entry']:.6f}")
-        lines.append(f"Stop loss: {plan['stop']:.6f}")
-        lines.append(f"Take profit: {plan['target']:.6f}")
-        lines.append(f"Ratio R:B: 1 : {plan['rr']:.2f}")
-        lines.append(f"Tamaño: {plan['position_size']:.6f} unidades (~${plan['risk_amount']:.2f} de riesgo)")
-    lines.append("—" * 20)
-    lines.append(f"RSI: {signal['rsi']:.1f} | Volumen: {signal.get('volume_ratio', 0):.2f}x promedio")
-    for c in risk_report["checks"]:
-        tag = "OK" if c["ok"] else "FALLA"
-        lines.append(f"[{tag}] {c['label']}")
-    return "\n".join(lines)
+def build_memo_text(symbol, signal, risk_report, plan, markdown=False, deadline_seconds=None):
+    # AUDITORÍA (06/09/2026): delega en el mismo helper compartido que usa
+    # app.py (format_utils.build_crypto_memo) — antes esta copia local
+    # tenía el mismo problema de fondo (memo técnico sin decir "comprar" o
+    # "vender" en criollo, precios pelados a 6 decimales). El detalle de
+    # RSI/volumen y la lista completa de checks de riesgo se mueven a
+    # print_memo() (consola, audiencia técnica) en vez de mandarse también
+    # por Telegram — acá el memo llega solo cuando risk_report["pass"] ya
+    # dio True, así que la lista de checks de acá siempre mostraba "OK" en
+    # todos: no aportaba nada para decidir.
+    return build_crypto_memo(symbol, signal, plan, deadline_seconds=deadline_seconds, markdown=markdown)
 
 def print_memo(symbol, signal, risk_report, plan):
     print("\n" + "=" * 60)
     print(build_memo_text(symbol, signal, risk_report, plan))
+    print(f"RSI: {signal['rsi']:.1f} | Volumen: {signal.get('volume_ratio', 0):.2f}x promedio")
+    for c in risk_report["checks"]:
+        tag = "OK" if c["ok"] else "FALLA"
+        print(f"[{tag}] {c['label']}")
     print("=" * 60)
 
 def ask_human_confirmation(symbol):
@@ -145,7 +143,10 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     if config.AUTO_EXECUTE:
         decision = "auto_executed"
     else:
-        memo_md = build_memo_text(best_symbol, best_signal, risk_report, plan, markdown=True)
+        memo_md = build_memo_text(
+            best_symbol, best_signal, risk_report, plan, markdown=True,
+            deadline_seconds=config.APPROVAL_TIMEOUT_SECONDS,
+        )
         decision = notifier.ask_approval(memo_md)
         if decision is None:
             decision = ask_human_confirmation(best_symbol)
@@ -154,7 +155,11 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     if decision in ("approved", "auto_executed"):
         order_detail = executor.execute(best_symbol, plan)
         log.info(f"Resultado de la orden: {order_detail}")
-        notifier.send_message(f"✅ Orden ejecutada en {best_symbol}: {order_detail.get('status')}")
+        notifier.send_message(
+            f"✅ Orden ejecutada en {best_symbol}: {order_detail.get('status')}\n"
+            f"Entrada ~{format_money(plan['entry'])} | Stop {format_money(plan['stop'])} | "
+            f"Objetivo {format_money(plan['target'])}"
+        )
 
         # NUEVO: executor.execute() ahora coloca el stop-loss real en el
         # exchange internamente (ver executor.py) — antes ese paso vivía acá
