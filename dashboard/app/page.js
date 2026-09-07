@@ -43,6 +43,23 @@ function decisionLabel(code) {
   return map[code] || code;
 }
 
+// AUDITORÍA (06/09/2026): mismo problema que en los mensajes de Telegram de
+// Cripto (ver format_utils.py en el repo Python) — .toFixed(6) fijo hacía
+// que un precio de BTC se viera como "67234.891234" en vez de algo legible.
+// Decimales adaptados a la magnitud del precio, igual que ya hacía
+// IndicatorCard con toLocaleString (acá se centraliza para reusar en las
+// tablas de posiciones, que usaban toFixed(6) directo sin pasar por eso).
+function formatPrice(price) {
+  if (price === null || price === undefined || Number.isNaN(price)) return "—";
+  const abs = Math.abs(price);
+  const decimals = abs >= 1000 ? 2 : abs >= 1 ? 4 : abs >= 0.01 ? 6 : 8;
+  return Number(price).toLocaleString(undefined, { maximumFractionDigits: decimals, minimumFractionDigits: 2 });
+}
+
+function formatMoney(price) {
+  return price === null || price === undefined ? "—" : `$${formatPrice(price)}`;
+}
+
 function directionLabel(dir) {
   if (dir === "LONG") return "Compra";
   if (dir === "SHORT") return "Venta";
@@ -597,15 +614,15 @@ function CryptoOpenTable({ rows }) {
           <>
             <RowField label="Símbolo" value={r.symbol} />
             <RowField label="Dirección" value={directionLabel(r.direction)} />
-            <RowField label="Entrada" value={r.entry_price?.toFixed(6)} />
+            <RowField label="Entrada" value={formatMoney(r.entry_price)} />
             <RowField
               label="Target"
-              value={rrStats ? `${r.target_price?.toFixed(6)} (+${rrStats.rewardPct.toFixed(1)}%)` : r.target_price?.toFixed(6)}
+              value={rrStats ? `${formatMoney(r.target_price)} (+${rrStats.rewardPct.toFixed(1)}%)` : formatMoney(r.target_price)}
               tone="ok"
             />
             <RowField
               label="Stop"
-              value={rrStats ? `${r.current_stop?.toFixed(6)} (-${rrStats.riskPct.toFixed(1)}%)` : r.current_stop?.toFixed(6)}
+              value={rrStats ? `${formatMoney(r.current_stop)} (-${rrStats.riskPct.toFixed(1)}%)` : formatMoney(r.current_stop)}
               tone="fail"
             />
             <RowField label="Ratio R:B" value={rrStats?.rr ? `1 : ${rrStats.rr.toFixed(2)}` : "—"} />
@@ -1288,7 +1305,10 @@ export default function Dashboard() {
       )}
       {data.pending.length > 0 && (
         <div className="pending-banner">
-          Esperando tu respuesta en Telegram para: {data.pending.map((p) => p.symbol).join(", ")}
+          Esperando tu respuesta en Telegram para: {data.pending.map((p) => {
+            const minutesAgo = p.ts ? Math.round((Date.now() - parseTs(p.ts).getTime()) / 60000) : null;
+            return minutesAgo !== null ? `${p.symbol} (llegó hace ${minutesAgo} min)` : p.symbol;
+          }).join(", ")}
         </div>
       )}
       <Tabs active={tab} onChange={setTab} />
