@@ -778,8 +778,13 @@ function PolymarketResolvedTable({ rows, excludedCategories = [] }) {
   // Calcular métricas para cada fila
   const enrichedRows = visibleRows.map((r) => {
     const stopDistance = Math.abs(r.entry - r.stop);
+    // FIX (06/09/2026): sin el * direction -- mismo bug que en
+    // computePolymarketStats (route.js), ver comentario largo ahí. Sin
+    // este fix, una señal NO que efectivamente ganó (llegó a target)
+    // mostraba acá un "Retorno" en rojo/negativo contradiciendo la
+    // etiqueta "✅ GANÓ" de al lado.
     const rMultiple = stopDistance > 0 && r.exit_price !== null
-      ? ((r.exit_price - r.entry) / stopDistance) * (r.direction === "YES" ? 1 : -1)
+      ? (r.exit_price - r.entry) / stopDistance
       : null;
     
     const returnPct = r.entry > 0 && r.exit_price !== null
