@@ -64,11 +64,35 @@ const EXCLUDED_CATEGORIES = (
   categorySpec.excluded.join(",")
 ).split(",").map((c) => c.trim()).filter(Boolean);
 
+// FIX (06/09/2026): antes esta función solo devolvía {n, win_rate} -- por
+// eso el card de arriba de Polymarket mostraba solo 2 métricas contra las
+// 4 de Clima/MLB (ver captura del 06/09), aunque más abajo el desglose por
+// categoría (computePolymarketStatsByCategory) sí calculaba R-múltiplo
+// completo para las mismas señales. Se trae la misma fórmula acá (y la
+// misma que ya usa el frontend en PolymarketResolvedTable para
+// rMultiple/returnPct por fila) para que el agregado de arriba y el
+// detalle de abajo siempre coincidan.
 function computePolymarketStats(rows) {
-  const resolved = (rows || []).filter((r) => r.outcome);
-  if (resolved.length === 0) return { n: 0, win_rate: null };
+  const resolved = (rows || []).filter((r) => r.outcome && r.exit_price !== null && r.exit_price !== undefined);
+  if (resolved.length === 0) return { n: 0, win_rate: null, avg_return_pct: null, expectancy_r: null, profit_factor: null };
   const wins = resolved.filter((r) => r.outcome === "target");
-  return { n: resolved.length, win_rate: (wins.length / resolved.length) * 100 };
+  const rMultiples = resolved
+    .map((r) => {
+      const stopDistance = Math.abs(r.entry - r.stop);
+      if (stopDistance <= 0) return null;
+      return ((r.exit_price - r.entry) / stopDistance) * (r.direction === "YES" ? 1 : -1);
+    })
+    .filter((rm) => rm !== null);
+  const returns = resolved.filter((r) => r.entry > 0).map((r) => ((r.exit_price - r.entry) / r.entry) * 100);
+  const grossWin = rMultiples.reduce((s, rm) => s + Math.max(0, rm), 0);
+  const grossLoss = Math.abs(rMultiples.reduce((s, rm) => s + Math.min(0, rm), 0));
+  return {
+    n: resolved.length,
+    win_rate: (wins.length / resolved.length) * 100,
+    avg_return_pct: returns.length > 0 ? returns.reduce((s, r) => s + r, 0) / returns.length : null,
+    expectancy_r: rMultiples.length > 0 ? rMultiples.reduce((s, rm) => s + rm, 0) / rMultiples.length : null,
+    profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
+  };
 }
 
 function computePolymarketStatsByCategory(resolvedSignals) {
@@ -290,6 +314,18 @@ export async function GET() {
     // identificada como mala no tape el desempeño real del resto.
     const resolvedSignalsCore = resolvedSignals.filter((r) => !EXCLUDED_CATEGORIES.includes(categorize(r.question)));
 
+    // FIX (06/09/2026): EXCLUDED_CATEGORIES solo se aplicaba al indicador
+    // agregado (resolvedSignalsCore) y a polymarket_stats_by_category —
+    // "Señales abiertas" e "Historial reciente" mandaban las señales tal
+    // cual venían de Supabase, sin categoría ni marca de exclusión, así
+    // que una categoría excluida (ej. Clima) seguía apareciendo ahí como
+    // si el filtro no existiera. Se le agrega `category` a cada fila para
+    // que el frontend pueda ocultarlas/marcarlas igual que ya hace en la
+    // tabla de performance por categoría.
+    const polymarketOpenRows = (polymarketOpenRes.error ? [] : (polymarketOpenRes.data || []))
+      .map((r) => ({ ...r, category: categorize(r.question) }));
+    const resolvedSignalsWithCategory = resolvedSignals.map((r) => ({ ...r, category: categorize(r.question) }));
+
     return NextResponse.json({
       equity: (equityRes.data || []).slice().reverse(),
       decisions: decisionsRes.data || [],
@@ -306,14 +342,14 @@ export async function GET() {
       crypto_open: openTradesRes.error ? [] : (openTradesRes.data || []),
       stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null }
         : computeStats(closedTradesRes.data),
-      polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null }
+      polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, expectancy_r: null, profit_factor: null }
         : computePolymarketStats(resolvedSignalsCore),
-      polymarket_stats_all_categories: polymarketResolvedRes.error ? { n: 0, win_rate: null }
+      polymarket_stats_all_categories: polymarketResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, expectancy_r: null, profit_factor: null }
         : computePolymarketStats(resolvedSignals),
       polymarket_excluded_categories: EXCLUDED_CATEGORIES,
       polymarket_stats_by_category: computePolymarketStatsByCategory(resolvedSignals),
-      polymarket_open: polymarketOpenRes.error ? [] : (polymarketOpenRes.data || []),
-      polymarket_resolved: resolvedSignals.slice(0, 20),
+      polymarket_open: polymarketOpenRows,
+      polymarket_resolved: resolvedSignalsWithCategory.slice(0, 20),
       indicators: indicatorsRes.error ? [] : Object.values(latestIndicatorsBySymbol),
       weather_open: weatherOpenRes.error ? [] : (weatherOpenRes.data || []),
       weather_resolved: weatherResolved.slice(0, 20),
