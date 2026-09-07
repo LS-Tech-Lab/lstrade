@@ -36,6 +36,7 @@ from signal_engine import compute_indicator_snapshot, generate_signal
 from risk_manager import RiskManager, format_blocked_message
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
+from format_utils import build_crypto_memo, format_money
 from position_manager import PositionManager
 from polymarket_client import PolymarketClient
 from polymarket_main import SupabaseNotifyStateAdapter, run_polymarket_cycle_serverless
@@ -100,16 +101,13 @@ def _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots):
 # /api/cycle — un ciclo de escaneo, disparado por cron externo
 # ────────────────────────────────────────────────────────────────────
 
-def build_memo_markdown(symbol, signal, risk_report, plan):
-    lines = [f"*MEMO DE DECISIÓN FINAL — {symbol}*"]
-    lines.append(f"Señal: {signal['type']} ({signal['direction']}) — confianza {signal['confidence']}/5")
-    lines.append(f"Precio: {signal['price']:.6f}")
-    lines.append(f"Entrada: {plan['entry']:.6f}")
-    lines.append(f"Stop loss: {plan['stop']:.6f}")
-    lines.append(f"Take profit: {plan['target']:.6f}")
-    lines.append(f"Ratio R:B: 1 : {plan['rr']:.2f}")
-    lines.append(f"Tamaño: {plan['position_size']:.6f} unidades (~${plan['risk_amount']:.2f} de riesgo)")
-    return "\n".join(lines)
+def build_memo_markdown(symbol, signal, risk_report, plan, deadline_seconds=None):
+    # AUDITORÍA (06/09/2026): delega en el helper compartido de
+    # format_utils.py (ver ahí el detalle) — antes este memo mostraba
+    # "Ratio R:B: 1:2.20" y tres precios pelados sin decir qué acción
+    # se estaba pidiendo aprobar. risk_report queda como parámetro sin
+    # usar por compatibilidad con los llamadores existentes.
+    return build_crypto_memo(symbol, signal, plan, deadline_seconds=deadline_seconds, markdown=True)
 
 def run_cycle():
     config = Config
@@ -304,7 +302,11 @@ def run_cycle():
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"], plan["target"],
             plan["position_size"], order_id,
         )
-        notifier.send_message(f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}")
+        notifier.send_message(
+            f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}\n"
+            f"Entrada ~{format_money(plan['entry'])} | Stop {format_money(plan['stop'])} | "
+            f"Objetivo {format_money(plan['target'])}"
+        )
         if isinstance(order_detail, dict) and order_detail.get("stop_order_error"):
             notifier.send_message(
                 f"\u26A0\uFE0F {best_symbol}: la entrada se ejecutó pero el STOP-LOSS real "
@@ -314,7 +316,13 @@ def run_cycle():
         _touch_notification(db)
         return {"status": "auto_executed", "symbol": best_symbol, "order": order_detail}
 
-    memo_md = build_memo_markdown(best_symbol, best_signal, risk_report, plan)
+    # El plazo real de vencimiento (config.PENDING_DECISION_EXPIRY_SECONDS) se
+    # muestra ahora en el propio mensaje — antes había que adivinar cuánto
+    # tiempo quedaba para responder.
+    memo_md = build_memo_markdown(
+        best_symbol, best_signal, risk_report, plan,
+        deadline_seconds=config.PENDING_DECISION_EXPIRY_SECONDS,
+    )
     message_id = notifier.send_approval_request(memo_md)
     if message_id is None:
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged_no_telegram")
@@ -1111,7 +1119,11 @@ def handle_update(update):
         executor = Executor(exchange_client, config)
         order_detail = executor.execute(symbol, plan)
         notifier.answer_callback(cq["id"], "Orden ejecutada")
-        notifier.send_message(f"\u2705 Orden ejecutada en {symbol}: {order_detail.get('status')}")
+        notifier.send_message(
+            f"\u2705 Orden ejecutada en {symbol}: {order_detail.get('status')}\n"
+            f"Entrada ~{format_money(plan['entry'])} | Stop {format_money(plan['stop'])} | "
+            f"Objetivo {format_money(plan['target'])}"
+        )
 
         if order_detail.get("status") in ("filled", "simulated"):
             stop_order = order_detail.get("stop_order")
