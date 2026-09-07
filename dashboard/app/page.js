@@ -238,12 +238,12 @@ function EquityModuleTabs({ data }) {
   const [active, setActive] = useState("equity");
   return (
     <div>
-      <div className="equity-module-tabs">
+      <div className="tabs equity-module-tabs">
         {EQUITY_MODULES.map((m) => (
           <button
             key={m.key}
             type="button"
-            className={`equity-module-tab ${active === m.key ? "active" : ""}`}
+            className={`tab ${active === m.key ? "active" : ""}`}
             onClick={() => setActive(m.key)}
           >
             {m.label}
