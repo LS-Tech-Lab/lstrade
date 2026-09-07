@@ -179,13 +179,17 @@ def run_cycle():
             _touch_notification(db)
 
         if db.has_open_pending_decision():
-            equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity() or 10000.0)
+            equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity("crypto") or 100.0)
             dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
             _maybe_send_heartbeat(db, notifier, equity, dd_pct, [])
             return {"status": "waiting_for_human_approval"}
 
     try:
-        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity() or 10000.0)
+        # AUDITORÍA (07/09/2026): fallback bajado de 10000.0 a 100.0 -- pedido
+        # del usuario de arrancar el equity simulado de cripto en $100 (ver
+        # migración que rescala el historial existente en equity_history y
+        # el mismo cambio de default en close_trade_with_outcome, supabase_db.py).
+        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity("crypto") or 100.0)
     except Exception as e:
         return {"status": "error", "detail": f"No se pudo obtener equity real del exchange: {e}"}
 
@@ -893,6 +897,10 @@ def run_mlb_track_results():
             book = client.fetch_order_book_snapshot(sig["token_id"])
             if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
                 if db.resolve_mlb_signal(sig["id"], "stop", exit_price=stop):
+                    # AUDITORÍA (07/09/2026): equity propio del módulo MLB
+                    # (½ Kelly sobre my_prob/market_price ya guardados en la
+                    # señal) -- ver apply_binary_signal_pnl en supabase_db.py.
+                    db.apply_binary_signal_pnl("mlb", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
                     resolved.append({
                         "game_pk": sig.get("game_pk"), "question": sig.get("question"),
                         "outcome": "stop", "exit_price": stop,
@@ -927,6 +935,10 @@ def run_mlb_track_results():
 
         if not db.resolve_mlb_signal(sig["id"], outcome):
             continue
+        # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop) --
+        # mismo equity propio del módulo MLB, actualizado también en la
+        # resolución completa (no solo en la salida anticipada por stop).
+        db.apply_binary_signal_pnl("mlb", sig["my_prob"], sig["market_price"], outcome)
         resolved.append({
             "game_pk": game_pk,
             "question": sig.get("question"),
@@ -1027,6 +1039,10 @@ def run_weather_track_results():
                     triggered_stop = True
             if triggered_stop:
                 if db.resolve_weather_signal(sig["id"], "stop", exit_price=stop):
+                    # AUDITORÍA (07/09/2026): equity propio del módulo clima
+                    # (mismo mecanismo ½ Kelly que MLB -- ver
+                    # apply_binary_signal_pnl en supabase_db.py).
+                    db.apply_binary_signal_pnl("weather", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
                     resolved.append({"condition_id": condition_id, "outcome": "stop", "exit_price": stop})
                 continue
 
@@ -1053,6 +1069,8 @@ def run_weather_track_results():
 
         if not db.resolve_weather_signal(sig["id"], outcome):
             continue
+        # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop).
+        db.apply_binary_signal_pnl("weather", sig["my_prob"], sig["market_price"], outcome)
         resolved.append({"condition_id": condition_id, "outcome": outcome})
 
     return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
