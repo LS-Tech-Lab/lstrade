@@ -63,7 +63,9 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     position_manager.manage_open_positions()
 
     try:
-        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else db.last_equity() or 10000.0
+        # AUDITORÍA (07/09/2026): fallback bajado de 10000.0 a 100.0 -- ver
+        # mismo cambio en app.py/db.py.
+        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else db.last_equity("crypto") or 100.0
     except Exception as e:
         log.exception(f"No se pudo obtener el balance real del exchange: {e}")
         return
