@@ -1,10 +1,18 @@
 -- Trader IA 24/7 — esquema para Supabase (Postgres)
 -- Corré esto una sola vez en Supabase → SQL Editor → New query → Run.
 
+-- AUDITORÍA (07/09/2026, pedido del usuario): se agrega `module` -- antes
+-- esta tabla era una sola serie global que en la práctica solo actualizaba
+-- cripto (via close_trade_with_outcome en supabase_db.py/db.py). Ahora cada
+-- módulo (cripto/clima/Polymarket/MLB) tiene su propia serie, cada una
+-- arrancando en $100 (ver migración add_module_to_equity_history, que
+-- agrega esta columna y rescala x0.01 el historial de cripto ya existente,
+-- que arrancaba en $10000).
 create table if not exists equity_history (
     id bigserial primary key,
     ts timestamptz not null,
-    equity double precision not null
+    equity double precision not null,
+    module text not null default 'crypto'
 );
 
 create table if not exists decisions (
@@ -41,6 +49,7 @@ create table if not exists pending_decisions (
 
 create index if not exists idx_decisions_ts on decisions (ts desc);
 create index if not exists idx_equity_ts on equity_history (ts desc);
+create index if not exists idx_equity_module_ts on equity_history (module, ts desc);
 
 -- Posiciones abiertas y su cierre.
 -- ACTUALIZADO (auditoría 02/09/2026): este comentario decía que
