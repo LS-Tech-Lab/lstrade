@@ -815,6 +815,12 @@ def run_mlb_cycle():
                 signal["my_prob"], signal["market_price"], signal["ev"],
                 signal["confidence"], signal["confidence_penalty"], signal["token_id"],
                 stop=stop,
+                # AUDITORÍA (07/09/2026): componentes de estimate_win_probability()
+                # propagados por generate_mlb_signal() -- ver auditoría en
+                # mlb_signal_engine.py y supabase_db.py.
+                home_win_pct=signal.get("home_win_pct"), away_win_pct=signal.get("away_win_pct"),
+                era_home=signal.get("era_home"), era_away=signal.get("era_away"),
+                pitcher_edge=signal.get("pitcher_edge"), home_field_edge=signal.get("home_field_edge"),
             )
             open_condition_ids.add(signal["condition_id"])
             open_game_pks.add(signal["game_pk"])
