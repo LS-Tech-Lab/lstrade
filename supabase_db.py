@@ -234,6 +234,36 @@ class SupabaseDatabase:
     def get_open_weather_signals(self):
         return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
 
+    def count_weather_signals_for_event(self, station_icao, event_title):
+        """
+        NUEVO (07/09/2026, usuario reportó "compra varias veces al día
+        para la misma ciudad a medida que sube la temperatura"): el guard
+        de open_events en run_weather_cycle (app.py, 06/09/2026) evita
+        tener DOS señales ABIERTAS a la vez para el mismo (estación,
+        evento) -- pero no evita volver a abrir una señal nueva para el
+        mismo (estación, evento) después de que la anterior ya se cerró
+        (por el stop-loss agregado ayer, o por resolución completa). El
+        precio de estos buckets se derrumba justo cuando el modelo
+        "persigue" la temperatura real que sigue subiendo en la tarde
+        (ver estimate_adjusted_high en weather_signal_engine.py) -- así
+        que el patrón "abrir -> stop -> abrir el bucket de arriba -> stop
+        -> abrir el de arriba..." puede repetirse varias veces el mismo
+        día sin que el guard existente lo note, porque nunca hay dos
+        señales abiertas AL MISMO TIEMPO.
+
+        Esta cuenta es total (cualquier outcome, incluido abiertas) para
+        poner un tope duro de intentos por (estación, evento) sin importar
+        si siguen abiertas o ya se resolvieron.
+        """
+        res = (
+            self.client.table("weather_signals")
+            .select("id", count="exact")
+            .eq("station_icao", station_icao)
+            .eq("event_title", event_title)
+            .execute()
+        )
+        return res.count or 0
+
     def resolve_weather_signal(self, signal_id, outcome, exit_price=None):
         # NUEVO (06/09/2026): exit_price opcional -- outcome="stop" lo pasa
         # (precio de salida anticipada, no siempre -100%), outcome="yes"/"no"
