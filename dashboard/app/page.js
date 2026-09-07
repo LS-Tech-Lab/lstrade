@@ -958,7 +958,7 @@ function WeatherTab({ data }) {
 // poder ir revisando a ojo lo que el motor manda antes de confiar en él.
 // outcome='stop' (06/09/2026): mismo agregado que weatherReturnPct arriba.
 function mlbReturnPct(row) {
-  if (!row.outcome || !row.market_price || row.market_price <= 0) return null;
+  if (!row.outcome || row.outcome === "void" || !row.market_price || row.market_price <= 0) return null;
   if (row.outcome === "win") return ((1 - row.market_price) / row.market_price) * 100;
   if (row.outcome === "stop") {
     if (row.exit_price === null || row.exit_price === undefined) return -100;
@@ -1008,8 +1008,13 @@ function MlbResolvedTable({ rows }) {
         const sideTeam = r.direction === "YES" ? r.home_team : r.away_team;
         const isWin = r.outcome === "win";
         const isStop = r.outcome === "stop";
-        const badgeClass = isWin ? "result-win" : isStop ? "result-stop" : "result-loss";
-        const badgeText = isWin ? `✅ GANÓ (${sideTeam})` : isStop ? `🛑 STOP-LOSS (${sideTeam})` : `❌ PERDIÓ (${sideTeam})`;
+        // FIX (07/09/2026): faltaba el caso "void" (partido cancelado sin
+        // jugarse, ver run_mlb_track_results en app.py) -- antes de esto
+        // caía en el badge de "❌ PERDIÓ", que no es lo que pasó.
+        const isVoid = r.outcome === "void";
+        const badgeClass = isWin ? "result-win" : isStop ? "result-stop" : isVoid ? "result-stop" : "result-loss";
+        const badgeText = isWin ? `✅ GANÓ (${sideTeam})` : isStop ? `🛑 STOP-LOSS (${sideTeam})`
+          : isVoid ? "⚪ PARTIDO CANCELADO" : `❌ PERDIÓ (${sideTeam})`;
         return (
           <>
             <RowField label="Partido" value={`${r.away_team} @ ${r.home_team}`} />
@@ -1018,7 +1023,7 @@ function MlbResolvedTable({ rows }) {
             <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
             <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
               value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
-            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+            <RowField label="Resultado" tone={isWin ? "ok" : isVoid ? "" : "fail"} value={
               <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
             } />
             <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
@@ -1026,6 +1031,58 @@ function MlbResolvedTable({ rows }) {
         );
       }}
     />
+  );
+}
+
+// NUEVO (07/09/2026): tarjeta de calibración -- responde "cuando el modelo
+// dice que algo tiene 65% de probabilidad, ¿de verdad pasa cerca del 65%
+// de las veces?". Es distinto de win rate/retorno: esos miden si ganaste
+// plata, esto mide si el número de probabilidad en sí es honesto. Pensada
+// para reusarse con cualquier motor que guarde "my_prob" (hoy MLB; Clima
+// tiene el mismo cálculo ya armado en Python -- ver
+// weather_calibration_summary en supabase_db.py -- pero todavía sin
+// conectar a este dashboard).
+function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
+  if (!calibration || calibration.n === 0) {
+    return (
+      <div className="card">
+        <h2>{title}</h2>
+        <p className="empty">{emptyMessage}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="card">
+      <h2>{title}</h2>
+      {subtitle && <p className="card-subtitle">{subtitle}</p>}
+      <div className="calibration-table">
+        <div className="calibration-row calibration-head">
+          <span>Probabilidad del modelo</span>
+          <span>Señales</span>
+          <span>Pasó de verdad</span>
+        </div>
+        {calibration.buckets.map((b) => {
+          const gapPts = (b.actual_freq - b.avg_predicted) * 100;
+          // Más de 15 puntos de diferencia entre lo que el modelo dijo y lo
+          // que pasó en la práctica = desviación que vale la pena mirar,
+          // no ruido de pocas muestras (con n chico cualquier bucket puede
+          // salirse un poco por azar).
+          const relevant = Math.abs(gapPts) > 15 && b.n >= 5;
+          return (
+            <div className="calibration-row" key={b.range}>
+              <span>{b.range}</span>
+              <span>{b.n}</span>
+              <span className={relevant ? (gapPts < 0 ? "fail" : "ok") : ""}>
+                {(b.actual_freq * 100).toFixed(0)}%
+                {relevant && (
+                  <span className="calibration-gap"> ({gapPts > 0 ? "+" : ""}{gapPts.toFixed(0)} pts vs. lo que dijo)</span>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1037,6 +1094,10 @@ function MlbTab({ data }) {
         subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal."
         emptyMessage="Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real."
         statCards={buildMlbStatCards(data.mlb_stats)} />
+      <CalibrationCard title="Calibración — MLB"
+        subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces ganó de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
+        emptyMessage="Todavía no hay suficientes señales de MLB con resultado real (ganó/perdió) para calibrar — los stop-loss y partidos cancelados no cuentan acá porque no sabemos si el lado elegido hubiera ganado."
+        calibration={data.mlb_calibration} />
       <div className="card">
         <h2>Señales abiertas ({data.mlb_open?.length || 0})</h2>
         <p className="card-subtitle">Partidos de hoy donde el modelo (log5 + localía + pitchers probables) encontró ventaja contra el precio de Polymarket.</p>
