@@ -265,7 +265,10 @@ def run_cycle():
     risk_report = risk_manager.check(best_symbol, best_signal, equity, ticker=ticker)
 
     if not risk_report["pass"]:
-        failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]
+        # FIX (07/09/2026): se pasan los checks completos (no solo el label)
+        # para que format_blocked_message pueda usar "fail_reason" cuando
+        # existe — ver risk_manager.py.
+        failed = [c for c in risk_report["checks"] if not c["ok"]]
         notifier.send_message(format_blocked_message(best_symbol, best_signal, failed))
         _touch_notification(db)
         db.log_decision(best_symbol, best_signal, risk_report, None, "blocked")
