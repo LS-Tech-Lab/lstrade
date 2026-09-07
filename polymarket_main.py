@@ -69,7 +69,11 @@ def build_polymarket_memo(signal, markdown=False):
     other_label = m.get("no_label", "No") if direction == "YES" else m.get("yes_label", "Sí")
     pick_price = m["yes_price"] if direction == "YES" else m["no_price"]
     other_price = m["no_price"] if direction == "YES" else m["yes_price"]
-    lines.append(f"📌 Comprar: \"{pick_label}\" @ ${pick_price:.3f} (confianza {signal['confidence']}/5)")
+    # AUDITORÍA (07/09/2026): estrellas de confianza, igual que ya muestran
+    # los mensajes de Cripto y MLB — antes era el único de los cuatro
+    # motores que mostraba "confianza X/5" en número pelado.
+    stars = "★" * signal["confidence"] + "☆" * (5 - signal["confidence"])
+    lines.append(f"📌 Comprar: \"{pick_label}\" @ ${pick_price:.3f} (confianza {stars})")
     lines.append(f"   (la otra opción, \"{other_label}\", está a ${other_price:.3f})")
 
     if signal.get("trade_plan"):
