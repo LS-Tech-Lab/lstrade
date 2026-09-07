@@ -426,13 +426,27 @@ def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id,
                               home_field_edge=HOME_FIELD_EDGE):
     """
     Probabilidad de que el equipo LOCAL gane. Devuelve (prob_home, notes,
-    confidence_penalty) -- mismo shape que estimate_adjusted_high() en
-    weather_signal_engine.py: penalty sube con cada fuente de dato
-    faltante, para que generate_mlb_signal() pueda exigir más EV cuando el
-    modelo tiene menos con qué respaldar la estimación.
+    confidence_penalty, components) -- mismo shape que estimate_adjusted_high()
+    en weather_signal_engine.py para los primeros tres: penalty sube con
+    cada fuente de dato faltante, para que generate_mlb_signal() pueda
+    exigir más EV cuando el modelo tiene menos con qué respaldar la
+    estimación.
+
+    AUDITORÍA (07/09/2026): se agrega `components` -- un desglose de cada
+    ingrediente (win% de cada lado, ERA de cada probable, el ajuste de
+    pitcher ya aplicado, la localía usada) -- porque generate_mlb_signal()
+    solo guardaba en mlb_signals el `my_prob` final. Se detectó calibración
+    mala justo en 60-80% de confianza (11-50% de aciertos reales contra
+    65-75% que decía el modelo) y sin estos componentes por señal no hay
+    forma de aislar si el culpable es HOME_FIELD_EDGE o PITCHER_ERA_SCALE
+    (ambos siguen "sin calibrar" -- ver auditoría de arriba) o si es ruido
+    de muestra chica. Con esto guardado, dentro de un par de semanas se
+    puede correlacionar cada componente contra el outcome real.
     """
     notes = []
     penalty = 0.0
+    era_home = era_away = None
+    edge = 0.0
 
     home_pct, home_missing = blended_win_pct(fetch_team_form(home_id, season))
     away_pct, away_missing = blended_win_pct(fetch_team_form(away_id, season))
@@ -464,7 +478,16 @@ def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id,
     # clima: nunca dejar que la probabilidad final sugiera una certeza que
     # el modelo no tiene fundamento real para respaldar.
     prob = max(0.05, min(0.95, prob))
-    return round(prob, 3), notes, round(min(penalty, 1.0), 2)
+
+    components = {
+        "home_win_pct": round(home_pct, 3),
+        "away_win_pct": round(away_pct, 3),
+        "era_home": round(era_home, 2) if era_home is not None else None,
+        "era_away": round(era_away, 2) if era_away is not None else None,
+        "pitcher_edge": round(edge, 3),
+        "home_field_edge": round(home_field_edge, 3),
+    }
+    return round(prob, 3), notes, round(min(penalty, 1.0), 2), components
 
 
 def price_disagrees_with_model(direction_is_yes, momentum_data, threshold=MOMENTUM_DISAGREEMENT_THRESHOLD):
@@ -544,7 +567,7 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         return None  # el partido real ya terminó -- el mercado quedó desactualizado/en liquidación, no es una oportunidad real
 
     season = season or current_mlb_date()[:4]
-    prob_home, notes, penalty = estimate_win_probability(
+    prob_home, notes, penalty, components = estimate_win_probability(
         game["home_id"], game["away_id"], game["home_pitcher_id"], game["away_pitcher_id"], season,
     )
     my_prob_yes = prob_home if team_yes == game["home_id"] else round(1 - prob_home, 3)
@@ -621,6 +644,12 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         "min_ev_threshold": effective_min_ev,
         "confidence_penalty": penalty,
         "confidence": confidence,
+        # AUDITORÍA (07/09/2026): desglose de estimate_win_probability() para
+        # poder auditar calibración por componente -- ver AUDITORÍA en esa
+        # función. home_win_pct/away_win_pct/era_home/era_away/pitcher_edge
+        # son siempre del equipo LOCAL/VISITA tal cual (no del lado
+        # comprado), home_field_edge es el ajuste de localía usado.
+        **components,
         # AUDITORÍA (05/09/2026, categoría 6): parse_market_for_analysis()
         # en polymarket_client.py ya arma este link (vía _build_market_url,
         # slug del evento) y lo deja en market["url"] -- acá se descartaba
