@@ -116,7 +116,18 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.06,
         abs_momentum = abs(momentum_data["momentum"])
         if abs_momentum > MOMENTUM_THRESHOLD:
             score += abs_momentum * 1.5
-            reasons.append(f"Momentum fuerte: {momentum_data['momentum']*100:+.2f}%")
+            # FIX (07/09/2026): el reason mostraba el signo crudo del
+            # momentum del token "YES" ("Momentum fuerte: -23.30%"),
+            # aunque el bot compra el lado NO exactamente cuando ese
+            # momentum es negativo (ver "direction" más abajo: el bot
+            # siempre compra el lado que está SUBIENDO). Resultado: un
+            # mensaje que recomendaba comprar algo mostrando un número
+            # negativo al lado, como si el precio de lo comprado estuviera
+            # cayendo -- cuando en realidad el lado elegido siempre sube
+            # (por eso se lo elige). Se muestra en la perspectiva del lado
+            # que se va a recomendar, que por construcción siempre es
+            # positivo acá.
+            reasons.append(f"El precio del lado elegido viene subiendo con fuerza: +{abs_momentum*100:.2f}% recientemente")
             has_primary_signal = True
 
         if momentum_data["volatility"] > 0.02:
