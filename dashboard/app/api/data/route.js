@@ -278,6 +278,9 @@ export async function GET() {
 
     const [
       equityRes,
+      equityWeatherRes,
+      equityPolymarketRes,
+      equityMlbRes,
       decisionsRes,
       stateRes,
       pendingRes,
@@ -297,7 +300,16 @@ export async function GET() {
       // eternamente clavado en el valor inicial. Se pide descendente (las
       // últimas 200) y se revierte abajo para mantener el orden cronológico
       // ascendente que espera el frontend.
-      supabase.from("equity_history").select("ts,equity").order("ts", { ascending: false }).limit(200),
+      // AUDITORÍA (07/09/2026, pedido del usuario): se agrega el filtro
+      // module="crypto" -- equity_history ahora guarda una serie por
+      // módulo (ver migración add_module_to_equity_history en schema.sql),
+      // así que sin este filtro esta consulta mezclaría puntos de las 4
+      // series en una sola línea. Los otros 3 módulos se traen aparte
+      // abajo (equityWeatherRes/equityPolymarketRes/equityMlbRes).
+      supabase.from("equity_history").select("ts,equity").eq("module", "crypto").order("ts", { ascending: false }).limit(200),
+      supabase.from("equity_history").select("ts,equity").eq("module", "weather").order("ts", { ascending: false }).limit(200),
+      supabase.from("equity_history").select("ts,equity").eq("module", "polymarket").order("ts", { ascending: false }).limit(200),
+      supabase.from("equity_history").select("ts,equity").eq("module", "mlb").order("ts", { ascending: false }).limit(200),
       supabase.from("decisions").select("*").order("ts", { ascending: false }).limit(30),
       supabase.from("bot_state").select("*"),
       supabase.from("pending_decisions").select("*").eq("resolved", false),
@@ -332,6 +344,9 @@ export async function GET() {
     // cargó, en vez de una pantalla de error total por un problema parcial.
     const namedResults = {
       equity: equityRes,
+      equity_weather: equityWeatherRes,
+      equity_polymarket: equityPolymarketRes,
+      equity_mlb: equityMlbRes,
       decisions: decisionsRes,
       bot_state: stateRes,
       pending: pendingRes,
@@ -383,6 +398,14 @@ export async function GET() {
 
     return NextResponse.json({
       equity: (equityRes.data || []).slice().reverse(),
+      // AUDITORÍA (07/09/2026, pedido del usuario): series de equity por
+      // módulo aparte de cripto (ver apply_binary_signal_pnl/
+      // apply_r_multiple_pnl en supabase_db.py) -- cada una arranca en $100
+      // y solo tiene puntos a partir de la primera señal resuelta de ese
+      // módulo, así que pueden llegar vacías por un rato.
+      equity_weather: equityWeatherRes.error ? [] : (equityWeatherRes.data || []).slice().reverse(),
+      equity_polymarket: equityPolymarketRes.error ? [] : (equityPolymarketRes.data || []).slice().reverse(),
+      equity_mlb: equityMlbRes.error ? [] : (equityMlbRes.data || []).slice().reverse(),
       decisions: decisionsRes.data || [],
       halted: stateMap.trading_halted === "1",
       halt_reason: stateMap.halt_reason || null,
