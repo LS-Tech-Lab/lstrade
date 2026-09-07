@@ -79,8 +79,17 @@ function computePolymarketStats(rows) {
   const rMultiples = resolved
     .map((r) => {
       const stopDistance = Math.abs(r.entry - r.stop);
+      // FIX (06/09/2026): sin el * direction -- entry/target/stop siempre
+      // vienen en el marco de precio del token que el bot efectivamente
+      // compró (target > entry > stop sin importar si direction es YES o
+      // NO; confirmado contra datos reales: 464/466 señales cumplen esto).
+      // El multiplicador por direction invertía el signo de TODAS las
+      // señales NO (228 de 466), convirtiendo wins reales en R negativo y
+      // viceversa -- por eso el expectancy agregado daba +0.02R con datos
+      // reales que en realidad rendían +0.12R (ver historial de esta
+      // conversación, verificado contra polymarket_signals en Supabase).
       if (stopDistance <= 0) return null;
-      return ((r.exit_price - r.entry) / stopDistance) * (r.direction === "YES" ? 1 : -1);
+      return (r.exit_price - r.entry) / stopDistance;
     })
     .filter((rm) => rm !== null);
   const returns = resolved.filter((r) => r.entry > 0).map((r) => ((r.exit_price - r.entry) / r.entry) * 100);
