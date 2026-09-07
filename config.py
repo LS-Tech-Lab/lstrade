@@ -299,6 +299,16 @@ class Config:
     # oportunidad del ciclo.
     MAX_WEATHER_SIGNALS_PER_CYCLE = _int("MAX_WEATHER_SIGNALS_PER_CYCLE", 2)
 
+    # NUEVO (07/09/2026, usuario reportó "compra varias veces al día para
+    # la misma ciudad a medida que sube la temperatura"): tope duro de
+    # intentos totales por (estación, evento) en el día, sin importar si
+    # ya se cerraron -- ver count_weather_signals_for_event en
+    # supabase_db.py para el porqué. 2 en vez de 1: deja margen para un
+    # reintento legítimo (ej. la primera señal se descartó por un ajuste
+    # menor de trayectoria y no por estar mal apuntada), pero corta la
+    # cadena de "perseguir" la temperatura bucket por bucket toda la tarde.
+    WEATHER_MAX_SIGNALS_PER_EVENT = _int("WEATHER_MAX_SIGNALS_PER_EVENT", 2)
+
     # Motor de MLB (04/09/2026, primer draft -- ver mlb_signal_engine.py).
     # MLB_MIN_EV en 0.05 (mucho más bajo que WEATHER_MIN_EV=0.15) a
     # propósito: todavía no hay ninguna señal resuelta para saber si el
