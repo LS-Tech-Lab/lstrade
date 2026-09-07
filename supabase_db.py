@@ -269,10 +269,63 @@ class SupabaseDatabase:
         for r in rows:
             actual = 1.0 if r["outcome"] == "yes" else 0.0
             brier_sum += (r["my_prob"] - actual) ** 2
-            key = min(int(r["my_prob"] / bucket_size), int(1 / bucket_size) - 1)
+            # FIX (07/09/2026): +1e-9 antes del int() -- sin esto,
+            # 0.30/0.1 da 2.9999999999999996 (error de punto flotante) y
+            # una probabilidad de exactamente 30% caía en el bucket
+            # "20-30%" en vez de "30-40%". Mismo fix aplicado en
+            # mlb_calibration_summary() más abajo, que copia este patrón.
+            key = min(int(r["my_prob"] / bucket_size + 1e-9), int(1 / bucket_size) - 1)
             b = buckets.setdefault(key, {"predicted": [], "actual": []})
             b["predicted"].append(r["my_prob"]); b["actual"].append(actual)
         bucket_rows = [{"range": f"{k*bucket_size*100:.0f}-{(k+1)*bucket_size*100:.0f}%", "n": len(b["predicted"]), "avg_predicted": sum(b["predicted"])/len(b["predicted"]), "actual_freq": sum(b["actual"])/len(b["actual"])} for k, b in sorted(buckets.items())]
+        return {"n": n, "brier_score": brier_sum / n, "buckets": bucket_rows}
+
+    def mlb_calibration_summary(self, bucket_size=0.1):
+        """
+        NUEVO (07/09/2026, a pedido del usuario): equivalente de
+        weather_calibration_summary() para MLB -- responde "cuando el
+        modelo dice que el lado elegido tiene X% de ganar, ¿de verdad gana
+        cerca de X% de las veces?". Se agrupan las señales resueltas por
+        rango de `my_prob` (la probabilidad del LADO QUE SE COMPRÓ, ya
+        armada así en mlb_signal_engine.py -- no la del "home team" a
+        secas) y se compara contra la frecuencia real de victorias en cada
+        rango.
+
+        Solo cuenta outcome "win"/"loss": un "stop" corta la posición
+        antes de que el partido termine, así que no sabemos si el lado
+        elegido hubiera ganado o perdido en realidad; un "void" es un
+        partido que no se llegó a jugar. Ninguno de los dos dice nada
+        sobre si la probabilidad estaba bien calculada.
+        """
+        rows = (
+            self.client.table("mlb_signals")
+            .select("my_prob,outcome")
+            .in_("outcome", ["win", "loss"])
+            .execute()
+            .data or []
+        )
+        n = len(rows)
+        if n == 0:
+            return {"n": 0, "brier_score": None, "buckets": []}
+        buckets, brier_sum = {}, 0.0
+        for r in rows:
+            if r["my_prob"] is None:
+                continue
+            actual = 1.0 if r["outcome"] == "win" else 0.0
+            brier_sum += (r["my_prob"] - actual) ** 2
+            key = min(int(r["my_prob"] / bucket_size + 1e-9), int(1 / bucket_size) - 1)
+            b = buckets.setdefault(key, {"predicted": [], "actual": []})
+            b["predicted"].append(r["my_prob"])
+            b["actual"].append(actual)
+        bucket_rows = [
+            {
+                "range": f"{k*bucket_size*100:.0f}-{(k+1)*bucket_size*100:.0f}%",
+                "n": len(b["predicted"]),
+                "avg_predicted": sum(b["predicted"]) / len(b["predicted"]),
+                "actual_freq": sum(b["actual"]) / len(b["actual"]),
+            }
+            for k, b in sorted(buckets.items())
+        ]
         return {"n": n, "brier_score": brier_sum / n, "buckets": bucket_rows}
 
     # =========================================================================
