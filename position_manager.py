@@ -183,22 +183,30 @@ class PositionManager:
                                 f"exchange FALLÓ ({e}) — revisar la posición a mano."
                             )
 
-                    # AUDITORÍA (06/09/2026): "TARGET (+1.20R)" no se explica
-                    # en ningún mensaje de Telegram (el glosario de "R" vive
-                    # solo en el dashboard) — se traduce a "ganaste/perdiste
-                    # X veces lo que arriesgaste", que es lo mismo que dice
-                    # el número pero sin requerir conocer la jerga.
-                    emoji = "✅" if outcome == "target" else "🛑"
-                    won = outcome == "target"
-                    result_word = "Ganaste" if won else "Perdiste"
-                    r_text = ""
-                    if r_multiple is not None:
-                        veces = abs(r_multiple)
-                        r_text = f" — {result_word} {veces:.1f} veces lo que arriesgaste en esta operación"
+                    # FIX (07/09/2026): "won = outcome == target" estaba mal
+                    # -- cuando el trailing stop ya había movido el stop a
+                    # breakeven (ver más arriba: current_stop = entry), tocar
+                    # el STOP no es una pérdida real: exit_price == entry,
+                    # r_multiple da 0.0, y el mensaje decía "pérdida —
+                    # Perdiste 0.0 veces", que es contradictorio (reportado
+                    # en vivo: NEAR/USDT). El resultado real de la operación
+                    # lo dice el signo de r_multiple, no cuál nivel (target o
+                    # stop) fue el que se tocó -- son dos cosas distintas.
+                    if r_multiple is None:
+                        emoji, result_label, r_text = "🛑" if outcome == "stop" else "✅", "Resultado sin calcular", ""
+                    elif r_multiple > 0.001:
+                        emoji, result_label = "✅", "ganancia"
+                        r_text = f" — Ganaste {r_multiple:.1f} veces lo que arriesgaste en esta operación"
+                    elif r_multiple < -0.001:
+                        emoji, result_label = "🛑", "pérdida"
+                        r_text = f" — Perdiste {abs(r_multiple):.1f} veces lo que arriesgaste en esta operación"
+                    else:
+                        emoji, result_label = "⚪", "empate (breakeven)"
+                        r_text = " — no ganaste ni perdiste: se cerró justo en el precio de entrada"
                     log.info(f"[CIERRE] {symbol} {direction}: {outcome} @ {exit_price:.6f} ({r_multiple})")
                     self.notifier.send_message(
                         f"{emoji} *Posición cerrada* — {symbol} {direction_label(direction)}\n"
-                        f"Resultado: {'ganancia' if won else 'pérdida'}{r_text}\n"
+                        f"Resultado: {result_label}{r_text}\n"
                         f"Precio de salida: {format_money(exit_price)}"
                     )
 
