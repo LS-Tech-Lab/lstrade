@@ -22,6 +22,7 @@ const GLOSSARY = [
   [ "Retorno promedio (clima)", "Ganancia o pérdida promedio por señal de clima resuelta, si se hubiera apostado $1 a 'SI' al precio de mercado del momento. -100% significa perder toda la apuesta." ],
   [ "Brier score", "Qué tan calibrada estuvo la probabilidad del modelo contra lo que realmente pasó, en cada señal resuelta (clima o MLB). 0 = predicciones perfectas, 0.25 = tan bueno como tirar una moneda, 1 = siempre confiado y siempre equivocado." ],
   [ "Retorno promedio (MLB)", "Ganancia o pérdida promedio por señal de MLB resuelta, si se hubiera apostado $1 al lado (equipo) que eligió el modelo, al precio de mercado del momento. -100% significa que ese equipo perdió." ],
+  [ "Retorno promedio (Polymarket)", "Ganancia o pérdida promedio por señal de Polymarket resuelta, comparando el precio de entrada contra el precio de salida (target o stop). No es lo mismo que el R-múltiplo: acá lo que importa es cuánto rindió el dinero puesto, no cuánto se arriesgó." ],
   [ "R-múltiple", "Cuántas veces el riesgo inicial se ganó o perdió. +1.5R significa que se ganó 1.5 veces lo que se arriesgó. -1R significa que se perdió todo el riesgo." ]
 ];
 
@@ -220,34 +221,110 @@ function StatCard({ label, value, suffix = "", tone, info, barPct }) {
   );
 }
 
-function StatsRow({ title, subtitle, stats, showProfitFactor, emptyMessage }) {
-  if (!stats || stats.n === 0) {
+// Interfaz compartida para las 4 tarjetas de "Performance — X (señales/trades
+// resueltos)" (Cripto, Polymarket, Clima, MLB) y para cualquier módulo nuevo
+// que se agregue (ver captura del 06/09/2026: antes cada módulo tenía su
+// propio componente de carcasa -- StatsRow para Cripto/Polymarket,
+// WeatherStatsRow y MlbStatsRow casi idénticos entre sí -- y quedaban
+// visualmente distintos por accidente, no por una diferencia real de
+// datos. Ahora la carcasa (título, subtítulo, grilla, estado vacío) vive
+// acá una sola vez; cada módulo solo arma su propia lista de métricas
+// (ver buildCryptoStatCards / buildPolymarketStatCards / buildWeatherStatCards
+// / buildMlbStatCards más abajo) porque los números que tiene sentido
+// mostrar sí son distintos (Cripto/Polymarket tienen entry/target/stop y
+// R-múltiplo; Clima/MLB son una apuesta simple a "SI" con Brier score).
+function PerformanceCard({ title, subtitle, emptyMessage, statCards }) {
+  if (!statCards || statCards.length === 0) {
     return (
       <div className="card">
         <h2>{title}</h2>
-        <p className="empty">{emptyMessage || "Sin trades cerrados todavía — las métricas aparecen cuando haya resultados reales."}</p>
+        <p className="empty">{emptyMessage}</p>
       </div>
     );
   }
-  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
   return (
     <div className="card">
       <h2>{title}</h2>
       {subtitle && <p className="card-subtitle">{subtitle}</p>}
       <div className="stats-grid">
-        <StatCard label="Trades cerrados" value={stats.n} />
-        <StatCard label="Win rate" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone}
-          info={GLOSSARY.find(([k]) => k === "Win rate")[1]} barPct={stats.win_rate} />
-        {stats.expectancy_r !== undefined && (
-          <StatCard label="Expectancy" value={stats.expectancy_r >= 0 ? `+${stats.expectancy_r.toFixed(2)}` : stats.expectancy_r.toFixed(2)} suffix="R"
-            tone={stats.expectancy_r >= 0 ? "ok" : "fail"} info={GLOSSARY.find(([k]) => k === "Expectancy (R)")[1]} />
-        )}
-        {showProfitFactor && stats.profit_factor !== null && stats.profit_factor !== undefined && (
-          <StatCard label="Profit factor" value={stats.profit_factor.toFixed(2)} info={GLOSSARY.find(([k]) => k === "Profit factor")[1]} />
-        )}
+        {statCards.map((sc) => (
+          <StatCard key={sc.label} {...sc} />
+        ))}
       </div>
     </div>
   );
+}
+
+function buildCryptoStatCards(stats, showProfitFactor) {
+  if (!stats || stats.n === 0) return null;
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const cards = [
+    { label: "Trades cerrados", value: stats.n },
+    { label: "Win rate", value: stats.win_rate?.toFixed(1), suffix: "%", tone: winTone, barPct: stats.win_rate,
+      info: GLOSSARY.find(([k]) => k === "Win rate")[1] },
+  ];
+  if (stats.expectancy_r !== undefined && stats.expectancy_r !== null) {
+    cards.push({ label: "Expectancy", value: stats.expectancy_r >= 0 ? `+${stats.expectancy_r.toFixed(2)}` : stats.expectancy_r.toFixed(2), suffix: "R",
+      tone: stats.expectancy_r >= 0 ? "ok" : "fail", info: GLOSSARY.find(([k]) => k === "Expectancy (R)")[1] });
+  }
+  if (showProfitFactor && stats.profit_factor !== null && stats.profit_factor !== undefined) {
+    cards.push({ label: "Profit factor", value: stats.profit_factor.toFixed(2), info: GLOSSARY.find(([k]) => k === "Profit factor")[1] });
+  }
+  return cards;
+}
+
+// FIX (06/09/2026): antes el card de Polymarket solo tenía win_rate (ver
+// computePolymarketStats en route.js) -- se agrega retorno promedio y
+// expectancy ahora que el backend los calcula, para que quede a la misma
+// profundidad que Clima/MLB (4 tarjetas) en vez de 2.
+function buildPolymarketStatCards(stats) {
+  if (!stats || stats.n === 0) return null;
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
+  const expTone = stats.expectancy_r >= 0 ? "ok" : "fail";
+  return [
+    { label: "Señales resueltas", value: stats.n },
+    { label: "Win rate", value: stats.win_rate?.toFixed(1), suffix: "%", tone: winTone, barPct: stats.win_rate,
+      info: GLOSSARY.find(([k]) => k === "Win rate")[1] },
+    { label: "Retorno promedio", value: stats.avg_return_pct !== null && stats.avg_return_pct !== undefined
+        ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null,
+      suffix: "%", tone: retTone, info: GLOSSARY.find(([k]) => k === "Retorno promedio (Polymarket)")[1] },
+    { label: "Expectancy", value: stats.expectancy_r !== null && stats.expectancy_r !== undefined
+        ? (stats.expectancy_r >= 0 ? `+${stats.expectancy_r.toFixed(2)}` : stats.expectancy_r.toFixed(2)) : null,
+      suffix: "R", tone: expTone, info: GLOSSARY.find(([k]) => k === "Expectancy (R)")[1] },
+  ];
+}
+
+function buildWeatherStatCards(stats) {
+  if (!stats || stats.n === 0) return null;
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
+  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
+  return [
+    { label: "Señales resueltas", value: stats.n },
+    { label: "Acertadas (SI)", value: stats.win_rate?.toFixed(1), suffix: "%", tone: winTone, barPct: stats.win_rate,
+      info: "Porcentaje de buckets de temperatura que efectivamente ocurrieron." },
+    { label: "Retorno promedio", value: stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null,
+      suffix: "%", tone: retTone, info: GLOSSARY.find(([k]) => k === "Retorno promedio (clima)")[1] },
+    { label: "Brier score", value: stats.brier_score !== null ? stats.brier_score.toFixed(3) : null, tone: brierTone,
+      info: GLOSSARY.find(([k]) => k === "Brier score")[1] },
+  ];
+}
+
+function buildMlbStatCards(stats) {
+  if (!stats || stats.n === 0) return null;
+  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
+  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
+  return [
+    { label: "Señales resueltas", value: stats.n },
+    { label: "Acertadas", value: stats.win_rate?.toFixed(1), suffix: "%", tone: winTone, barPct: stats.win_rate,
+      info: "Porcentaje de veces que el equipo/lado elegido por el modelo efectivamente ganó." },
+    { label: "Retorno promedio", value: stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null,
+      suffix: "%", tone: retTone, info: GLOSSARY.find(([k]) => k === "Retorno promedio (MLB)")[1] },
+    { label: "Brier score", value: stats.brier_score !== null ? stats.brier_score.toFixed(3) : null, tone: brierTone,
+      info: GLOSSARY.find(([k]) => k === "Brier score")[1] },
+  ];
 }
 
 // Resumen en una sola frase, en español llano — pensado para alguien que
@@ -614,23 +691,47 @@ function PolymarketCategoryTable({ byCategory, excludedCategories = [] }) {
 
 // CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
 // patrón que CryptoOpenTable (posiciones cripto abiertas).
-function PolymarketOpenTable({ rows }) {
+// FIX (06/09/2026): antes esta tabla mostraba todas las señales abiertas
+// tal cual venían de Supabase, sin importar la categoría — una señal de
+// una categoría ya excluida (ej. Clima, Política) aparecía acá igual,
+// aunque el indicador principal y la tabla por categoría ya la tuvieran
+// descartada. Mismo patrón de ocultar-con-toggle que PolymarketCategoryTable.
+function PolymarketOpenTable({ rows, excludedCategories = [] }) {
+  const [showExcluded, setShowExcluded] = useState(false);
+  const allRows = rows || [];
+  const visibleRows = showExcluded ? allRows : allRows.filter((r) => !excludedCategories.includes(r.category));
+  const hiddenCount = allRows.length - visibleRows.length;
   return (
-    <RowCarousel
-      items={rows}
-      keyExtractor={(r) => r.id}
-      emptyMessage="Sin señales de Polymarket abiertas ahora mismo."
-      renderFields={(r) => (
-        <>
-          <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
-          <RowField label="Dirección" value={directionLabel(r.direction)} />
-          <RowField label="Entrada" value={r.entry?.toFixed(3)} />
-          <RowField label="Target" value={r.target?.toFixed(3)} tone="ok" />
-          <RowField label="Stop" value={r.stop?.toFixed(3)} tone="fail" />
-          <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
-        </>
+    <>
+      {hiddenCount > 0 && (
+        <button className="link-toggle" onClick={() => setShowExcluded(true)}>
+          + mostrar {hiddenCount} señal{hiddenCount === 1 ? "" : "es"} de categoría{hiddenCount === 1 ? "" : "s"} excluida{hiddenCount === 1 ? "" : "s"}
+        </button>
       )}
-    />
+      {showExcluded && hiddenCount === 0 && excludedCategories.length > 0 && (
+        <button className="link-toggle" onClick={() => setShowExcluded(false)}>
+          − ocultar categorías excluidas
+        </button>
+      )}
+      <RowCarousel
+        items={visibleRows}
+        keyExtractor={(r) => r.id}
+        emptyMessage="Sin señales de Polymarket abiertas ahora mismo."
+        renderFields={(r) => {
+          const isExcluded = excludedCategories.includes(r.category);
+          return (
+            <>
+              <RowField label="Mercado" value={`${isExcluded ? "🚫 " : ""}${r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}`} />
+              <RowField label="Dirección" value={directionLabel(r.direction)} />
+              <RowField label="Entrada" value={r.entry?.toFixed(3)} />
+              <RowField label="Target" value={r.target?.toFixed(3)} tone="ok" />
+              <RowField label="Stop" value={r.stop?.toFixed(3)} tone="fail" />
+              <RowField label="Enviada" value={parseTs(r.ts_signaled).toLocaleString()} />
+            </>
+          );
+        }}
+      />
+    </>
   );
 }
 
@@ -641,13 +742,41 @@ function PolymarketOpenTable({ rows }) {
 // ────────────────────────────────────────────────────────────────────
 // CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
 // patrón que el resto de los carruseles (indicadores, posiciones, bitácora).
-function PolymarketResolvedTable({ rows }) {
+// FIX (06/09/2026): mismo problema que PolymarketOpenTable — el historial
+// mostraba señales de categorías excluidas sin ningún filtro. Se agrega
+// el mismo toggle ocultar/mostrar en vez de un filtro silencioso, para
+// no esconder de golpe historial que alguien podría querer revisar.
+function PolymarketResolvedTable({ rows, excludedCategories = [] }) {
+  const [showExcluded, setShowExcluded] = useState(false);
   if (!rows || rows.length === 0) {
     return <p className="empty">Todavía no hay señales resueltas.</p>;
   }
+  const visibleRows = showExcluded ? rows : rows.filter((r) => !excludedCategories.includes(r.category));
+  const hiddenCount = rows.length - visibleRows.length;
+  const toggle = hiddenCount > 0 ? (
+    <button className="link-toggle" onClick={() => setShowExcluded(true)}>
+      + mostrar {hiddenCount} señal{hiddenCount === 1 ? "" : "es"} de categoría{hiddenCount === 1 ? "" : "s"} excluida{hiddenCount === 1 ? "" : "s"}
+    </button>
+  ) : showExcluded && excludedCategories.length > 0 ? (
+    <button className="link-toggle" onClick={() => setShowExcluded(false)}>
+      − ocultar categorías excluidas
+    </button>
+  ) : null;
+  if (visibleRows.length === 0) {
+    return (
+      <>
+        {toggle}
+        <p className="empty">
+          {hiddenCount > 0
+            ? "Todas las señales resueltas están en categorías excluidas — tocá \"mostrar\" arriba para verlas."
+            : "Todavía no hay señales resueltas."}
+        </p>
+      </>
+    );
+  }
 
   // Calcular métricas para cada fila
-  const enrichedRows = rows.map((r) => {
+  const enrichedRows = visibleRows.map((r) => {
     const stopDistance = Math.abs(r.entry - r.stop);
     const rMultiple = stopDistance > 0 && r.exit_price !== null
       ? ((r.exit_price - r.entry) / stopDistance) * (r.direction === "YES" ? 1 : -1)
@@ -667,17 +796,20 @@ function PolymarketResolvedTable({ rows }) {
   });
 
   return (
-    <RowCarousel
+    <>
+      {toggle}
+      <RowCarousel
       items={enrichedRows}
       keyExtractor={(r) => r.id}
       emptyMessage="Todavía no hay señales resueltas."
       renderFields={(r) => {
         const isWin = r.outcome === "target";
+        const isExcluded = excludedCategories.includes(r.category);
         const rTone = r.rMultiple !== null ? (r.rMultiple >= 0 ? "ok" : "fail") : "";
         const retTone = r.returnPct !== null ? (r.returnPct >= 0 ? "ok" : "fail") : "";
         return (
           <>
-            <RowField label="Mercado" value={r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question} />
+            <RowField label="Mercado" value={`${isExcluded ? "🚫 " : ""}${r.question?.length > 60 ? `${r.question.slice(0, 60)}…` : r.question}`} />
             <RowField label="Dirección" value={directionLabel(r.direction)} />
             <RowField label="Entrada" value={r.entry?.toFixed(3)} />
             <RowField label="Salida" value={r.exit_price?.toFixed(3)} />
@@ -697,7 +829,8 @@ function PolymarketResolvedTable({ rows }) {
           </>
         );
       }}
-    />
+      />
+    </>
   );
 }
 
@@ -719,39 +852,6 @@ function weatherReturnPct(row) {
   return -100;
 }
 
-function WeatherStatsRow({ stats }) {
-  if (!stats || stats.n === 0) {
-    return (
-      <div className="card">
-        <h2>Performance — Clima (señales resueltas)</h2>
-        <p className="empty">Sin señales de clima resueltas todavía — las métricas aparecen cuando el mercado cierre y se pueda comparar con el resultado real.</p>
-      </div>
-    );
-  }
-  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
-  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
-  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
-  return (
-    <div className="card">
-      <h2>Performance — Clima (señales resueltas)</h2>
-      <p className="card-subtitle">Simulando comprar "SI" al precio de mercado del momento de la señal, $1 nocional por operación.</p>
-      <div className="stats-grid">
-        <StatCard label="Señales resueltas" value={stats.n} />
-        <StatCard label="Acertadas (SI)" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone} barPct={stats.win_rate}
-          info="Porcentaje de buckets de temperatura que efectivamente ocurrieron." />
-        <StatCard label="Retorno promedio" value={stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null}
-          suffix="%" tone={retTone} info={GLOSSARY.find(([k]) => k === "Retorno promedio (clima)")[1]} />
-        <StatCard label="Brier score" value={stats.brier_score !== null ? stats.brier_score.toFixed(3) : null} tone={brierTone}
-          info={GLOSSARY.find(([k]) => k === "Brier score")[1]} />
-      </div>
-    </div>
-  );
-}
-
-// CAMBIADO (05/09/2026): de tabla con scroll horizontal a carrusel de
-// tarjetas — mismo lenguaje visual que Polymarket/Cripto (una tarjeta por
-// señal, flechas y puntos para navegar), en vez de la tabla vieja que en
-// mobile se leía como una lista larga de filas apiladas por data-label.
 function WeatherOpenTable({ rows }) {
   return (
     <RowCarousel
@@ -812,7 +912,10 @@ function WeatherTab({ data }) {
   return (
     <>
       <PlainSummary halted={false} stats={data.weather_stats} label="clima" />
-      <WeatherStatsRow stats={data.weather_stats} />
+      <PerformanceCard title="Performance — Clima (señales resueltas)"
+        subtitle={'Simulando comprar "SI" al precio de mercado del momento de la señal, $1 nocional por operación.'}
+        emptyMessage="Sin señales de clima resueltas todavía — las métricas aparecen cuando el mercado cierre y se pueda comparar con el resultado real."
+        statCards={buildWeatherStatCards(data.weather_stats)} />
       <div className="card">
         <h2>Señales abiertas ({data.weather_open?.length || 0})</h2>
         <p className="card-subtitle">Buckets de temperatura que el bot encontró con ventaja y todavía no se resolvieron.</p>
@@ -840,35 +943,6 @@ function mlbReturnPct(row) {
     return ((row.exit_price - row.market_price) / row.market_price) * 100;
   }
   return -100;
-}
-
-function MlbStatsRow({ stats }) {
-  if (!stats || stats.n === 0) {
-    return (
-      <div className="card">
-        <h2>Performance — MLB (señales resueltas)</h2>
-        <p className="empty">Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real.</p>
-      </div>
-    );
-  }
-  const winTone = stats.win_rate >= 50 ? "ok" : "fail";
-  const retTone = stats.avg_return_pct >= 0 ? "ok" : "fail";
-  const brierTone = stats.brier_score !== null ? (stats.brier_score <= 0.25 ? "ok" : "fail") : "";
-  return (
-    <div className="card">
-      <h2>Performance — MLB (señales resueltas)</h2>
-      <p className="card-subtitle">Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal.</p>
-      <div className="stats-grid">
-        <StatCard label="Señales resueltas" value={stats.n} />
-        <StatCard label="Acertadas" value={stats.win_rate?.toFixed(1)} suffix="%" tone={winTone} barPct={stats.win_rate}
-          info="Porcentaje de veces que el equipo/lado elegido por el modelo efectivamente ganó." />
-        <StatCard label="Retorno promedio" value={stats.avg_return_pct !== null ? (stats.avg_return_pct >= 0 ? `+${stats.avg_return_pct.toFixed(1)}` : stats.avg_return_pct.toFixed(1)) : null}
-          suffix="%" tone={retTone} info={GLOSSARY.find(([k]) => k === "Retorno promedio (MLB)")[1]} />
-        <StatCard label="Brier score" value={stats.brier_score !== null ? stats.brier_score.toFixed(3) : null} tone={brierTone}
-          info={GLOSSARY.find(([k]) => k === "Brier score")[1]} />
-      </div>
-    </div>
-  );
 }
 
 // CAMBIADO (05/09/2026): de tabla con scroll horizontal a carrusel de
@@ -937,7 +1011,10 @@ function MlbTab({ data }) {
   return (
     <>
       <PlainSummary halted={false} stats={data.mlb_stats} label="MLB" />
-      <MlbStatsRow stats={data.mlb_stats} />
+      <PerformanceCard title="Performance — MLB (señales resueltas)"
+        subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal."
+        emptyMessage="Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real."
+        statCards={buildMlbStatCards(data.mlb_stats)} />
       <div className="card">
         <h2>Señales abiertas ({data.mlb_open?.length || 0})</h2>
         <p className="card-subtitle">Partidos de hoy donde el modelo (log5 + localía + pitchers probables) encontró ventaja contra el precio de Polymarket.</p>
@@ -1020,7 +1097,9 @@ function CriptoTab({ data }) {
           </p>
         )}
       </div>
-      <StatsRow title="Performance — Cripto (trades cerrados)" stats={data.stats} showProfitFactor />
+      <PerformanceCard title="Performance — Cripto (trades cerrados)"
+        emptyMessage="Sin trades cerrados todavía — las métricas aparecen cuando haya resultados reales."
+        statCards={buildCryptoStatCards(data.stats, true)} />
       <div className="card">
         <h2>Posiciones abiertas</h2>
         <p className="card-subtitle">Operaciones en modo papel que el bot ya "abrió" y todavía no llegaron a su target ni a su stop.</p>
@@ -1063,8 +1142,10 @@ function PolymarketTab({ data }) {
   return (
     <>
       <PlainSummary halted={false} stats={data.polymarket_stats} label="Polymarket" />
-      <StatsRow title="Performance — Polymarket (sin categorías excluidas)" stats={data.polymarket_stats}
-        emptyMessage="Sin señales resueltas todavía — las métricas aparecen cuando el motor encuentre y cierre alguna." />
+      <PerformanceCard title="Performance — Polymarket (sin categorías excluidas)"
+        subtitle="Retorno comparando precio de entrada contra precio de salida (target o stop); expectancy en R-múltiplos sobre el riesgo inicial."
+        emptyMessage="Sin señales resueltas todavía — las métricas aparecen cuando el motor encuentre y cierre alguna."
+        statCards={buildPolymarketStatCards(data.polymarket_stats)} />
       {excluded.length > 0 && (
         <p className="card-subtitle">
           Excluidas del indicador de arriba por bajo desempeño: {excluded.join(", ")}.{" "}
@@ -1082,11 +1163,11 @@ function PolymarketTab({ data }) {
       <div className="card">
         <h2>Señales abiertas ({data.polymarket_open?.length || 0})</h2>
         <p className="card-subtitle">Mercados de predicción que el bot encontró y todavía no se resolvieron.</p>
-        <PolymarketOpenTable rows={data.polymarket_open} />
+        <PolymarketOpenTable rows={data.polymarket_open} excludedCategories={excluded} />
       </div>
       <div className="card">
         <h2>Historial reciente</h2>
-        <PolymarketResolvedTable rows={data.polymarket_resolved} />
+        <PolymarketResolvedTable rows={data.polymarket_resolved} excludedCategories={excluded} />
       </div>
       <Glossary />
     </>
