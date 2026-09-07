@@ -33,6 +33,12 @@ def format_blocked_message(symbol, signal, failed_checks):
     Ahora: un check fallido por línea, más el contexto de la señal arriba.
     Centralizado acá porque los dos entrypoints (app.py y main.py)
     mandaban este mensaje por separado con el mismo texto.
+
+    FIX (07/09/2026): failed_checks ahora es la lista de dicts de check
+    completos (no solo los labels) para poder usar "fail_reason" cuando
+    existe -- algunos labels (pensados para el checklist neutral del
+    dashboard) leen como doble negación al mostrarse solos con ✕ delante
+    (ver el check de "posición ya abierta" más abajo en este archivo).
     """
     stars = "★" * signal.get("confidence", 0)
     price_str = format_money(signal.get("price"))
@@ -46,7 +52,7 @@ def format_blocked_message(symbol, signal, failed_checks):
         f"{signal.get('type', '—')} · {direction_label(signal.get('direction'))} · Confianza {stars or '—'} · Precio {price_str}",
         "",
     ]
-    lines.extend(f"\u2715 {label}" for label in failed_checks)
+    lines.extend(f"\u2715 {c.get('fail_reason') or c['label']}" for c in failed_checks)
     return "\n".join(lines)
 
 
@@ -98,7 +104,8 @@ class RiskManager:
             {"label": f"Exposición: {exposure_pct:.1f}% < {self.config.MAX_EXPOSURE_PCT}%", "ok": exposure_pct < self.config.MAX_EXPOSURE_PCT},
             {"label": f"Drawdown: {dd_pct:.1f}% < {self.config.MAX_DRAWDOWN_PCT}%", "ok": dd_pct < self.config.MAX_DRAWDOWN_PCT},
             {"label": f"Volatilidad: {vol_pct:.2f}% < {self.config.MAX_VOLATILITY_PCT}%", "ok": vol_pct < self.config.MAX_VOLATILITY_PCT},
-            {"label": "Sistema no detenido por circuit breaker", "ok": not self.is_halted()},
+            {"label": "Sistema no detenido por circuit breaker", "ok": not self.is_halted(),
+             "fail_reason": "El sistema está detenido por el circuit breaker"},
         ]
         
         # NUEVO: antes esto era "ok": True con el comentario "fallo seguro"
@@ -131,10 +138,19 @@ class RiskManager:
         # duplicado. Este check es independiente del de correlación: aunque
         # todavía quede margen de posiciones correlacionadas, una señal sobre
         # un símbolo que ya tiene posición abierta se bloquea siempre.
+        # FIX (07/09/2026): "Sin posición abierta ya en X" con ok=not
+        # already_open leía como doble negación en el mensaje de Telegram
+        # cuando fallaba -- "✕ Sin posición abierta ya en DOT/USDT" se
+        # interpreta al revés de lo que pasó (reportado en vivo). label seguí
+        # useda para el checklist neutral del dashboard (ahí funciona: es un
+        # ✓/✕ al lado de una condición, como cualquier checklist); fail_reason
+        # es lo que se muestra en el mensaje de bloqueo, en voz activa sobre
+        # lo que realmente pasó.
         already_open = self.db.has_open_trade_for_symbol(symbol)
         checks.append({
             "label": f"Sin posición abierta ya en {symbol}",
             "ok": not already_open,
+            "fail_reason": f"Ya hay una posición abierta en {symbol} — no se abre otra hasta cerrarla",
         })
 
         overall_pass = all(c["ok"] for c in checks)
