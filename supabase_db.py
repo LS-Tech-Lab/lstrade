@@ -275,8 +275,17 @@ class SupabaseDatabase:
         return bool(res.data)
 
     def record_mlb_signal(self, condition_id, game_pk, question, home_team, away_team, direction,
-                           my_prob, market_price, ev, confidence, confidence_penalty, token_id, stop=None):
-        self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "ts_signaled": _now_iso()}).execute()
+                           my_prob, market_price, ev, confidence, confidence_penalty, token_id, stop=None,
+                           home_win_pct=None, away_win_pct=None, era_home=None, era_away=None,
+                           pitcher_edge=None, home_field_edge=None):
+        # AUDITORÍA (07/09/2026): se agregan los componentes de
+        # estimate_win_probability() (home_win_pct/away_win_pct/era_home/
+        # era_away/pitcher_edge/home_field_edge) -- antes solo se guardaba
+        # my_prob final, así que al detectar mala calibración en 60-80% no
+        # había forma de saber si el culpable era el ajuste de ERA, el de
+        # localía, o ninguno de los dos (ruido de muestra chica). Todos
+        # opcionales/None por defecto para no romper otros callers.
+        self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "home_win_pct": home_win_pct, "away_win_pct": away_win_pct, "era_home": era_home, "era_away": era_away, "pitcher_edge": pitcher_edge, "home_field_edge": home_field_edge, "ts_signaled": _now_iso()}).execute()
 
     def get_open_mlb_signals(self):
         return self.client.table("mlb_signals").select("*").is_("outcome", "null").execute().data or []
