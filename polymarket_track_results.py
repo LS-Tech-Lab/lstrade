@@ -84,6 +84,17 @@ def check_open_signals(db, client, notifier, config):
                 late_outcome = "target" if final_price >= sig["entry"] else "stop"
                 if not db.resolve_polymarket_signal(sig["id"], final_price, late_outcome):
                     continue
+                # AUDITORÍA (07/09/2026, pedido del usuario): equity propio
+                # del módulo Polymarket -- acá no hay my_prob (no es un
+                # modelo de fundamentos como clima/MLB, es un plan de
+                # entrada/target/stop), así que en vez de ½ Kelly se usa el
+                # mismo esquema de riesgo fijo por operación que ya usa
+                # risk_manager.py para cripto (RISK_PCT_PER_TRADE). Ver
+                # apply_r_multiple_pnl en supabase_db.py.
+                stop_distance = abs(sig["entry"] - sig["stop"])
+                if stop_distance > 0:
+                    r_multiple = (final_price - sig["entry"]) / stop_distance
+                    db.apply_r_multiple_pnl("polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
                 log.warning(
                     f"[CERRADO SIN STOP DETECTADO A TIEMPO] {sig['question'][:60]} "
                     f"({sig['direction']}) — el mercado ya resolvió, precio final {final_price:.3f}, "
@@ -109,6 +120,13 @@ def check_open_signals(db, client, notifier, config):
         exit_price = sig["target"] if hit_target else sig["stop"]
         if not db.resolve_polymarket_signal(sig["id"], exit_price, outcome):
             continue  # otra invocación ya la había resuelto
+
+        # AUDITORÍA (07/09/2026): ver comentario equivalente más arriba
+        # (rama de cierre tardío sin cruce detectado a tiempo).
+        stop_distance = abs(sig["entry"] - sig["stop"])
+        if stop_distance > 0:
+            r_multiple = (exit_price - sig["entry"]) / stop_distance
+            db.apply_r_multiple_pnl("polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
 
         # FIX (07/09/2026, pedido explícito del usuario): el mensaje mostraba
         # "Liquidez al cierre" siempre, pero no el beneficio real -- lo único
