@@ -117,7 +117,8 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     risk_report = risk_manager.check(best_symbol, best_signal, equity, ticker=exchange_client.fetch_ticker(best_symbol))
     if not risk_report["pass"]:
         log.warning(f"{best_symbol}: bloqueado por módulo de riesgo.")
-        failed = [c["label"] for c in risk_report["checks"] if not c["ok"]]
+        # FIX (07/09/2026): idem app.py — checks completos, no solo el label.
+        failed = [c for c in risk_report["checks"] if not c["ok"]]
         notifier.send_message(format_blocked_message(best_symbol, best_signal, failed))
         db.log_decision(best_symbol, best_signal, risk_report, None, "blocked")
         return
