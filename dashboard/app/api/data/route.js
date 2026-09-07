@@ -197,7 +197,13 @@ function mlbReturnPct(row) {
 }
 
 function computeMlbStats(resolvedSignals) {
-  const valid = (resolvedSignals || []).filter((r) => r.outcome && r.market_price > 0);
+  // FIX (07/09/2026): se agregó el outcome "void" (partido cancelado sin
+  // resultado jugado, ver run_mlb_track_results en app.py) después de que
+  // este archivo ya existía -- acá no se lo excluía, así que un partido
+  // cancelado se contaba como derrota tanto en win_rate como en Brier
+  // (mlbReturnPct también le daba -100% por el fallback genérico). Un
+  // partido que nunca se jugó no le suma ni le resta nada al modelo.
+  const valid = (resolvedSignals || []).filter((r) => r.outcome && r.outcome !== "void" && r.market_price > 0);
   if (valid.length === 0) return { n: 0, win_rate: null, avg_return_pct: null, brier_score: null };
   const wins = valid.filter((r) => r.outcome === "win");
   const returns = valid.map(mlbReturnPct).filter((r) => r !== null);
@@ -210,6 +216,46 @@ function computeMlbStats(resolvedSignals) {
     avg_return_pct: returns.length > 0 ? returns.reduce((s, r) => s + r, 0) / returns.length : null,
     brier_score: brierTerms.length > 0 ? brierTerms.reduce((s, b) => s + b, 0) / brierTerms.length : null,
   };
+}
+
+// NUEVO (07/09/2026): calibración de MLB -- responde "cuando el modelo dice
+// que un lado tiene 65% de ganar, ¿de verdad gana cerca del 65% de las
+// veces?". Mismo criterio que weather_calibration_summary() en
+// supabase_db.py (que existe hace rato pero nunca se conectó a ningún
+// endpoint ni al dashboard -- quedó sin forma de verse). Se excluyen "stop"
+// y "void": un stop-loss corta la posición antes de que el partido termine,
+// así que no sabemos si ese lado realmente hubiera ganado o perdido; un
+// void es un partido que no se jugó.
+function computeMlbCalibration(resolvedSignals, bucketSize = 0.1) {
+  const rows = (resolvedSignals || []).filter(
+    (r) => (r.outcome === "win" || r.outcome === "loss") && r.my_prob !== null && r.my_prob !== undefined
+  );
+  if (rows.length === 0) return { n: 0, buckets: [] };
+  const buckets = {};
+  for (const r of rows) {
+    const actual = r.outcome === "win" ? 1 : 0;
+    // FIX (07/09/2026): +1e-9 antes del floor -- sin esto, 0.30/0.1 da
+    // 2.9999999999999996 en JS (error de punto flotante normal, no un bug
+    // de lógica) y una probabilidad de exactamente 30% caía en el bucket
+    // "20-30%" en vez de "30-40%".
+    const key = Math.min(Math.floor(r.my_prob / bucketSize + 1e-9), Math.floor(1 / bucketSize) - 1);
+    if (!buckets[key]) buckets[key] = { predicted: [], actual: [] };
+    buckets[key].predicted.push(r.my_prob);
+    buckets[key].actual.push(actual);
+  }
+  const bucketRows = Object.keys(buckets)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((k) => {
+      const b = buckets[k];
+      return {
+        range: `${(k * bucketSize * 100).toFixed(0)}-${((k + 1) * bucketSize * 100).toFixed(0)}%`,
+        n: b.predicted.length,
+        avg_predicted: b.predicted.reduce((s, x) => s + x, 0) / b.predicted.length,
+        actual_freq: b.actual.reduce((s, x) => s + x, 0) / b.actual.length,
+      };
+    });
+  return { n: rows.length, buckets: bucketRows };
 }
 
 // FIX: las listas de filas "abiertas" (sin resolver todavía) no tenían
@@ -368,6 +414,7 @@ export async function GET() {
       mlb_resolved: mlbResolved.slice(0, 20),
       mlb_stats: mlbResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
         : computeMlbStats(mlbResolved),
+      mlb_calibration: mlbResolvedRes.error ? { n: 0, buckets: [] } : computeMlbCalibration(mlbResolved),
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
