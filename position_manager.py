@@ -4,6 +4,8 @@ Se ejecuta al inicio de cada ciclo para proteger ganancias en operaciones activa
 """
 import logging
 
+from format_utils import format_money, direction_label
+
 log = logging.getLogger("position_manager")
 
 class PositionManager:
@@ -109,7 +111,15 @@ class PositionManager:
                     self.db.update_trade_stop(trade_id, new_stop, new_order_id=new_order_id if self.config.LIVE_TRADING else None)
                     trade["order_id"] = new_order_id if self.config.LIVE_TRADING else trade["order_id"]
 
-                    self.notifier.send_message(f"🛡️ *Trailing Stop Actualizado*\n{symbol} {direction}\nNuevo Stop: `{new_stop:.6f}`")
+                    # AUDITORÍA (06/09/2026): "Nuevo Stop: 0.123456" no decía
+                    # qué implica el cambio — se agrega la frase en criollo
+                    # y se usa format_money() (decimales adaptados a la
+                    # magnitud del precio) en vez de 6 decimales fijos.
+                    self.notifier.send_message(
+                        f"🛡️ *Trailing Stop Actualizado* — {symbol} {direction_label(direction)}\n"
+                        f"Nuevo stop: {format_money(new_stop)} — esto protege más ganancia "
+                        f"si el precio sigue moviéndose a favor."
+                    )
                     current_stop = new_stop
 
                 # NUEVO: detectar si el precio ya cruzó el stop o el target.
@@ -173,12 +183,23 @@ class PositionManager:
                                 f"exchange FALLÓ ({e}) — revisar la posición a mano."
                             )
 
+                    # AUDITORÍA (06/09/2026): "TARGET (+1.20R)" no se explica
+                    # en ningún mensaje de Telegram (el glosario de "R" vive
+                    # solo en el dashboard) — se traduce a "ganaste/perdiste
+                    # X veces lo que arriesgaste", que es lo mismo que dice
+                    # el número pero sin requerir conocer la jerga.
                     emoji = "✅" if outcome == "target" else "🛑"
-                    r_text = f" ({r_multiple:+.2f}R)" if r_multiple is not None else ""
-                    log.info(f"[CIERRE] {symbol} {direction}: {outcome} @ {exit_price:.6f}{r_text}")
+                    won = outcome == "target"
+                    result_word = "Ganaste" if won else "Perdiste"
+                    r_text = ""
+                    if r_multiple is not None:
+                        veces = abs(r_multiple)
+                        r_text = f" — {result_word} {veces:.1f} veces lo que arriesgaste en esta operación"
+                    log.info(f"[CIERRE] {symbol} {direction}: {outcome} @ {exit_price:.6f} ({r_multiple})")
                     self.notifier.send_message(
-                        f"{emoji} *Posición cerrada* — {symbol} {direction}\n"
-                        f"Resultado: {outcome.upper()}{r_text}\nSalida: `{exit_price:.6f}`"
+                        f"{emoji} *Posición cerrada* — {symbol} {direction_label(direction)}\n"
+                        f"Resultado: {'ganancia' if won else 'pérdida'}{r_text}\n"
+                        f"Precio de salida: {format_money(exit_price)}"
                     )
 
             except Exception as e:
