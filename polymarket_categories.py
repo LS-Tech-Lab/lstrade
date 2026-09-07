@@ -1,69 +1,46 @@
-{
-  "_comment": "Fuente única de reglas de categorización de mercados de Polymarket. La lee polymarket_categories.py (Python, motor de señales) y dashboard/app/api/data/route.js (JS, dashboard). Se evalúa en orden: la primera regla que matchea gana.",
-  "excluded_comment": "FIX (06/09/2026): antes esta lista vivía hardcodeada por separado en config.py (Python) y en dashboard/app/api/data/route.js (JS) -- el propio comentario en route.js ya advertía que se iban a desincronizar, y de hecho el default del dashboard le faltaba 'Clima' (se agregó a config.py el 04/09/2026 y nunca se replicó ahí). Se centraliza acá; ambos lados la leen de este JSON como default y siguen permitiendo override por env var POLYMARKET_EXCLUDED_CATEGORIES si hace falta.",
-  "excluded": [
-    "Política / geopolítica",
-    "Redes sociales / figuras públicas",
-    "Otros / sin clasificar",
-    "Cripto — objetivo de precio",
-    "Clima",
-    "Macro / tasas de interés",
-    "Macro / eventos cripto",
-    "IA / tech"
-  ],
-  "fallback": "Otros / sin clasificar",
-  "rules": [
-    {
-      "name": "Clima",
-      "pattern": "temperature|hottest|coldest|rain|snow|hurricane|heat wave|weather|degrees?\\b|Fahrenheit|Celsius"
-    },
-    {
-      "name": "Esports",
-      "pattern": "Counter-Strike|CS:?GO|\\bCS2\\b|League of Legends|\\bLoL\\b|\\bDota ?2?\\b|Valorant|\\bBO[135]\\b|Cyber Games",
-      "note": "Va antes que Deportes: preguntas como \"Counter-Strike: A vs B\" también matchean el patrón genérico de \"vs\", así que la categoría más específica tiene que ganar primero."
-    },
-    {
-      "name": "Deportes",
-      "pattern": "\\bvs\\.?\\b|\\bwin on \\d{4}-\\d{2}-\\d{2}\\b|O/U \\d|\\bwin\\b.*\\b(Open|Championship|Cup|Series|League|Bowl|Final|Wimbledon)\\b|\\bATP\\b|\\bUFC\\b|\\bfight\\b"
-    },
-    {
-      "name": "Lanzamientos / FDV",
-      "pattern": "\\bFDV\\b|one day after launch|launch a token"
-    },
-    {
-      "name": "Valuaciones privadas",
-      "pattern": "valuation hit|\\(HIGH\\)|\\(LOW\\)"
-    },
-    {
-      "name": "Cripto — objetivo de precio",
-      "pattern": "\\bprice of (bitcoin|ethereum|btc|eth|solana|sol|xrp|doge)\\b|\\b(bitcoin|ethereum|btc|eth)\\b.*\\b(up or down|above \\$|below \\$)|reach \\$|dip to \\$|market cap",
-      "note": "FIX: antes solo matcheaba \"reach $\"/\"dip to $\"/\"market cap\" — ninguna pregunta real de Polymarket viene redactada así. El fraseo real es \"price of Bitcoin\", \"Bitcoin ... above $X\" o \"Bitcoin Up or Down\"."
-    },
-    {
-      "name": "Macro / tasas de interés",
-      "pattern": "\\bFed\\b|interest rate|\\bbps\\b|inflation|\\bGDP\\b|jobs report|rate hike|rate cut"
-    },
-    {
-      "name": "Macro / eventos cripto",
-      "pattern": "bank failure|hack over|open interest"
-    },
-    {
-      "name": "Política / geopolítica",
-      "pattern": "election|senat|vote|president|confirm|governor|congress|by-election|invade|ceasefire|\\bwar\\b",
-      "note": "FIX: geopolítica (ceasefire, invasión) caía en \"Otros\" — antes solo cubría elecciones/votaciones, no conflictos internacionales."
-    },
-    {
-      "name": "Redes sociales / figuras públicas",
-      "pattern": "\\btweets?\\b|\\bpost(?:ed)? \\d|Elon Musk|\\bX posts?\\b|Instagram|TikTok",
-      "note": "NUEVO: preguntas sobre actividad de figuras públicas en redes (ej. conteo de tweets) no tenían categoría propia."
-    },
-    {
-      "name": "IA / tech",
-      "pattern": "Claude|OpenAI|Anthropic|GPT|Frontier Math|Opus|Gemini"
-    },
-    {
-      "name": "Entretenimiento / vanity",
-      "pattern": "attend|wedding"
-    }
-  ]
-}
+"""
+Categorización de mercados de Polymarket por keywords del texto de la
+pregunta — heurística, no una taxonomía oficial de Gamma (que no expone una
+categoría estructurada confiable en lo que ya trae parse_market_for_analysis).
+
+Módulo compartido para que analyze_polymarket_categories.py (análisis
+offline del backtest) y polymarket_main.py (filtro en producción) usen
+exactamente las mismas reglas — si se definieran por separado en cada
+archivo, con el tiempo terminan divisando y el filtro en vivo deja de
+coincidir con lo que se validó en el backtest.
+
+Las reglas en sí (nombre + patrón) viven en dashboard/polymarket_categories.json,
+NO acá — ese mismo JSON lo lee también dashboard/app/api/data/route.js
+(JS) para las stats por categoría. Antes había dos copias hardcodeadas
+(una en Python, otra en JS) que había que tocar a la par a mano; con el
+JSON como única fuente, cambiar una regla es un solo edit y ambos lados
+quedan sincronizados automáticamente.
+"""
+import json
+import re
+from pathlib import Path
+
+_RULES_PATH = Path(__file__).resolve().parent / "dashboard" / "polymarket_categories.json"
+
+
+def _load_rules():
+    with open(_RULES_PATH, encoding="utf-8") as f:
+        spec = json.load(f)
+    # Se evalúa en orden, el primero que matchea gana. Las categorías más
+    # específicas van primero en el JSON para evitar que una más genérica
+    # (ej. Macro) se coma preguntas que en realidad son de otra cosa
+    # (ej. clima). Ver comentarios de cada regla en el JSON.
+    rules = [(r["name"], re.compile(r["pattern"], re.I)) for r in spec["rules"]]
+    return rules, spec["fallback"]
+
+
+CATEGORY_RULES, FALLBACK_CATEGORY = _load_rules()
+
+
+def categorize(question):
+    if not question:
+        return FALLBACK_CATEGORY
+    for name, pattern in CATEGORY_RULES:
+        if pattern.search(question):
+            return name
+    return FALLBACK_CATEGORY
