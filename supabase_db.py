@@ -183,9 +183,16 @@ class SupabaseDatabase:
             profit_loss = None
             profit_pct = None
             
+            # FIX (06/09/2026): sin el signo por direction -- entry/target/
+            # stop ya están expresados en el precio de la punta elegida
+            # (YES o NO), siempre subiendo si gana. Este era justo el bug
+            # que ya se había señalado (sin corregir) en el comentario de
+            # fetch_live_resolved() en polymarket_compare_backtest_live.py:
+            # invertía el R-múltiplo de TODAS las señales NO (~mitad del
+            # historial), mostrando wins reales como pérdidas y viceversa
+            # en /api/polymarket_history.
             if stop_distance > 0 and r["exit_price"] is not None:
-                sign = 1 if r["direction"] == "YES" else -1
-                r_multiple = ((r["exit_price"] - r["entry"]) / stop_distance) * sign
+                r_multiple = (r["exit_price"] - r["entry"]) / stop_distance
                 
                 # Calcular ganancia/pérdida en USD (asumiendo $100 de riesgo base)
                 base_risk = 100.0  # Puedes ajustar esto según tu tamaño de posición real
