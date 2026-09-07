@@ -96,7 +96,20 @@ def fetch_game_result(game_pk, timeout=DEFAULT_TIMEOUT):
     try:
         resp = requests.get(
             f"{MLB_API}/schedule",
-            params={"gamePk": game_pk, "hydrate": "linescore"},
+            # FIX (07/09/2026): el parámetro real de la MLB Stats API para
+            # filtrar por partido puntual es "gamePks" (plural) -- "gamePk"
+            # (singular, lo que había acá) no es un parámetro que la API
+            # reconozca, así que /schedule lo ignoraba por completo. Sin
+            # "date"/"startDate" tampoco puesto, la respuesta volvía sin
+            # "dates" (lista vacía) SIEMPRE, para cualquier gamePk, real o
+            # no -- esto es lo que hacía que un partido terminado hace
+            # horas nunca se detectara como Final (se confirmó con
+            # still_open=10, resolved=[] reportado en producción: todas
+            # las señales fallan de la misma manera, no solo casos borde).
+            # Se agrega también "sportId" (requerido por la API para
+            # devolver resultados, mismo patrón que ya usa
+            # fetch_probable_pitchers_for_date más abajo en este archivo).
+            params={"gamePks": game_pk, "sportId": 1, "hydrate": "linescore"},
             timeout=timeout,
         )
         resp.raise_for_status()
@@ -109,18 +122,41 @@ def fetch_game_result(game_pk, timeout=DEFAULT_TIMEOUT):
     if not games:
         return None
     game = games[0]
-    if game.get("status", {}).get("detailedState") != "Final":
-        return None  # en curso / pospuesto / suspendido -- se reintenta en el próximo ciclo
+    # FIX (07/09/2026): "detailedState != 'Final'" exigía ese string exacto,
+    # pero la MLB Stats API usa varios detailedState distintos para un
+    # partido ya terminado (p.ej. "Game Over" en partidos suspendidos que
+    # se retoman y cierran) -- todos esos casos comparten
+    # abstractGameState == "Final" (los otros dos valores posibles son
+    # "Preview" y "Live"), que es el campo pensado para esta pregunta.
+    # Con el chequeo viejo, cualquier partido que terminara con un
+    # detailedState distinto de "Final" quedaba reintentándose para
+    # siempre -- la señal correspondiente nunca se cerraba.
+    status = game.get("status", {})
+    if status.get("abstractGameState") != "Final":
+        return None  # en curso / todavía no empieza -- se reintenta en el próximo ciclo
 
     home = game.get("teams", {}).get("home", {})
     away = game.get("teams", {}).get("away", {})
+    home_won, away_won = bool(home.get("isWinner")), bool(away.get("isWinner"))
+    if not home_won and not away_won:
+        # Partido cancelado/suspendido sin reanudar y sin ganador real (no
+        # "Final" con resultado jugado) -- no hay nada que resolver como
+        # ganancia o pérdida. Se marca aparte para que el caller decida qué
+        # hacer (ej. anular la señal) en vez de contarlo como derrota por
+        # default.
+        return {
+            "home_id": home.get("team", {}).get("id"), "away_id": away.get("team", {}).get("id"),
+            "home_score": home.get("score"), "away_score": away.get("score"),
+            "home_won": False, "away_won": False, "voided": True,
+        }
     return {
         "home_id": home.get("team", {}).get("id"),
         "away_id": away.get("team", {}).get("id"),
         "home_score": home.get("score"),
         "away_score": away.get("score"),
-        "home_won": bool(home.get("isWinner")),
-        "away_won": bool(away.get("isWinner")),
+        "home_won": home_won,
+        "away_won": away_won,
+        "voided": False,
     }
 
 HOME_FIELD_EDGE = 0.04       # ver AUDITORÍA arriba -- sin calibrar
