@@ -593,6 +593,28 @@ def run_weather_cycle():
         if event_key in open_events and best["condition_id"] not in open_condition_ids:
             detail.append({"title": event["title"], "status": "ya_hay_señal_abierta_para_este_dia_ciudad"})
             continue
+
+        # NUEVO (07/09/2026, usuario reportó "compra varias veces al día
+        # para la misma ciudad a medida que sube la temperatura"): el
+        # guard de arriba solo evita señales SIMULTÁNEAS -- esto tapa el
+        # patrón de reabrir un bucket nuevo cada vez que el anterior se
+        # cierra por stop mientras la temperatura real sigue subiendo
+        # (ver count_weather_signals_for_event en supabase_db.py). Solo
+        # se consulta si el bucket es realmente nuevo (no un reenvío del
+        # mismo condition_id ya registrado), para no gastar una llamada
+        # extra a Supabase en el caso común de "ya está todo abierto,
+        # nada que hacer".
+        if best["condition_id"] not in open_condition_ids:
+            attempts_today = db.count_weather_signals_for_event(signal["station"].get("icao"), event["title"])
+            max_per_event = getattr(config, "WEATHER_MAX_SIGNALS_PER_EVENT", 2)
+            if attempts_today >= max_per_event:
+                detail.append({
+                    "title": event["title"],
+                    "status": "tope_de_intentos_por_dia_ciudad_alcanzado",
+                    "attempts_today": attempts_today,
+                })
+                continue
+
         if not state_store.should_notify(best["condition_id"], best["ev"]):
             continue
 
