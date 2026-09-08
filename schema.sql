@@ -81,7 +81,17 @@ create table if not exists open_trades (
     position_size double precision not null,
     order_id text,
     ts_opened timestamptz not null,
-    stop_distance double precision
+    stop_distance double precision,
+    -- AUDITORÍA (08/09/2026): antes no quedaba registro de QUÉ setup abrió
+    -- cada trade (setup_type/confidence/score, ya calculados por
+    -- generate_signal() y descartados apenas se armaba el plan) -- sin esto
+    -- era imposible desglosar win rate/expectancy por tipo de setup o nivel
+    -- de confianza (el mismo diagnóstico que ya se hizo por categoría en
+    -- Polymarket y por componente de probabilidad en MLB). Se propagan acá
+    -- y se copian a closed_trades al cerrar (ver close_trade_with_outcome).
+    setup_type text,
+    confidence integer,
+    score double precision
 );
 
 create unique index if not exists uq_open_trades_symbol on open_trades (symbol);
@@ -94,6 +104,9 @@ create table if not exists closed_trades (
     exit_price double precision not null,
     outcome text not null,
     r_multiple double precision,
+    setup_type text,
+    confidence integer,
+    score double precision,
     ts_opened timestamptz not null,
     ts_closed timestamptz not null
 );
@@ -226,3 +239,19 @@ create index if not exists idx_polymarket_signals_open on polymarket_signals (ts
 create index if not exists idx_polymarket_signals_resolved on polymarket_signals (ts_resolved desc) where outcome is not null;
 create index if not exists idx_weather_signals_open on weather_signals (ts_signaled desc) where outcome is null;
 create index if not exists idx_weather_signals_resolved on weather_signals (ts_resolved desc) where outcome is not null;
+
+-- MIGRACIÓN (08/09/2026): open_trades/closed_trades ya existen en producción
+-- con datos (61 trades cerrados de cripto al momento de este cambio) -- las
+-- columnas de arriba en el CREATE TABLE solo aplican a una base nueva. Estas
+-- ALTER TABLE son la forma real de que lleguen a Supabase; son idempotentes
+-- y no rompen nada si ya se corrieron antes. Los trades cerrados ANTES de
+-- este cambio quedan con setup_type/confidence/score en NULL -- el
+-- diagnóstico por dimensión (analyze_crypto_setups.py) los cuenta aparte.
+alter table open_trades add column if not exists setup_type text;
+alter table open_trades add column if not exists confidence integer;
+alter table open_trades add column if not exists score double precision;
+alter table closed_trades add column if not exists setup_type text;
+alter table closed_trades add column if not exists confidence integer;
+alter table closed_trades add column if not exists score double precision;
+
+create index if not exists idx_closed_trades_setup_type on closed_trades (setup_type);
