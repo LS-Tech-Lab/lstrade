@@ -10,7 +10,6 @@ import concurrent.futures  # NUEVO (Semana 2): Para concurrencia en descargas de
 from config import Config
 from db import Database
 from polymarket_categories import categorize
-from polymarket_chart import build_signal_chart
 from polymarket_client import PolymarketClient
 from polymarket_signal_engine import detect_inefficiency, generate_polymarket_signal, verify_entry_against_book
 from polymarket_state import PolymarketStateStore
@@ -224,6 +223,18 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
             history = price_history_by_condition_id.get(signal["market"]["condition_id"])
             if history and len(history) >= 5:
                 try:
+                    # AUDITORÍA (08/09/2026): import diferido -- matplotlib.pyplot
+                    # estaba en el top del módulo, y polymarket_main.py se importa
+                    # desde app.py (el monolito FastAPI que sirve TODOS los
+                    # endpoints, incluido /api/cycle, que no tiene nada que ver con
+                    # gráficos). Cada cold start pagaba el costo de construir el
+                    # cache de fuentes de matplotlib ("generated new fontManager"
+                    # en los logs, varios segundos) sin importar qué endpoint se
+                    # llamara -- confirmado como causa de al menos parte de los
+                    # timeouts de 25s en /api/cycle (Vercel Runtime Logs, 08/09).
+                    # Ahora solo se paga ese costo la primera vez que hace falta
+                    # mandar un gráfico de verdad.
+                    from polymarket_chart import build_signal_chart
                     chart_png = build_signal_chart(signal, history)
                     notifier.send_photo(chart_png, caption=f"📈 {signal['market']['question'][:80]}")
                 except Exception as e:
