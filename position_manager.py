@@ -63,24 +63,34 @@ class PositionManager:
                 new_stop = current_stop
                 moved = False
 
+                # AUDITORÍA (08/09/2026): los multiplicadores 1.0 (breakeven)
+                # y 1.5 (distancia de persecución) estaban hardcodeados --
+                # ahora son config.TRAIL_BREAKEVEN_ATR_MULT / TRAIL_ATR_MULT
+                # (default 1.0 / 1.2, antes 1.0 / 1.5) para poder ajustar sin
+                # redeploy y medir el efecto con analyze_crypto_setups.py.
+                # Bajar TRAIL_ATR_MULT protege antes la ganancia ya hecha, a
+                # costa de cortar antes algunos trades que hubieran seguido.
+                breakeven_dist = atr * self.config.TRAIL_BREAKEVEN_ATR_MULT
+                trail_dist = atr * self.config.TRAIL_ATR_MULT
+
                 # Lógica de Trailing Stop
                 if direction == "LONG":
-                    # Si el precio subió más de 1 ATR desde la entrada, movemos el stop a Breakeven
-                    if current_price > entry + atr and current_stop < entry:
+                    # Si el precio subió más de breakeven_dist desde la entrada, movemos el stop a Breakeven
+                    if current_price > entry + breakeven_dist and current_stop < entry:
                         new_stop = entry
                         moved = True
-                    # Si ya está en breakeven, lo perseguimos a 1.5 ATR del precio actual
-                    elif current_price > entry + (atr * 1.5):
-                        trail_stop = current_price - (atr * 1.5)
+                    # Si ya está en breakeven, lo perseguimos a trail_dist del precio actual
+                    elif current_price > entry + trail_dist:
+                        trail_stop = current_price - trail_dist
                         if trail_stop > current_stop:
                             new_stop = trail_stop
                             moved = True
                 else: # SHORT
-                    if current_price < entry - atr and current_stop > entry:
+                    if current_price < entry - breakeven_dist and current_stop > entry:
                         new_stop = entry
                         moved = True
-                    elif current_price < entry - (atr * 1.5):
-                        trail_stop = current_price + (atr * 1.5)
+                    elif current_price < entry - trail_dist:
+                        trail_stop = current_price + trail_dist
                         if trail_stop < current_stop:
                             new_stop = trail_stop
                             moved = True
