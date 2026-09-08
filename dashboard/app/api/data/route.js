@@ -135,6 +135,73 @@ function computePolymarketStats(rows) {
   };
 }
 
+// NUEVO (08/09/2026, a pedido del usuario tras la calibración de Clima):
+// ni Cripto ni Polymarket genérico calculan una probabilidad (my_prob) --
+// usan `confidence` (entero 1-5) y `score`, y resuelven por r_multiple o
+// target/stop, no por yes/no de mercado. No hay forma de armar una
+// calibración de probabilidad literal con esos datos. Lo que sí se puede
+// preguntar con lo que hay es la versión equivalente en espíritu: "¿una
+// confianza más alta predice de verdad mejor resultado?" -- exactamente
+// lo mismo que ya hacía computePolymarketStatsByCategory() de acá abajo,
+// pero agrupando por `confidence` en vez de por categoría. Mismo shape de
+// resultado ({n, win_rate, expectancy_r, profit_factor, total_r}) para
+// poder reusar el mismo componente de tabla en el dashboard.
+function computeStatsByConfidence(rows) {
+  const byConfidence = {};
+  for (const r of rows) {
+    if (r.r_multiple === null || r.r_multiple === undefined) continue;
+    const key = r.confidence !== null && r.confidence !== undefined ? `Confianza ${r.confidence}` : "Sin dato";
+    if (!byConfidence[key]) byConfidence[key] = [];
+    byConfidence[key].push(r.r_multiple);
+  }
+  const result = {};
+  for (const [key, rms] of Object.entries(byConfidence)) {
+    const n = rms.length;
+    const wins = rms.filter((rm) => rm > 0).length;
+    const grossWin = rms.reduce((s, rm) => s + Math.max(0, rm), 0);
+    const grossLoss = Math.abs(rms.reduce((s, rm) => s + Math.min(0, rm), 0));
+    result[key] = {
+      n,
+      win_rate: (wins / n) * 100,
+      expectancy_r: rms.reduce((s, rm) => s + rm, 0) / n,
+      profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
+      total_r: rms.reduce((s, rm) => s + rm, 0),
+    };
+  }
+  return result;
+}
+
+// Mismo cálculo que computeStatsByConfidence() pero para Polymarket
+// genérico -- entry/target/stop/exit_price en vez de r_multiple directo
+// (Polymarket no lo guarda como columna, se deriva igual que en
+// computePolymarketStatsByCategory()/polymarket_stats_summary()).
+function computePolymarketStatsByConfidence(resolvedSignals) {
+  const byConfidence = {};
+  for (const r of resolvedSignals) {
+    const stopDistance = Math.abs(r.entry - r.stop);
+    if (stopDistance <= 0) continue;
+    const rm = (r.exit_price - r.entry) / stopDistance;
+    const key = r.confidence !== null && r.confidence !== undefined ? `Confianza ${r.confidence}` : "Sin dato";
+    if (!byConfidence[key]) byConfidence[key] = [];
+    byConfidence[key].push({ rm, outcome: r.outcome });
+  }
+  const result = {};
+  for (const [key, entries] of Object.entries(byConfidence)) {
+    const n = entries.length;
+    const wins = entries.filter((e) => e.outcome === "target").length;
+    const grossWin = entries.reduce((s, e) => s + Math.max(0, e.rm), 0);
+    const grossLoss = Math.abs(entries.reduce((s, e) => s + Math.min(0, e.rm), 0));
+    result[key] = {
+      n,
+      win_rate: (wins / n) * 100,
+      expectancy_r: entries.reduce((s, e) => s + e.rm, 0) / n,
+      profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
+      total_r: entries.reduce((s, e) => s + e.rm, 0),
+    };
+  }
+  return result;
+}
+
 function computePolymarketStatsByCategory(resolvedSignals) {
   const byCategory = {};
   for (const r of resolvedSignals) {
@@ -382,7 +449,11 @@ export async function GET() {
       // NUEVO: posiciones cripto abiertas (modo papel) — antes run_cycle()
       // nunca las registraba, así que esta tabla estaba siempre vacía.
       supabase.from("open_trades").select("*").order("ts_opened", { ascending: false }).limit(OPEN_ROWS_LIMIT),
-      supabase.from("closed_trades").select("outcome,r_multiple").order("ts_closed", { ascending: false }).limit(500),
+      // NUEVO (08/09/2026): confidence sumado al select -- hacía falta para
+      // computeStatsByConfidence() más abajo. setup_type no se pide porque
+      // todavía no tiene ningún trade cerrado con ese dato (columna
+      // agregada el mismo día que esto).
+      supabase.from("closed_trades").select("outcome,r_multiple,confidence").order("ts_closed", { ascending: false }).limit(500),
       // Señales de Polymarket todavía sin resolver — "posiciones abiertas" de ese módulo.
       supabase.from("polymarket_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
       // Últimas resueltas: para el historial reciente y las stats por categoría.
@@ -505,6 +576,8 @@ export async function GET() {
         : computeMlbStats(mlbResolved),
       mlb_calibration: mlbResolvedRes.error ? { n: 0, buckets: [] } : computeMlbCalibration(mlbResolved),
       weather_calibration: weatherResolvedRes.error ? { n: 0, buckets: [] } : computeWeatherCalibration(weatherResolved),
+      crypto_stats_by_confidence: closedTradesRes.error ? {} : computeStatsByConfidence(closedTradesRes.data || []),
+      polymarket_stats_by_confidence: polymarketResolvedRes.error ? {} : computePolymarketStatsByConfidence(resolvedSignalsCore),
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
