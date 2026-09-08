@@ -72,6 +72,31 @@ def _touch_notification(db):
     hubo silencio, no hace falta duplicar aviso el mismo ciclo."""
     db.set_state("last_notification_ts", str(time.time()))
 
+def _safe_apply_pnl(fn, *args, **kwargs):
+    """
+    FIX (08/09/2026): apply_binary_signal_pnl/apply_r_multiple_pnl (equity
+    por módulo, agregado 07/09/2026) se llaman DESPUÉS de que la señal ya
+    se marcó resuelta en la base (resolve_mlb_signal/resolve_weather_signal
+    ya devolvió True) -- son un tracking secundario (para el gráfico de
+    equity), no la resolución real. El problema: se llamaban sin try/except
+    dentro del mismo endpoint que resuelve las señales
+    (/api/mlb_track_results, /api/weather_track_results) -- si la
+    migración SQL que agrega la columna `module` a equity_history no se
+    corrió en Supabase (no hay ningún archivo de migración en el repo,
+    solo se menciona en un comentario), toda la llamada tira una excepción
+    no controlada que aborta el resto del loop: la señal actual ya quedó
+    bien resuelta, pero las demás señales pendientes de ESE ciclo se
+    quedan sin revisar, y el endpoint entero devuelve 500 -- reintroduce
+    el mismo síntoma ("señales que no se resuelven") que se pasó gran
+    parte de esta sesión arreglando, pero por una causa nueva y distinta.
+    Un fallo en el tracking de equity (algo secundario/informativo) nunca
+    debería poder frenar la resolución real de una señal (lo importante).
+    """
+    try:
+        fn(*args, **kwargs)
+    except Exception as e:
+        print(f"[equity] no se pudo actualizar equity de {args[0] if args else '?'}: {e}")
+
 def _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots):
     if not notifier.enabled:
         return
@@ -811,7 +836,19 @@ def run_mlb_cycle():
         if not memo:
             continue
         try:
-            notifier.send_message(memo)
+            # FIX (08/09/2026): se invierte el orden -- antes se mandaba el
+            # mensaje de Telegram y RECIÉN DESPUÉS se intentaba guardar en
+            # Supabase. Si el insert fallaba (como pasó de hecho: las 6
+            # columnas nuevas de estimate_win_probability no existían
+            # todavía en la tabla real, ver migración
+            # 2026-09-07_add_win_probability_components_to_mlb_signals.sql),
+            # la alerta ya había salido pero la señal nunca quedaba
+            # registrada -- ni en open_game_pks/open_condition_ids, así que
+            # el mismo partido podía volver a alertarse en el próximo
+            # ciclo, sin límite. Guardar primero: si el insert falla, no
+            # sale ninguna alerta (falso negativo, silenciable) en vez de
+            # una alerta que después se repite sin parar (falso positivo
+            # que además ensucia el chat).
             stop = signal["market_price"] * (1 - config.WEATHER_MLB_STOP_LOSS_PCT)
             db.record_mlb_signal(
                 signal["condition_id"], signal["game_pk"], signal["question"],
@@ -826,6 +863,7 @@ def run_mlb_cycle():
                 era_home=signal.get("era_home"), era_away=signal.get("era_away"),
                 pitcher_edge=signal.get("pitcher_edge"), home_field_edge=signal.get("home_field_edge"),
             )
+            notifier.send_message(memo)
             open_condition_ids.add(signal["condition_id"])
             open_game_pks.add(signal["game_pk"])
             sent += 1
@@ -900,7 +938,7 @@ def run_mlb_track_results():
                     # AUDITORÍA (07/09/2026): equity propio del módulo MLB
                     # (½ Kelly sobre my_prob/market_price ya guardados en la
                     # señal) -- ver apply_binary_signal_pnl en supabase_db.py.
-                    db.apply_binary_signal_pnl("mlb", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
+                    _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
                     resolved.append({
                         "game_pk": sig.get("game_pk"), "question": sig.get("question"),
                         "outcome": "stop", "exit_price": stop,
@@ -938,7 +976,7 @@ def run_mlb_track_results():
         # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop) --
         # mismo equity propio del módulo MLB, actualizado también en la
         # resolución completa (no solo en la salida anticipada por stop).
-        db.apply_binary_signal_pnl("mlb", sig["my_prob"], sig["market_price"], outcome)
+        _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], outcome)
         resolved.append({
             "game_pk": game_pk,
             "question": sig.get("question"),
@@ -1042,7 +1080,7 @@ def run_weather_track_results():
                     # AUDITORÍA (07/09/2026): equity propio del módulo clima
                     # (mismo mecanismo ½ Kelly que MLB -- ver
                     # apply_binary_signal_pnl en supabase_db.py).
-                    db.apply_binary_signal_pnl("weather", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
+                    _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
                     resolved.append({"condition_id": condition_id, "outcome": "stop", "exit_price": stop})
                 continue
 
@@ -1070,7 +1108,7 @@ def run_weather_track_results():
         if not db.resolve_weather_signal(sig["id"], outcome):
             continue
         # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop).
-        db.apply_binary_signal_pnl("weather", sig["my_prob"], sig["market_price"], outcome)
+        _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], outcome)
         resolved.append({"condition_id": condition_id, "outcome": outcome})
 
     return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
