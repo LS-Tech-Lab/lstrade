@@ -289,6 +289,41 @@ function computeMlbCalibration(resolvedSignals, bucketSize = 0.1) {
   return { n: rows.length, buckets: bucketRows };
 }
 
+// NUEVO (08/09/2026): equivalente de computeMlbCalibration() para Clima --
+// mismo cálculo que ya existía en supabase_db.py (weather_calibration_summary)
+// pero nunca se había conectado a ningún endpoint ni al dashboard. Acá el
+// outcome resuelto es "yes"/"no" (no "win"/"loss" como MLB) y no hay
+// concepto de "void" -- un "stop" sí se excluye, por el mismo motivo que en
+// MLB: cortar la posición antes de que el mercado cierre no dice si el
+// bucket elegido hubiera resuelto "yes" o "no" en la realidad.
+function computeWeatherCalibration(resolvedSignals, bucketSize = 0.1) {
+  const rows = (resolvedSignals || []).filter(
+    (r) => (r.outcome === "yes" || r.outcome === "no") && r.my_prob !== null && r.my_prob !== undefined
+  );
+  if (rows.length === 0) return { n: 0, buckets: [] };
+  const buckets = {};
+  for (const r of rows) {
+    const actual = r.outcome === "yes" ? 1 : 0;
+    const key = Math.min(Math.floor(r.my_prob / bucketSize + 1e-9), Math.floor(1 / bucketSize) - 1);
+    if (!buckets[key]) buckets[key] = { predicted: [], actual: [] };
+    buckets[key].predicted.push(r.my_prob);
+    buckets[key].actual.push(actual);
+  }
+  const bucketRows = Object.keys(buckets)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .map((k) => {
+      const b = buckets[k];
+      return {
+        range: `${(k * bucketSize * 100).toFixed(0)}-${((k + 1) * bucketSize * 100).toFixed(0)}%`,
+        n: b.predicted.length,
+        avg_predicted: b.predicted.reduce((s, x) => s + x, 0) / b.predicted.length,
+        actual_freq: b.actual.reduce((s, x) => s + x, 0) / b.actual.length,
+      };
+    });
+  return { n: rows.length, buckets: bucketRows };
+}
+
 // FIX: las listas de filas "abiertas" (sin resolver todavía) no tenían
 // .limit() — en operación normal son chicas (unas pocas posiciones/señales
 // esperando resolución), pero si el proceso que las resuelve se traba (cron
@@ -469,6 +504,7 @@ export async function GET() {
       mlb_stats: mlbResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
         : computeMlbStats(mlbResolved),
       mlb_calibration: mlbResolvedRes.error ? { n: 0, buckets: [] } : computeMlbCalibration(mlbResolved),
+      weather_calibration: weatherResolvedRes.error ? { n: 0, buckets: [] } : computeWeatherCalibration(weatherResolved),
     });
   } catch (e) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
