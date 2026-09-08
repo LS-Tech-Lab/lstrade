@@ -8,9 +8,9 @@ import { useEffect, useRef, useState } from "react";
 // en trading pueda entender cada número sin tener que buscarlo aparte.
 // ────────────────────────────────────────────────────────────────────
 const GLOSSARY = [
-  [ "Win rate", "De cada 100 operaciones cerradas, cuántas terminaron ganando." ],
+  [ "Win rate", "De cada 100 operaciones cerradas, cuántas terminaron con resultado positivo (R > 0) -- sin importar si salieron por target o por un trailing stop que alcanzó a cerrar en verde." ],
   [ "Expectancy (R)", "Ganancia o pérdida promedio por operación, medida en 'múltiplos de riesgo' (R). +0.30R significa que, en promedio, cada operación gana un 30% de lo que se arriesgó en ella." ],
-  [ "Profit factor", "Cuánto se ganó por cada $1 que se perdió. Un valor de 1.50 significa que por cada dólar perdido se ganaron $1.50. Por debajo de 1.0 el sistema pierde dinero en conjunto." ],
+  [ "Profit factor", "Cuánto se ganó por cada $1 que se perdió, sumando TODAS las operaciones con resultado positivo contra TODAS las operaciones con resultado negativo. Un valor de 1.50 significa que por cada dólar perdido se ganaron $1.50. Por debajo de 1.0 el sistema pierde dinero en conjunto." ],
   [ "RSI", "Mide si un precio subió o bajó demasiado rápido en los últimos períodos. Arriba de 72 se considera 'sobrecomprado' (riesgo de corrección a la baja); debajo de 28, 'sobrevendido' (riesgo de rebote al alza)." ],
   [ "Momentum", "Cuánto cambió el precio en las últimas velas. Positivo = viene subiendo, negativo = viene bajando." ],
   [ "Volatilidad", "Qué tan bruscos son los movimientos de precio recientes. Más alto = movimientos más erráticos." ],
@@ -104,10 +104,10 @@ function freshnessState(ts) {
 
 // Insignia "(?)" con una explicación corta al pasar el mouse o al tocarla
 // en pantallas táctiles (usa :focus además de :hover, ver globals.css).
-function Info({ text }) {
+function Info({ text, wide }) {
   return (
     <span className="info-badge" tabIndex={0} role="note" aria-label={text}>
-      ? <span className="info-tooltip">{text}</span>
+      ? <span className={`info-tooltip${wide ? " wide" : ""}`}>{text}</span>
     </span>
   );
 }
@@ -255,12 +255,12 @@ function EquityModuleTabs({ data }) {
   );
 }
 
-function StatCard({ label, value, suffix = "", tone, info, barPct }) {
+function StatCard({ label, value, suffix = "", tone, info, barPct, wide }) {
   return (
     <div className={`stat-card ${tone || ""}`}>
       <div className="stat-label">
         {label}
-        {info && <Info text={info} />}
+        {info && <Info text={info} wide={wide} />}
       </div>
       <div className="stat-value">{value === null || value === undefined ? "—" : `${value}${suffix}`}</div>
       {barPct !== undefined && (
@@ -306,11 +306,35 @@ function PerformanceCard({ title, subtitle, emptyMessage, statCards }) {
   );
 }
 
+// Arma el texto del tooltip de "Trades cerrados" con el detalle de POR QUÉ
+// se cerró cada operación (ver breakdown en computeStats, route.js) --
+// separado de win_rate/profit_factor para que se entienda que salir por
+// stop no siempre es sinónimo de perder (ver trailing_partial).
+function buildCryptoBreakdownText(breakdown) {
+  if (!breakdown) return null;
+  const fmtR = (r) => (r >= 0 ? `+${r.toFixed(1)}` : r.toFixed(1));
+  const parts = [];
+  if (breakdown.target.n > 0) {
+    parts.push(`${breakdown.target.n} por target fijo (${fmtR(breakdown.target.sum_r)}R, salida diseñada del sistema)`);
+  }
+  if (breakdown.full_stop.n > 0) {
+    parts.push(`${breakdown.full_stop.n} por stop completo (${fmtR(breakdown.full_stop.sum_r)}R)`);
+  }
+  if (breakdown.trailing_partial.n > 0) {
+    parts.push(`${breakdown.trailing_partial.n} por trailing stop que cerraron en verde (${fmtR(breakdown.trailing_partial.sum_r)}R)`);
+  }
+  if (breakdown.breakeven.n > 0) {
+    parts.push(`${breakdown.breakeven.n} en punto de equilibrio (0R, stop movido a la entrada)`);
+  }
+  return parts.length > 0 ? `Motivo de cierre: ${parts.join("; ")}.` : null;
+}
+
 function buildCryptoStatCards(stats, showProfitFactor) {
   if (!stats || stats.n === 0) return null;
   const winTone = stats.win_rate >= 50 ? "ok" : "fail";
+  const breakdownText = buildCryptoBreakdownText(stats.breakdown);
   const cards = [
-    { label: "Trades cerrados", value: stats.n },
+    { label: "Trades cerrados", value: stats.n, info: breakdownText || undefined, wide: true },
     { label: "Win rate", value: stats.win_rate?.toFixed(1), suffix: "%", tone: winTone, barPct: stats.win_rate,
       info: GLOSSARY.find(([k]) => k === "Win rate")[1] },
   ];
