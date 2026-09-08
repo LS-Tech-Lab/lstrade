@@ -276,7 +276,10 @@ def run_cycle():
             except Exception as e:
                 errors.append(f"{symbol} 4h: {e}")
 
-        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias)
+        # AUDITORÍA (08/09/2026): antes se llamaba sin min_score, así que
+        # corría siempre con el default hardcodeado en signal_engine.py
+        # (0.03) sin ningún knob para subirlo -- ver config.CRYPTO_MIN_SCORE.
+        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias, min_score=config.CRYPTO_MIN_SCORE)
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol
 
@@ -317,6 +320,7 @@ def run_cycle():
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
             plan["target"], plan["position_size"],
+            setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
         )
         return {"status": "paper_logged", "symbol": best_symbol}
 
@@ -333,6 +337,7 @@ def run_cycle():
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"], plan["target"],
             plan["position_size"], order_id,
+            setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
         )
         notifier.send_message(
             f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}\n"
@@ -361,6 +366,7 @@ def run_cycle():
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
             plan["target"], plan["position_size"],
+            setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
         )
         return {"status": "no_telegram_configured_defaulted_to_paper", "symbol": best_symbol}
 
@@ -1285,6 +1291,7 @@ def handle_update(update):
             db.add_open_trade(
                 symbol, signal["direction"], plan["entry"], plan["stop"],
                 plan["target"], plan["position_size"], order_id,
+                setup_type=signal.get("type"), confidence=signal.get("confidence"), score=signal.get("score"),
             )
             if order_detail.get("stop_order_error"):
                 notifier.send_message(
