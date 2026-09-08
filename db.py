@@ -138,6 +138,9 @@ class Database:
             center_estimate_f REAL,
             sigma REAL,
             yes_token_id TEXT,
+            target_date TEXT,
+            trajectory_slope_f_per_hr REAL,
+            actual_high_f REAL,
             ts_signaled REAL NOT NULL,
             outcome TEXT,
             ts_resolved REAL)""")
@@ -522,15 +525,19 @@ class Database:
         }
 
     # NUEVO: Tracking de resultados de señales de clima (calibración)
+    # NUEVO (08/09/2026): target_date/trajectory_slope_f_per_hr, mismo
+    # agregado que en supabase_db.py -- ver comentario ahí para el porqué
+    # (investigar el hallazgo de calibración horaria pendiente).
     def record_weather_signal(self, condition_id, question, event_title, station_icao,
-                               my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id):
+                               my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id,
+                               target_date=None, trajectory_slope_f_per_hr=None):
         self.conn.execute(
             """INSERT INTO weather_signals
             (condition_id, question, event_title, station_icao, my_prob, market_price,
-             ev, center_estimate_f, sigma, yes_token_id, ts_signaled)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+             ev, center_estimate_f, sigma, yes_token_id, target_date, trajectory_slope_f_per_hr, ts_signaled)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (condition_id, question, event_title, station_icao, my_prob, market_price,
-             ev, center_estimate_f, sigma, yes_token_id, time.time())
+             ev, center_estimate_f, sigma, yes_token_id, target_date, trajectory_slope_f_per_hr, time.time())
         )
         self.conn.commit()
 
@@ -539,10 +546,12 @@ class Database:
             "SELECT * FROM weather_signals WHERE outcome IS NULL"
         ).fetchall()
 
-    def resolve_weather_signal(self, signal_id, outcome):
+    # NUEVO (08/09/2026): actual_high_f -- máximo real observado el día
+    # que liquida el mercado, ver comentario en supabase_db.py.
+    def resolve_weather_signal(self, signal_id, outcome, actual_high_f=None):
         self.conn.execute(
-            "UPDATE weather_signals SET outcome=?, ts_resolved=? WHERE id=?",
-            (outcome, time.time(), signal_id)
+            "UPDATE weather_signals SET outcome=?, actual_high_f=?, ts_resolved=? WHERE id=?",
+            (outcome, actual_high_f, time.time(), signal_id)
         )
         self.conn.commit()
 
