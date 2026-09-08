@@ -146,7 +146,13 @@ class SupabaseDatabase:
         res = self.client.table("open_trades").select("id", count="exact").eq("symbol", symbol).limit(1).execute()
         return (res.count or 0) > 0
 
-    def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size, order_id=None, stop_distance=None):
+    # AUDITORÍA (08/09/2026): setup_type/confidence/score agregados como
+    # kwargs opcionales (compatibilidad con callers viejos) para poder
+    # desglosar resultados por tipo de setup -- ver stats_by_dimension() y
+    # analyze_crypto_setups.py. Se propagan a closed_trades al cerrar (ver
+    # close_trade_with_outcome de acá abajo).
+    def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
+                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None):
         if stop_distance is None:
             stop_distance = abs(entry_price - stop_price)
         try:
@@ -154,6 +160,7 @@ class SupabaseDatabase:
                 "symbol": symbol, "direction": direction, "entry_price": entry_price, "current_stop": stop_price,
                 "target_price": target_price, "position_size": position_size, "order_id": order_id,
                 "ts_opened": _now_iso(), "stop_distance": stop_distance,
+                "setup_type": setup_type, "confidence": confidence, "score": score,
             }).execute()
             return True
         except Exception as e:
@@ -187,6 +194,9 @@ class SupabaseDatabase:
         self.client.table("closed_trades").insert({
             "symbol": trade["symbol"], "direction": direction, "entry_price": entry, "exit_price": exit_price,
             "outcome": outcome, "r_multiple": r_multiple, "ts_opened": trade["ts_opened"], "ts_closed": _now_iso(),
+            # AUDITORÍA (08/09/2026): copiados desde open_trades (get_open_trades
+            # hace SELECT *, así que ya vienen en `trade` si la columna existe).
+            "setup_type": trade.get("setup_type"), "confidence": trade.get("confidence"), "score": trade.get("score"),
         }).execute()
 
         # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
@@ -209,6 +219,15 @@ class SupabaseDatabase:
         return r_multiple
 
     def stats_summary(self, since_ts=None):
+        """
+        FIX (08/09/2026, mismo criterio que dashboard/app/api/data/route.js
+        computeStats() y db.py stats_summary()/stats_by_dimension()):
+        ganador se define por el SIGNO de r_multiple, no por
+        outcome=="target" -- un trade que sale por trailing stop en verde
+        (outcome="stop", r_multiple>0) es una victoria real. Con el
+        criterio viejo, contarlo como derrota subestimaba win_rate Y
+        profit_factor (quedaba afuera de ambas bolsas).
+        """
         query = self.client.table("closed_trades").select("outcome,r_multiple")
         if since_ts is not None:
             query = query.gte("ts_closed", since_ts)
@@ -216,10 +235,39 @@ class SupabaseDatabase:
         n = len(rows)
         if n == 0:
             return {"n": 0, "win_rate": None, "expectancy_r": None, "profit_factor": None}
-        wins = [r["r_multiple"] for r in rows if r["outcome"] == "target"]
-        losses = [r["r_multiple"] for r in rows if r["outcome"] == "stop"]
-        gross_win, gross_loss = sum(r for r in wins if r > 0), abs(sum(r for r in losses if r < 0))
+        wins = [r["r_multiple"] for r in rows if r["r_multiple"] > 0]
+        losses = [r["r_multiple"] for r in rows if r["r_multiple"] < 0]
+        gross_win, gross_loss = sum(wins), abs(sum(losses))
         return {"n": n, "win_rate": len(wins) / n * 100, "expectancy_r": sum(r["r_multiple"] for r in rows) / n, "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None}
+
+    # AUDITORÍA (08/09/2026): equivalente de stats_by_dimension (db.py) para
+    # el backend de producción (Supabase) -- desglosa win rate/expectancy/
+    # profit factor por symbol, setup_type o confidence (ver
+    # analyze_crypto_setups.py). Mismo criterio de ganador por signo de
+    # r_multiple que stats_summary() de acá arriba.
+    def stats_by_dimension(self, field, since_ts=None):
+        query = self.client.table("closed_trades").select(f"{field},outcome,r_multiple")
+        if since_ts is not None:
+            query = query.gte("ts_closed", since_ts)
+        rows = [r for r in query.execute().data or [] if r.get("r_multiple") is not None]
+        by_group = {}
+        for r in rows:
+            key = r.get(field) if r.get(field) is not None else "(sin dato)"
+            by_group.setdefault(key, []).append(r)
+        result = {}
+        for key, trades in by_group.items():
+            n = len(trades)
+            wins = [t["r_multiple"] for t in trades if t["r_multiple"] > 0]
+            gross_win = sum(t["r_multiple"] for t in trades if t["r_multiple"] > 0)
+            gross_loss = abs(sum(t["r_multiple"] for t in trades if t["r_multiple"] < 0))
+            result[key] = {
+                "n": n,
+                "win_rate": len(wins) / n * 100,
+                "expectancy_r": sum(t["r_multiple"] for t in trades) / n,
+                "total_r": sum(t["r_multiple"] for t in trades),
+                "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
+            }
+        return result
 
     def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None):
         self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "score": score, "confidence": confidence, "ts_signaled": _now_iso()}).execute()
