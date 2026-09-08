@@ -75,10 +75,35 @@ class Config:
     # ADAPTIVE_ATR_STOP=true, el múltiplo escala según qué tan alta esté la
     # volatilidad reciente (signal["volatility"], en %) respecto a
     # ATR_STOP_VOL_REF_PCT, entre ATR_STOP_MULT_MIN y ATR_STOP_MULT_MAX.
-    ADAPTIVE_ATR_STOP = _bool("ADAPTIVE_ATR_STOP", False)
+    # AUDITORÍA (08/09/2026): default cambiado de False a True. Estaba
+    # implementado desde hace rato (risk_manager.adaptive_atr_stop_mult) pero
+    # nunca se activó -- con stop fijo, en volatilidad alta el stop queda
+    # relativamente angosto (más fácil que lo saque el ruido) y en calma
+    # queda relativamente ancho. Se puede volver a False por env var si al
+    # medir con analyze_crypto_setups.py resulta que empeora el win rate.
+    ADAPTIVE_ATR_STOP = _bool("ADAPTIVE_ATR_STOP", True)
     ATR_STOP_VOL_REF_PCT = _float("ATR_STOP_VOL_REF_PCT", 1.0)
     ATR_STOP_MULT_MIN = _float("ATR_STOP_MULT_MIN", 1.0)
     ATR_STOP_MULT_MAX = _float("ATR_STOP_MULT_MAX", 2.5)
+
+    # AUDITORÍA (08/09/2026): antes generate_signal() se llamaba desde
+    # app.py/main.py sin pasar min_score, así que cripto corría siempre con
+    # el default hardcodeado de la función (0.03, signal_engine.py) sin
+    # ningún knob para subirlo -- a diferencia de Polymarket, que ya tenía
+    # POLYMARKET_MIN_SCORE configurable. Se centraliza acá y se sube el
+    # default a 0.05 para filtrar los setups al límite que hoy pasan
+    # raspando (con 34.4% de win rate real reportado y RR=1.8, cualquier
+    # setup marginal pesa proporcionalmente más).
+    CRYPTO_MIN_SCORE = _float("CRYPTO_MIN_SCORE", 0.05)
+
+    # NUEVO (08/09/2026): antes hardcodeado en position_manager.py -- el
+    # trailing movía el stop a breakeven recién a 1.0 ATR de ganancia y
+    # perseguía a 1.5 ATR detrás del precio. TRAIL_ATR_MULT más chico
+    # protege antes las ganancias ya hechas (menos trades que vuelven a
+    # breakeven o pérdida después de haber estado en verde), a costa de
+    # cortar antes algunos trades que hubieran seguido corriendo.
+    TRAIL_BREAKEVEN_ATR_MULT = _float("TRAIL_BREAKEVEN_ATR_MULT", 1.0)
+    TRAIL_ATR_MULT = _float("TRAIL_ATR_MULT", 1.2)
     
     # NUEVO: Filtro de Spread/Liquidez
     MAX_SPREAD_PCT = _float("MAX_SPREAD_PCT", 0.5)  # Máximo 0.5% de diferencia entre bid y ask
