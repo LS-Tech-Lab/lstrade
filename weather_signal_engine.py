@@ -170,6 +170,23 @@ def resolve_station(text, override_icao=None):
     return None
 
 
+def station_by_icao(icao):
+    """NUEVO (08/09/2026): lookup inverso de STATION_MAP por ICAO en vez de
+    texto de título de evento. Hace falta en run_weather_track_results
+    (app.py) para poder volver a llamar fetch_station_max_today() al
+    resolver una señal ya vieja, donde solo se tiene `station_icao` (lo
+    que se guardó en weather_signals) y no el `event` original. STATION_MAP
+    tiene entradas duplicadas apuntando al mismo ICAO (p.ej. "new york" y
+    "nyc" -> KLGA) -- se devuelve la primera que matchee, son idénticas en
+    los campos que importan (icao, tz, verified)."""
+    if not icao:
+        return None
+    for info in STATION_MAP.values():
+        if info.get("icao") == icao:
+            return info
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Parseo del bucket de temperatura desde el texto del sub-mercado
 # ---------------------------------------------------------------------------
@@ -1094,6 +1111,23 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
         "station": station,
         "center_estimate_f": center,
         "sigma": round(sigma, 2),
+        # NUEVO (08/09/2026, para poder investigar el hallazgo de
+        # calibración horaria pendiente -- ver AUDITORÍA 07/09/2026 más
+        # arriba en _recent_trajectory_slope_f_per_hr): hasta ahora `slope`
+        # se calculaba y se usaba para ajustar center/sigma pero se
+        # descartaba después -- no había forma de reconstruir después de
+        # los hechos si el error del modelo correlaciona con qué tan
+        # firme estaba la trayectoria al momento de la señal. Se guarda
+        # tal cual (°F/hora, None si no había suficientes observaciones
+        # espaciadas para calcularla).
+        "trajectory_slope_f_per_hr": round(slope, 3) if slope is not None else None,
+        # NUEVO (08/09/2026): fecha local (huso de la estación) que
+        # realmente liquida este mercado, ya calculada más arriba vía
+        # _target_local_date -- se guarda para que run_weather_track_results
+        # (app.py) pueda volver a pedir fetch_station_max_today() al
+        # resolver, sin tener que re-derivarla desde el `event` original
+        # (que para entonces ya no existe, solo queda la fila de la DB).
+        "target_date": target_date.isoformat() if target_date else None,
         "confidence_penalty": penalty,
         "physics_notes": notes,
         "nws": nws,
