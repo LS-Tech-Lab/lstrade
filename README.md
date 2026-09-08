@@ -161,16 +161,49 @@ No reemplaza los pesos automáticamente — imprime los coeficientes para que de
 
 ### ATR stop adaptativo por volatilidad
 
-`ADAPTIVE_ATR_STOP=true` en `.env` hace que el múltiplo de ATR del stop escale según qué tan
-alta esté la volatilidad reciente, en vez de usar siempre `ATR_STOP_MULT` fijo. Configurable con
-`ATR_STOP_VOL_REF_PCT`, `ATR_STOP_MULT_MIN` y `ATR_STOP_MULT_MAX`. Se aplica igual en
-`risk_manager.py` (producción) y `backtest.py`, para que no diverjan.
+`ADAPTIVE_ATR_STOP=true` (default desde 08/09/2026 — antes había que activarlo a mano) hace que
+el múltiplo de ATR del stop escale según qué tan alta esté la volatilidad reciente, en vez de
+usar siempre `ATR_STOP_MULT` fijo. Configurable con `ATR_STOP_VOL_REF_PCT`, `ATR_STOP_MULT_MIN`
+y `ATR_STOP_MULT_MAX`. Se aplica igual en `risk_manager.py` (producción) y `backtest.py`, para
+que no diverjan.
+
+### Filtro de calidad de señal (cripto)
+
+`CRYPTO_MIN_SCORE` (default 0.05) es el score mínimo que debe dar `generate_signal()` para que
+una señal de cripto se considere — antes no existía este knob y el bot corría siempre con el
+0.03 hardcodeado en `signal_engine.py`. Subilo si querés menos señales pero de más calidad,
+bajalo si el bot te queda muy callado.
+
+### Trailing stop configurable
+
+`TRAIL_BREAKEVEN_ATR_MULT` (default 1.0) y `TRAIL_ATR_MULT` (default 1.2, antes 1.5 hardcodeado)
+controlan `position_manager.py`: a cuántos ATR de ganancia se mueve el stop a breakeven, y a
+cuántos ATR de distancia se persigue el precio una vez ahí. Bajar `TRAIL_ATR_MULT` protege antes
+la ganancia ya hecha (menos trades que vuelven a breakeven/pérdida tras estar en verde), a costa
+de cortar antes algunos que hubieran seguido corriendo. Los mismos dos valores se usan en
+`backtest.py --simulate-trailing`, para que no diverja de producción.
 
 ### Exposición correlacionada
 
 `MAX_CORRELATED_POSITIONS` (default 5) limita cuántas posiciones abiertas simultáneas puede
 haber en la misma dirección (LONG o SHORT), sin importar el símbolo — varias altcoins LONG a
 la vez suelen ser, en la práctica, una sola apuesta direccional concentrada.
+
+### Desglose de performance por tipo de setup
+
+Cada trade de cripto guarda ahora `setup_type`/`confidence`/`score` (propagados desde
+`generate_signal()`) en `open_trades`/`closed_trades` — antes solo quedaba el resultado
+agregado, sin forma de saber si un tipo de setup (RUPTURA/PULLBACK/CONTINUACION/REVERSION/
+MOMENTUM) o un nivel de confianza en particular estaba arrastrando el win rate para abajo.
+
+```bash
+python analyze_crypto_setups.py                # todo el historial
+python analyze_crypto_setups.py --days 14       # últimos 14 días
+```
+
+Nota: `win_rate`/`profit_factor` (acá y en el dashboard) se definen por el signo real de
+`r_multiple`, no por el motivo de cierre (`outcome`) — un trade que sale por trailing stop
+pero cierra en verde es una victoria real, aunque `outcome=="stop"`.
 
 ## Cierre de posiciones con resultado + estadísticas reales
 
@@ -395,6 +428,20 @@ de raíz sin depender de VPN en tu propia conexión.
 
 ## Cambios recientes
 
+- **Nuevo** (`schema.sql`, `db.py`, `supabase_db.py`, `app.py`, `main.py`, `analyze_crypto_setups.py`):
+  cada trade de cripto guarda ahora `setup_type`/`confidence`/`score` — antes no había forma de
+  saber si un tipo de setup o nivel de confianza en particular arrastraba el win rate para abajo.
+  `CRYPTO_MIN_SCORE` (nuevo knob, default 0.05) filtra señales marginales antes del risk check.
+  `ADAPTIVE_ATR_STOP` pasa a `true` por default. El trailing stop de `position_manager.py`
+  (y su réplica en `backtest.py --simulate-trailing`) usa ahora `TRAIL_BREAKEVEN_ATR_MULT`/
+  `TRAIL_ATR_MULT` en vez de 1.0/1.5 hardcodeado. Ver las secciones de arriba en "Backtesting
+  del motor de señales" para el detalle de cada knob.
+- **Corregido** (`db.py`, `supabase_db.py`, mismo criterio que el fix en paralelo de
+  `dashboard/app/api/data/route.js`): `win_rate`/`profit_factor` definían ganador/perdedor por
+  el motivo de cierre (`outcome=="target"`/`"stop"`) en vez del signo real de `r_multiple` — un
+  trade que sale por trailing stop pero cierra en verde contaba como derrota, subestimando ambas
+  métricas. Con los 58 trades de cripto cerrados al 08/09/2026, esto mostraba 34.5%/1.71 en vez
+  de los 51.7%/1.93 reales.
 - **Eliminado** (`app.py`, `.github/workflows/`, `cron-job.org`): la ruta `/api/polymarket_track_results`
   era un alias de `/api/polymarket_resolve` (mismo `check_open_signals`), pero estaba dada de alta como
   un cron *separado* en cron-job.org, disparando casi al mismo segundo que `polymarket_resolve` cada 30
