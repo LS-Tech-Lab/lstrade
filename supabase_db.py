@@ -312,6 +312,25 @@ class SupabaseDatabase:
     def get_open_weather_signals(self):
         return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
 
+    def get_stopped_weather_condition_ids(self):
+        """
+        NUEVO (08/09/2026, evidencia real encontrada al retomar el audit de
+        EV de clima): cada condition_id es un bucket puntual de un día
+        específico -- una vez que se resolvió con "stop", ese día no va a
+        volver a repetirse, así que no hace falta acotar por fecha. Se
+        encontraron pares reales el 07/09 (misma pregunta, ej. "82-83°F
+        NYC") comprados, parados, y comprados DE NUEVO más barato un par de
+        horas después, parados otra vez -- el EV (my_prob/precio - 1) se
+        infla solo cuando el precio de mercado cae más rápido que lo que
+        el modelo actualiza my_prob entre ciclos, así que el bucket que
+        acaba de derrumbarse se ve "más atractivo" en vez de correctamente
+        menos probable. Un stop ya es la señal de que el mercado sabe algo
+        que el modelo todavía no absorbió -- no se vuelve a entrar al
+        mismo bucket ese día.
+        """
+        res = self.client.table("weather_signals").select("condition_id").eq("outcome", "stop").execute()
+        return {r["condition_id"] for r in (res.data or [])}
+
     def count_weather_signals_for_event(self, station_icao, event_title):
         """
         NUEVO (07/09/2026, usuario reportó "compra varias veces al día
