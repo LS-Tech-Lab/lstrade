@@ -23,6 +23,7 @@ desincronizada de la lógica real de acá); este archivo es ahora la
 import os
 import sys
 import time
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -45,6 +46,8 @@ from weather_signal_engine import (
     generate_weather_signal,
     build_weather_memo,
     resolve_station,
+    station_by_icao,
+    fetch_station_max_today,
     WeatherNotifyStateStore,
 )
 from mlb_signal_engine import (
@@ -693,6 +696,10 @@ def run_weather_cycle():
                         signal["station"].get("icao"), best["my_prob"], best["market_price"],
                         best["ev"], signal["center_estimate_f"], signal["sigma"],
                         best.get("yes_token_id"), stop=stop,
+                        # NUEVO (08/09/2026): ver AUDITORÍA en
+                        # supabase_db.py.record_weather_signal.
+                        target_date=signal.get("target_date"),
+                        trajectory_slope_f_per_hr=signal.get("trajectory_slope_f_per_hr"),
                     )
                     open_condition_ids.add(best["condition_id"])
                     open_events.add(event_key)
@@ -1134,11 +1141,38 @@ def run_weather_track_results():
             # fuerza un outcome ambiguo; se reintenta en el próximo ciclo.
             continue
 
-        if not db.resolve_weather_signal(sig["id"], outcome):
+        # NUEVO (08/09/2026, a pedido del usuario): se vuelve a pedir el
+        # máximo real observado ese día vía fetch_station_max_today() --
+        # mismo helper que usa generate_weather_signal() al armar la
+        # señal, ahora reusado acá para completar el dato que faltaba
+        # para poder investigar el sesgo horario (ver AUDITORÍA en
+        # supabase_db.py.resolve_weather_signal). Requiere station_icao +
+        # target_date guardados en la señal (record_weather_signal, ambos
+        # NUEVO 08/09/2026); señales viejas de antes de este cambio no
+        # van a tener target_date y este bloque simplemente no encuentra
+        # nada que pedir -- no rompe la resolución normal, solo se queda
+        # sin el dato extra para esas filas.
+        actual_high_f = None
+        target_date_str = sig.get("target_date")
+        station_icao = sig.get("station_icao")
+        if target_date_str and station_icao:
+            try:
+                station = station_by_icao(station_icao)
+                if station:
+                    target_date = date.fromisoformat(target_date_str)
+                    station_max = fetch_station_max_today(station_icao, station, config, target_date=target_date)
+                    if station_max:
+                        actual_high_f = station_max.get("max_so_far_f")
+            except Exception:
+                # No crítico -- si falla, se resuelve igual sin el dato
+                # extra en vez de dejar la señal sin resolver.
+                pass
+
+        if not db.resolve_weather_signal(sig["id"], outcome, actual_high_f=actual_high_f):
             continue
         # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop).
         _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], outcome)
-        resolved.append({"condition_id": condition_id, "outcome": outcome})
+        resolved.append({"condition_id": condition_id, "outcome": outcome, "actual_high_f": actual_high_f})
 
     return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
 
