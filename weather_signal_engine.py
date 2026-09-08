@@ -384,6 +384,13 @@ def fetch_station_max_today(icao, station, config, target_date=None, timeout=DEF
         features = resp.json().get("features", [])
         temps_f = []
         n_speci_dropped = 0
+        # AUDITORÍA (07/09/2026): además del máximo agregado, se guarda la
+        # serie (timestamp, °F) de las mismas observaciones ya filtradas --
+        # _recent_trajectory_slope_f_per_hr la usa para saber si la
+        # trayectoria SIGUE subiendo fuerte o ya se aplanó, en vez de
+        # asumirlo solo por la hora del reloj (ver auditoría del 07/09/2026
+        # en _expected_offset_from_high/_hour_sigma_multiplier más abajo).
+        series = []
         for feat in features:
             props = feat.get("properties") or {}
             val_c = (props.get("temperature") or {}).get("value")
@@ -394,13 +401,73 @@ def fetch_station_max_today(icao, station, config, target_date=None, timeout=DEF
                 if raw.startswith("SPECI"):
                     n_speci_dropped += 1
                     continue
-            temps_f.append(val_c * 9 / 5 + 32)
+            temp_f = val_c * 9 / 5 + 32
+            temps_f.append(temp_f)
+            valid = props.get("timestamp")
+            if valid:
+                series.append((valid, round(temp_f, 1)))
         if not temps_f:
             return None
-        return {"max_so_far_f": round(max(temps_f), 1), "n_obs": len(temps_f), "n_speci_dropped": n_speci_dropped}
+        series.sort(key=lambda pair: pair[0])
+        return {
+            "max_so_far_f": round(max(temps_f), 1),
+            "n_obs": len(temps_f),
+            "n_speci_dropped": n_speci_dropped,
+            "series": series,
+        }
     except Exception as e:
         log.warning(f"Observaciones NWS fallaron para {icao}: {e}")
         return None
+
+
+def _recent_trajectory_slope_f_per_hr(series, min_gap_minutes=30, max_gap_minutes=150):
+    """Pendiente reciente de la trayectoria (°F/hora), calculada entre la
+    última observación de `series` (lista de tuplas (timestamp_iso, temp_f)
+    ordenada ascendente, tal como la devuelve fetch_station_max_today) y la
+    observación más antigua que siga estando dentro de una ventana de
+    `max_gap_minutes` hacia atrás -- así se mide "¿sigue subiendo fuerte o
+    ya se aplanó?" con datos, no con un supuesto fijo por hora.
+
+    AUDITORÍA (07/09/2026, ver hallazgo de auditoría externa sobre 48
+    señales resueltas de weather_signals): confirmado con datos reales que
+    el % de señales donde center_estimate_f quedó por DEBAJO de la máxima
+    real ("se quedó corto") sube de 56% (antes de 12h) a 79% (12-15h) a
+    100% (15-18h, n=7) -- exactamente la ventana donde
+    _expected_offset_from_high baja a 0.5°F y _hour_sigma_multiplier a
+    x0.85 SOLO por la hora del reloj, sin chequear si esa tarde en
+    particular la temperatura seguía subiendo fuerte. Esta función es la
+    pieza que faltaba para que esas dos funciones puedan usar la pendiente
+    real del día en vez de asumir que todo día se aplana igual a la misma
+    hora.
+
+    Se exige al menos `min_gap_minutes` entre los dos puntos para no medir
+    ruido de lecturas casi simultáneas, y se descarta si el punto más
+    antiguo disponible queda a más de `max_gap_minutes` -- en ese caso no
+    hay con qué comparar de forma confiable y se devuelve None (el llamador
+    debe caer de vuelta al comportamiento solo-por-hora)."""
+    if not series or len(series) < 2:
+        return None
+    try:
+        last_ts_raw, last_temp = series[-1]
+        last_ts = datetime.fromisoformat(last_ts_raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    best = None
+    for ts_raw, temp in reversed(series[:-1]):
+        try:
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        gap_minutes = (last_ts - ts).total_seconds() / 60.0
+        if gap_minutes < min_gap_minutes:
+            continue
+        if gap_minutes > max_gap_minutes:
+            break
+        best = (ts, temp, gap_minutes)
+    if best is None:
+        return None
+    _, prior_temp, gap_minutes = best
+    return (last_temp - prior_temp) / (gap_minutes / 60.0)
 
 
 def _parse_six_hour_max_f(raw_ob):
@@ -505,8 +572,14 @@ def _station_local_hour(station):
         return 12
 
 
-def _expected_offset_from_high(hour):
-    """Cuántos °F suelen faltar para la máxima del día, según la hora local.
+SLOPE_STILL_RISING_F_PER_HR = 0.7  # sigue subiendo a un ritmo que importa
+SLOPE_FLATTENED_F_PER_HR = 0.15    # ya se aplanó, para fines prácticos
+
+
+def _expected_offset_from_high(hour, slope=None):
+    """Cuántos °F suelen faltar para la máxima del día, según la hora local
+    (y, si está disponible, según la PENDIENTE reciente real de la
+    trayectoria -- ver `slope`).
 
     Hallazgo 01/09/2026: la versión anterior usaba un offset fijo (-6°F) y
     solo comparaba la trayectoria real (METAR) contra el pronóstico entre
@@ -519,33 +592,73 @@ def _expected_offset_from_high(hour):
     ~2:30pm hora local). La curva diurna real sube rápido a media mañana y
     se aplana cerca del pico, así que un offset fijo tampoco sería correcto
     al extender la ventana sin más — cerca del pico ya debería faltar poco.
-    """
-    if hour < 9:
-        return None  # muy temprano — la trayectoria matutina todavía no dice nada útil
+
+    AUDITORÍA (07/09/2026): confirmado con las 48 señales resueltas hasta
+    ahora que "faltar poco" cerca del pico (offset 0.5°F) era un supuesto
+    SOLO por la hora del reloj, sin chequear si esa tarde en particular la
+    temperatura seguía subiendo fuerte -- el % de señales donde
+    center_estimate_f quedó por debajo de la máxima real pasa de 56%
+    (antes de 12h) a 100% (15-18h, n=7), justo la ventana donde este
+    offset y `_hour_sigma_multiplier` se achican más. `slope` (°F/hora,
+    de `_recent_trajectory_slope_f_per_hr`) corrige esto: si a las 4pm la
+    trayectoria todavía sube a >=0.7°F/hora, NO se asume que ya casi llegó
+    al techo solo porque son las 4pm -- se proyecta cuánto falta asumiendo
+    que ese ritmo se sostiene ~2h más (tope 6°F, el mismo techo que media
+    mañana). Si, al revés, la trayectoria ya se aplanó (<=0.15°F/hora)
+    ANTES de las 15h, se permite un offset angosto más temprano en vez de
+    esperar a que el reloj diga 15h. Sin `slope` disponible (falló la
+    fuente o no hay suficientes observaciones espaciadas), se cae al
+    comportamiento previo, solo por hora."""
+    if hour is None or hour < 9 or hour > 18:
+        return None  # muy temprano o de noche — la trayectoria no dice nada útil / ya no es informativa
     if hour < 12:
-        return 6.0   # media mañana — normalmente faltan ~5-8°F para la máxima
-    if hour < 15:
-        return 3.0   # primera hora de la tarde — se va cerrando la brecha
-    if hour <= 18:
-        return 0.5   # ventana de pico / post-pico — la máxima ya debería estar casi alcanzada
-    return None      # noche — la trayectoria del día ya no es informativa
+        baseline = 6.0   # media mañana — normalmente faltan ~5-8°F para la máxima
+    elif hour < 15:
+        baseline = 3.0   # primera hora de la tarde — se va cerrando la brecha
+    else:
+        baseline = 0.5   # ventana de pico / post-pico — la máxima ya debería estar casi alcanzada
+
+    if slope is None:
+        return baseline
+    if slope >= SLOPE_STILL_RISING_F_PER_HR:
+        projected = min(6.0, slope * 2.0)
+        return max(baseline, projected)
+    if slope <= SLOPE_FLATTENED_F_PER_HR and hour >= 12:
+        return min(baseline, 1.0)
+    return baseline
 
 
-def _hour_sigma_multiplier(hour):
+def _hour_sigma_multiplier(hour, slope=None):
     """Cuánto ensanchar sigma según qué tan madura está la trayectoria
-    intradía a esta hora -- referido a la CONFIANZA en el centro estimado
-    (a diferencia de _expected_offset_from_high, que dice cuánto falta
-    para la máxima). Temprano no hay trayectoria real que confirme el
-    pronóstico de NWS -> más ancho. Cerca del pico, el METAR ya casi
-    confirma la máxima -> más angosto. De noche, sin trayectoria del día
-    siguiente, se vuelve a ensanchar (mismo caso que 'hour is None')."""
+    intradía -- referido a la CONFIANZA en el centro estimado (a
+    diferencia de _expected_offset_from_high, que dice cuánto falta para
+    la máxima). Temprano no hay trayectoria real que confirme el
+    pronóstico de NWS -> más ancho. Cerca del pico, si la trayectoria ya
+    se aplanó, el METAR ya casi confirma la máxima -> más angosto. De
+    noche, sin trayectoria del día siguiente, se vuelve a ensanchar (mismo
+    caso que 'hour is None').
+
+    AUDITORÍA (07/09/2026): mismo fix que en _expected_offset_from_high --
+    `slope` evita que la ventana 15-18h se angoste a x0.85 solo por la
+    hora cuando la trayectoria real todavía está subiendo fuerte (en ese
+    caso se mantiene tan ancho como media mañana, x1.35 como piso, en vez
+    de fingir una confianza que los datos de esa tarde no respaldan)."""
     if hour is None or hour < 9 or hour > 18:
         return 1.6
     if hour < 12:
-        return 1.35
-    if hour < 15:
-        return 1.1
-    return 0.85  # 15-18h: ventana de pico, trayectoria ya casi confirma
+        baseline = 1.35
+    elif hour < 15:
+        baseline = 1.1
+    else:
+        baseline = 0.85  # 15-18h: ventana de pico, trayectoria ya casi confirma (si de verdad se aplanó)
+
+    if slope is None:
+        return baseline
+    if slope >= SLOPE_STILL_RISING_F_PER_HR:
+        return max(baseline, 1.35)
+    if slope <= SLOPE_FLATTENED_F_PER_HR and hour >= 12:
+        return min(baseline, 0.95)
+    return baseline
 
 
 def estimate_adjusted_high(nws, metar, taf, station, station_max=None):
@@ -579,12 +692,22 @@ def estimate_adjusted_high(nws, metar, taf, station, station_max=None):
         penalty += 0.3
 
     if base is None:
-        return None, ["Sin ninguna fuente de guía disponible."], 1.0, 0.0, None
+        return None, ["Sin ninguna fuente de guía disponible."], 1.0, 0.0, None, None
 
     adjustment = 0.0
     hour = _station_local_hour(station)
 
-    offset = _expected_offset_from_high(hour)
+    # AUDITORÍA (07/09/2026): pendiente reciente real de la trayectoria
+    # (°F/hora) -- ver _recent_trajectory_slope_f_per_hr y el hallazgo de
+    # auditoría citado en _expected_offset_from_high. None si no hay
+    # `station_max.series` con suficientes puntos espaciados (p.ej.
+    # station_max no disponible, o muy pocas observaciones); en ese caso
+    # offset/sigma caen de vuelta al comportamiento solo-por-hora.
+    slope = _recent_trajectory_slope_f_per_hr(station_max.get("series")) if station_max else None
+    if slope is not None:
+        notes.append(f"Pendiente reciente de la trayectoria: {slope:+.2f}°F/hora.")
+
+    offset = _expected_offset_from_high(hour, slope=slope)
     # AUDITORÍA (05/09/2026, regla real de un mercado de LGA): la referencia
     # de trayectoria usa `hourly_temp_f` (última observación RUTINARIA) en
     # vez de `temp_f` (última observación, sea METAR o SPECI) -- si la más
@@ -640,7 +763,7 @@ def estimate_adjusted_high(nws, metar, taf, station, station_max=None):
     if taf is None:
         penalty += 0.1
 
-    return round(base + adjustment, 1), notes, round(min(penalty, 1.0), 2), round(extra_widen, 2), hour
+    return round(base + adjustment, 1), notes, round(min(penalty, 1.0), 2), round(extra_widen, 2), hour, slope
 
 
 # ---------------------------------------------------------------------------
@@ -777,7 +900,7 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
             else:
                 station_max = fetch_station_max_today(station["icao"], station, config, target_date=target_date, time_left_fn=time_left_fn)
 
-    center, notes, penalty, extra_widen, hour = estimate_adjusted_high(nws, metar, taf, station, station_max=station_max)
+    center, notes, penalty, extra_widen, hour, slope = estimate_adjusted_high(nws, metar, taf, station, station_max=station_max)
     if center is None:
         return {"status": "no_data", "title": title, "station": station}
 
@@ -799,7 +922,7 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
     # pronóstico o si el TAF anticipa tormenta -- ambos calculados en
     # estimate_adjusted_high. confidence_penalty se sigue aplicando encima,
     # sin cambios, para fuentes faltantes / fecha de NWS no confirmada.
-    hour_mult = _hour_sigma_multiplier(hour)
+    hour_mult = _hour_sigma_multiplier(hour, slope=slope)
     situational_base_sigma = getattr(config, "WEATHER_BASE_SIGMA_F", 2.4) * hour_mult + extra_widen
     notes.append(f"Sigma base situacional: {situational_base_sigma:.2f}°F (multiplicador horario x{hour_mult:.2f} + ensanche {extra_widen:.2f}°F).")
     distribution, sigma, raw_total_mass = build_bucket_distribution(center, buckets, base_sigma=situational_base_sigma, confidence_penalty=penalty)
