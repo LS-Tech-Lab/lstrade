@@ -12,7 +12,8 @@ Simplificaciones a tener en cuenta al leer los resultados:
 - Por defecto, cada trade sale exactamente en el stop o el target fijo
   (ATR_STOP_MULT / MIN_RR), como si no existiera gestión activa de la
   posición. Con --simulate-trailing se replica la misma lógica de
-  position_manager.py (breakeven a 1 ATR, trailing a 1.5 ATR) vela a vela,
+  position_manager.py (breakeven/trailing según config.TRAIL_BREAKEVEN_ATR_MULT
+  y config.TRAIL_ATR_MULT, default 1.0/1.2 ATR) vela a vela,
   para que el win rate/expectancy reportado se parezca al del sistema real
   en producción — sin esto, el número que da el backtest NO es el de tu
   sistema real, es el de una versión sin gestión activa.
@@ -93,26 +94,31 @@ def compute_btc_bias(btc_4h_window):
     return {"direction": "NEUTRAL"}
 
 
-def _trailing_new_stop(direction, entry, atr_val, current_price, current_stop):
+def _trailing_new_stop(direction, entry, atr_val, current_price, current_stop, config):
     """
     Misma lógica exacta que PositionManager.manage_open_positions():
-    breakeven a 1 ATR de recorrido, luego trailing a 1.5 ATR del precio.
+    breakeven a config.TRAIL_BREAKEVEN_ATR_MULT ATR de recorrido, luego
+    trailing a config.TRAIL_ATR_MULT ATR del precio (antes 1.0/1.5
+    hardcodeados acá -- desincronizado apenas position_manager.py pasó a
+    leer esos dos multiplicadores de config, 08/09/2026).
     Devuelve el stop actualizado (o el mismo si no corresponde moverlo).
     """
     if not atr_val or atr_val <= 0:
         return current_stop
+    breakeven_dist = atr_val * config.TRAIL_BREAKEVEN_ATR_MULT
+    trail_dist = atr_val * config.TRAIL_ATR_MULT
     if direction == "LONG":
-        if current_price > entry + atr_val and current_stop < entry:
+        if current_price > entry + breakeven_dist and current_stop < entry:
             return entry
-        if current_price > entry + (atr_val * 1.5):
-            trail_stop = current_price - (atr_val * 1.5)
+        if current_price > entry + trail_dist:
+            trail_stop = current_price - trail_dist
             if trail_stop > current_stop:
                 return trail_stop
     else:
-        if current_price < entry - atr_val and current_stop > entry:
+        if current_price < entry - breakeven_dist and current_stop > entry:
             return entry
-        if current_price < entry - (atr_val * 1.5):
-            trail_stop = current_price + (atr_val * 1.5)
+        if current_price < entry - trail_dist:
+            trail_stop = current_price + trail_dist
             if trail_stop < current_stop:
                 return trail_stop
     return current_stop
@@ -137,7 +143,7 @@ def backtest_symbol(config, symbol, candles_1h, candles_4h, btc_4h, simulate_tra
                 atr_val = ind.atr(atr_window, 14)
                 stop = _trailing_new_stop(
                     in_position["direction"], in_position["entry"], atr_val,
-                    candles_1h[i - 1]["c"], stop,
+                    candles_1h[i - 1]["c"], stop, config,
                 )
                 in_position["stop"] = stop
 
