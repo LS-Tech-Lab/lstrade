@@ -15,18 +15,49 @@ function getClient() {
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 }
 
+// FIX (08/09/2026, auditoría pedida por LS): win_rate y profit_factor
+// definían ganador/perdedor por el MOTIVO de cierre (outcome === "target"
+// vs "stop") en vez del resultado real de la operación (signo de
+// r_multiple). Eso subestimaba los dos números: un trade que sale por
+// trailing stop pero cierra en verde (outcome="stop" con r_multiple>0 --
+// pasa cuando el stop se mueve a favor tras avanzar el precio, 10 de los
+// 58 trades al 08/09) contaba como derrota en win_rate, y no sumaba ni
+// como ganancia ni como pérdida en profit_factor (quedaba afuera de
+// `wins` por el filtro de outcome, y Math.min(0,r) lo neutralizaba del
+// lado de `losses`). Con los 58 trades cerrados al 08/09 esto mostraba
+// 34.5% / 1.71 en vez de los 51.7% / 1.93 reales.
+// Ahora win/loss se define por el signo de r_multiple (estándar de la
+// industria) y se agrega `breakdown` con el detalle por motivo de cierre
+// (target / stop completo / breakeven / trailing parcial en verde) para
+// que el tooltip del dashboard pueda explicar la composición sin perder
+// esa información.
 function computeStats(rows) {
   const valid = (rows || []).filter((r) => r.r_multiple !== null && r.r_multiple !== undefined);
-  if (valid.length === 0) return { n: 0, win_rate: null, expectancy_r: null, profit_factor: null };
-  const wins = valid.filter((r) => r.outcome === "target");
-  const losses = valid.filter((r) => r.outcome === "stop");
-  const grossWin = wins.reduce((s, r) => s + Math.max(0, r.r_multiple), 0);
-  const grossLoss = Math.abs(losses.reduce((s, r) => s + Math.min(0, r.r_multiple), 0));
+  if (valid.length === 0) return { n: 0, win_rate: null, expectancy_r: null, profit_factor: null, breakdown: null };
+  const wins = valid.filter((r) => r.r_multiple > 0);
+  const losses = valid.filter((r) => r.r_multiple < 0);
+  const grossWin = wins.reduce((s, r) => s + r.r_multiple, 0);
+  const grossLoss = Math.abs(losses.reduce((s, r) => s + r.r_multiple, 0));
+
+  // Desglose por motivo de cierre — puramente informativo, no altera
+  // ninguna de las métricas de arriba.
+  const targetHits = valid.filter((r) => r.outcome === "target");
+  const fullStops = valid.filter((r) => r.outcome === "stop" && r.r_multiple < -0.5);
+  const breakeven = valid.filter((r) => r.outcome === "stop" && Math.abs(r.r_multiple) < 0.01);
+  const trailingPartial = valid.filter((r) => r.outcome === "stop" && r.r_multiple > 0.01);
+  const sumR = (rows2) => rows2.reduce((s, r) => s + r.r_multiple, 0);
+
   return {
     n: valid.length,
     win_rate: (wins.length / valid.length) * 100,
     expectancy_r: valid.reduce((s, r) => s + r.r_multiple, 0) / valid.length,
     profit_factor: grossLoss > 0 ? grossWin / grossLoss : null,
+    breakdown: {
+      target: { n: targetHits.length, sum_r: sumR(targetHits) },
+      full_stop: { n: fullStops.length, sum_r: sumR(fullStops) },
+      breakeven: { n: breakeven.length, sum_r: sumR(breakeven) },
+      trailing_partial: { n: trailingPartial.length, sum_r: sumR(trailingPartial) },
+    },
   };
 }
 
@@ -418,7 +449,7 @@ export async function GET() {
       // Si las tablas todavía no existen (schema.sql viejo sin correr de
       // nuevo), no rompemos el dashboard — se muestran vacías.
       crypto_open: openTradesRes.error ? [] : (openTradesRes.data || []),
-      stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null }
+      stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null, breakdown: null }
         : computeStats(closedTradesRes.data),
       polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, expectancy_r: null, profit_factor: null }
         : computePolymarketStats(resolvedSignalsCore),
