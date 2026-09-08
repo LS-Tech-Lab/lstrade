@@ -996,6 +996,10 @@ function WeatherTab({ data }) {
         subtitle={'Simulando comprar "SI" al precio de mercado del momento de la señal, $1 nocional por operación.'}
         emptyMessage="Sin señales de clima resueltas todavía — las métricas aparecen cuando el mercado cierre y se pueda comparar con el resultado real."
         statCards={buildWeatherStatCards(data.weather_stats)} />
+      <CalibrationCard title="Calibración — Clima"
+        subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces resolvió 'sí' de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
+        emptyMessage="Todavía no hay suficientes señales de clima con resultado real (sí/no) para calibrar — los stop-loss no cuentan acá porque no sabemos si el bucket elegido hubiera resuelto 'sí' o 'no' en la realidad."
+        calibration={data.weather_calibration} />
       <div className="card">
         <h2>Señales abiertas ({data.weather_open?.length || 0})</h2>
         <p className="card-subtitle">Buckets de temperatura que el bot encontró con ventaja y todavía no se resolvieron.</p>
@@ -1096,10 +1100,10 @@ function MlbResolvedTable({ rows }) {
 // dice que algo tiene 65% de probabilidad, ¿de verdad pasa cerca del 65%
 // de las veces?". Es distinto de win rate/retorno: esos miden si ganaste
 // plata, esto mide si el número de probabilidad en sí es honesto. Pensada
-// para reusarse con cualquier motor que guarde "my_prob" (hoy MLB; Clima
-// tiene el mismo cálculo ya armado en Python -- ver
-// weather_calibration_summary en supabase_db.py -- pero todavía sin
-// conectar a este dashboard).
+// para reusarse con cualquier motor que guarde "my_prob" (MLB y, desde
+// 08/09/2026, también Clima -- mismo cálculo que weather_calibration_summary()
+// en supabase_db.py, ahora conectado vía computeWeatherCalibration() en
+// route.js).
 function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
   if (!calibration || calibration.n === 0) {
     return (
