@@ -52,6 +52,17 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # AUDITORÍA (08/09/2026): setup_type/confidence/score -- mismo motivo
+        # y mecanismo que el ALTER de stop_distance de arriba. Sin esto no
+        # hay forma de desglosar win rate/expectancy por tipo de setup o
+        # nivel de confianza (ver analyze_crypto_setups.py y el mismo cambio
+        # en schema.sql/supabase_db.py para la base de producción).
+        for col, coltype in (("setup_type", "TEXT"), ("confidence", "INTEGER"), ("score", "REAL")):
+            try:
+                c.execute(f"ALTER TABLE open_trades ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass
+
         # NUEVO: Trades cerrados con resultado — sin esto no había forma de
         # calcular win rate/expectancy reales sobre lo que pasó en producción,
         # solo sobre el backtest offline.
@@ -64,7 +75,16 @@ class Database:
             outcome TEXT NOT NULL,
             r_multiple REAL,
             ts_opened REAL NOT NULL,
-            ts_closed REAL NOT NULL)""")
+            ts_closed REAL NOT NULL,
+            setup_type TEXT,
+            confidence INTEGER,
+            score REAL)""")
+
+        for col, coltype in (("setup_type", "TEXT"), ("confidence", "INTEGER"), ("score", "REAL")):
+            try:
+                c.execute(f"ALTER TABLE closed_trades ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass
 
         # NUEVO: Señales de Polymarket con plan de salida, para poder medir
         # después si el target o el stop se tocaron primero — antes no había
@@ -205,15 +225,21 @@ class Database:
         self.conn.commit()
 
     # NUEVO: Métodos para Trailing Stop
+    # AUDITORÍA (08/09/2026): setup_type/confidence/score agregados como
+    # kwargs opcionales (compatibilidad con callers viejos) para poder
+    # desglosar resultados por tipo de setup — ver stats_by_dimension() y
+    # analyze_crypto_setups.py.
     def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
-                        order_id=None, stop_distance=None):
+                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None):
         if stop_distance is None:
             stop_distance = abs(entry_price - stop_price)
         self.conn.execute(
             """INSERT INTO open_trades
-            (symbol, direction, entry_price, current_stop, target_price, position_size, order_id, ts_opened, stop_distance)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
-            (symbol, direction, entry_price, stop_price, target_price, position_size, order_id, time.time(), stop_distance)
+            (symbol, direction, entry_price, current_stop, target_price, position_size, order_id, ts_opened,
+             stop_distance, setup_type, confidence, score)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (symbol, direction, entry_price, stop_price, target_price, position_size, order_id, time.time(),
+             stop_distance, setup_type, confidence, score)
         )
         self.conn.commit()
 
@@ -280,10 +306,22 @@ class Database:
             sign = 1 if direction == "LONG" else -1
             r_multiple = ((exit_price - entry) / stop_distance) * sign
 
+        # AUDITORÍA (08/09/2026): setup_type/confidence/score copiados desde
+        # open_trades -- trade viene de get_open_trades() (SELECT *), así
+        # que ya vienen ahí si la columna existe. sqlite3.Row no tiene
+        # .get(), por eso el try/except en vez de trade.get(...).
+        try:
+            setup_type, confidence, score = trade["setup_type"], trade["confidence"], trade["score"]
+        except (IndexError, KeyError):
+            setup_type, confidence, score = None, None, None
+
         self.conn.execute(
-            """INSERT INTO closed_trades (symbol, direction, entry_price, exit_price, outcome, r_multiple, ts_opened, ts_closed)
-            VALUES (?,?,?,?,?,?,?,?)""",
-            (trade["symbol"], direction, entry, exit_price, outcome, r_multiple, trade["ts_opened"], time.time())
+            """INSERT INTO closed_trades
+            (symbol, direction, entry_price, exit_price, outcome, r_multiple, ts_opened, ts_closed,
+             setup_type, confidence, score)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (trade["symbol"], direction, entry, exit_price, outcome, r_multiple, trade["ts_opened"], time.time(),
+             setup_type, confidence, score)
         )
         self.conn.execute("DELETE FROM open_trades WHERE id = ?", (trade["id"],))
         self.conn.commit()
@@ -311,24 +349,43 @@ class Database:
 
     def stats_by_symbol(self, since_ts=None):
         """Win rate/expectancy por símbolo, opcionalmente desde una fecha (epoch)."""
-        query = "SELECT symbol, outcome, r_multiple FROM closed_trades WHERE r_multiple IS NOT NULL"
+        return self.stats_by_dimension("symbol", since_ts=since_ts)
+
+    # AUDITORÍA (08/09/2026): generalización de stats_by_symbol para poder
+    # desglosar también por setup_type y confidence (ver analyze_crypto_setups.py)
+    # sin duplicar la misma lógica de agrupación tres veces. `field` debe ser
+    # una columna real de closed_trades -- no viene de input de usuario, así
+    # que no hay riesgo de inyección al interpolarla en el SELECT.
+    #
+    # FIX (08/09/2026, mismo criterio que el fix paralelo en
+    # dashboard/app/api/data/route.js/computeStats): ganador/perdedor se
+    # define por el SIGNO de r_multiple, no por el motivo de cierre
+    # (outcome). Un trade que sale por trailing stop pero cierra en verde
+    # (outcome="stop" con r_multiple>0) es una victoria real -- contarlo
+    # como derrota subestima win_rate y profit_factor.
+    def stats_by_dimension(self, field, since_ts=None):
+        query = f"SELECT {field} AS grp, outcome, r_multiple FROM closed_trades WHERE r_multiple IS NOT NULL"
         params = ()
         if since_ts is not None:
             query += " AND ts_closed >= ?"
             params = (since_ts,)
         rows = self.conn.execute(query, params).fetchall()
-        by_symbol = {}
+        by_group = {}
         for r in rows:
-            by_symbol.setdefault(r["symbol"], []).append(r)
+            key = r["grp"] if r["grp"] is not None else "(sin dato)"
+            by_group.setdefault(key, []).append(r)
         result = {}
-        for symbol, trades in by_symbol.items():
+        for key, trades in by_group.items():
             n = len(trades)
-            wins = [t["r_multiple"] for t in trades if t["outcome"] == "target"]
-            result[symbol] = {
+            wins = [t["r_multiple"] for t in trades if t["r_multiple"] > 0]
+            gross_win = sum(t["r_multiple"] for t in trades if t["r_multiple"] > 0)
+            gross_loss = abs(sum(t["r_multiple"] for t in trades if t["r_multiple"] < 0))
+            result[key] = {
                 "n": n,
                 "win_rate": len(wins) / n * 100,
                 "expectancy_r": sum(t["r_multiple"] for t in trades) / n,
                 "total_r": sum(t["r_multiple"] for t in trades),
+                "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
             }
         return result
 
@@ -435,7 +492,15 @@ class Database:
         return result
 
     def stats_summary(self, since_ts=None):
-        """Win rate, expectancy y profit factor reales sobre trades ya cerrados."""
+        """
+        Win rate, expectancy y profit factor reales sobre trades ya cerrados.
+
+        FIX (08/09/2026, mismo criterio que dashboard/app/api/data/route.js
+        y stats_by_dimension() de acá arriba): ganador se define por el
+        SIGNO de r_multiple, no por outcome=="target" -- un trade que sale
+        por trailing stop en verde (outcome="stop", r_multiple>0) es una
+        victoria real.
+        """
         query = "SELECT outcome, r_multiple FROM closed_trades WHERE r_multiple IS NOT NULL"
         params = ()
         if since_ts is not None:
@@ -445,10 +510,10 @@ class Database:
         n = len(rows)
         if n == 0:
             return {"n": 0, "win_rate": None, "expectancy_r": None, "profit_factor": None}
-        wins = [r["r_multiple"] for r in rows if r["outcome"] == "target"]
-        losses = [r["r_multiple"] for r in rows if r["outcome"] == "stop"]
-        gross_win = sum(r for r in wins if r > 0)
-        gross_loss = abs(sum(r for r in losses if r < 0))
+        wins = [r["r_multiple"] for r in rows if r["r_multiple"] > 0]
+        losses = [r["r_multiple"] for r in rows if r["r_multiple"] < 0]
+        gross_win = sum(wins)
+        gross_loss = abs(sum(losses))
         return {
             "n": n,
             "win_rate": len(wins) / n * 100,
