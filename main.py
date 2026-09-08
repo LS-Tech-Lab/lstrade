@@ -103,7 +103,9 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
             log.warning(f"No se pudo traer datos de {symbol}: {e}")
             continue
 
-        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias)
+        # AUDITORÍA (08/09/2026): ver mismo cambio en app.py -- antes corría
+        # con el default hardcodeado de signal_engine.py (0.03).
+        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias, min_score=config.CRYPTO_MIN_SCORE)
         if signal:
             risk_report = risk_manager.check(symbol, signal, equity, ticker=ticker)
             if risk_report["pass"] and (best_signal is None or signal["score"] > best_signal["score"]):
@@ -139,7 +141,10 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
         )
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         # Simular apertura de trade para que el Trailing Stop funcione en papel
-        db.add_open_trade(best_symbol, best_signal['direction'], plan['entry'], plan['stop'], plan['target'], plan['position_size'])
+        db.add_open_trade(
+            best_symbol, best_signal['direction'], plan['entry'], plan['stop'], plan['target'], plan['position_size'],
+            setup_type=best_signal.get('type'), confidence=best_signal.get('confidence'), score=best_signal.get('score'),
+        )
         log.info("LIVE_TRADING=false → registrado en modo papel.")
         return
 
@@ -175,7 +180,10 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
             stop_order.get("id") if isinstance(stop_order, dict)
             else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
         )
-        db.add_open_trade(best_symbol, best_signal['direction'], plan['entry'], plan['stop'], plan['target'], plan['position_size'], order_id)
+        db.add_open_trade(
+            best_symbol, best_signal['direction'], plan['entry'], plan['stop'], plan['target'], plan['position_size'], order_id,
+            setup_type=best_signal.get('type'), confidence=best_signal.get('confidence'), score=best_signal.get('score'),
+        )
 
         if isinstance(order_detail, dict) and order_detail.get("stop_order_error"):
             notifier.send_message(
