@@ -354,8 +354,18 @@ class SupabaseDatabase:
         return history
 
 
-    def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id, stop=None):
-        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "stop": stop, "ts_signaled": _now_iso()}).execute()
+    # NUEVO (08/09/2026, a pedido del usuario tras confirmar que la
+    # hipótesis de sesgo horario en estimate_adjusted_high no se pudo
+    # probar ni descartar con los datos existentes): target_date y
+    # trajectory_slope_f_per_hr no se guardaban en ningún lado -- sin
+    # ellos no había forma de reconstruir después de los hechos si el
+    # error del modelo correlaciona con la pendiente de trayectoria real
+    # al momento de la señal. Ambos ya se calculaban en
+    # generate_weather_signal(), solo faltaba persistirlos. Ver también
+    # resolve_weather_signal() más abajo para actual_high_f (el otro dato
+    # que faltaba: el máximo real que terminó marcando el día).
+    def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id, stop=None, target_date=None, trajectory_slope_f_per_hr=None):
+        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "stop": stop, "target_date": target_date, "trajectory_slope_f_per_hr": trajectory_slope_f_per_hr, "ts_signaled": _now_iso()}).execute()
 
     def get_open_weather_signals(self):
         return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
@@ -409,13 +419,21 @@ class SupabaseDatabase:
         )
         return res.count or 0
 
-    def resolve_weather_signal(self, signal_id, outcome, exit_price=None):
+    def resolve_weather_signal(self, signal_id, outcome, exit_price=None, actual_high_f=None):
         # NUEVO (06/09/2026): exit_price opcional -- outcome="stop" lo pasa
         # (precio de salida anticipada, no siempre -100%), outcome="yes"/"no"
         # de una resolución completa normal no lo necesita (queda None).
+        # NUEVO (08/09/2026): actual_high_f -- máximo real observado el día
+        # que liquida el mercado, re-consultado a NWS en run_weather_track_results
+        # (app.py) recién cuando el mercado cierra de verdad. Solo tiene
+        # sentido para outcome "yes"/"no" (resolución completa del día);
+        # un "stop" corta a mitad de día, así que ese valor todavía no
+        # sería el máximo final y no se pasa en ese caso.
         update = {"outcome": outcome, "ts_resolved": _now_iso()}
         if exit_price is not None:
             update["exit_price"] = exit_price
+        if actual_high_f is not None:
+            update["actual_high_f"] = actual_high_f
         res = self.client.table("weather_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute()
         return bool(res.data)
 
