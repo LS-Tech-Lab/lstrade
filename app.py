@@ -548,6 +548,13 @@ def run_weather_cycle():
     # (estación, evento) a la vez.
     open_events = {(s["station_icao"], s["event_title"]) for s in open_signals_now}
 
+    # NUEVO (08/09/2026, evidencia real: el mismo condition_id comprado dos
+    # veces el 07/09 -- "82-83°F NYC" y "64-65°F Seattle", parado las dos
+    # veces): ver get_stopped_weather_condition_ids en supabase_db.py para
+    # el porqué. Se consulta una sola vez por ciclo, igual que
+    # open_condition_ids/open_events de arriba.
+    stopped_condition_ids = db.get_stopped_weather_condition_ids()
+
     events = client.fetch_weather_events(limit=20, time_budget_seconds=time_budget * 0.5)
     if not events:
         return {"status": "no_events"}
@@ -621,6 +628,22 @@ def run_weather_cycle():
         event_key = (signal["station"].get("icao"), event["title"])
         if event_key in open_events and best["condition_id"] not in open_condition_ids:
             detail.append({"title": event["title"], "status": "ya_hay_señal_abierta_para_este_dia_ciudad"})
+            continue
+
+        # NUEVO (08/09/2026, evidencia real encontrada al analizar
+        # producción: mismo condition_id comprado, parado, y recomprado más
+        # barato un par de horas después -- ver
+        # get_stopped_weather_condition_ids en supabase_db.py). Este es el
+        # patrón que de verdad estaba pasando (distinto de mi hipótesis
+        # original de "persigue la temperatura subiendo bucket por
+        # bucket"): el EV se infla solo cuando el precio cae más rápido de
+        # lo que el modelo actualiza my_prob entre ciclos, así que el mismo
+        # bucket que se acaba de derrumbar se vuelve a ver "atractivo". Un
+        # stop ya es la señal de que el mercado sabe algo que el modelo
+        # todavía no absorbió -- no se reintenta el MISMO bucket ese día
+        # (el tope de abajo sigue permitiendo intentar un bucket DISTINTO).
+        if best["condition_id"] in stopped_condition_ids:
+            detail.append({"title": event["title"], "status": "bucket_ya_paro_hoy_no_se_reintenta"})
             continue
 
         # NUEVO (07/09/2026, usuario reportó "compra varias veces al día
