@@ -704,6 +704,54 @@ function CryptoOpenTable({ rows }) {
 // veces. Se sacan del carrusel por defecto; un toggle chico las trae de
 // vuelta para cuando sí hace falta compararlas (ej. decidir si sacar
 // alguna del filtro de exclusión).
+// NUEVO (08/09/2026): tabla genérica de desglose por dimensión -- misma
+// idea que PolymarketCategoryTable() de acá abajo pero sin la lógica de
+// categorías excluidas (no aplica ni a confianza de Cripto ni de
+// Polymarket). Pensada para reusarse con cualquier dict con shape
+// {clave: {n, win_rate, expectancy_r, profit_factor, total_r}} -- hoy
+// confidence de Cripto y Polymarket (ver computeStatsByConfidence() /
+// computePolymarketStatsByConfidence() en route.js), mañana cualquier
+// otra dimensión que se quiera desglosar sin duplicar el componente.
+function DimensionTable({ byDimension, dimensionLabel = "Grupo", emptyMessage }) {
+  const rows = Object.entries(byDimension || {}).sort((a, b) => b[1].total_r - a[1].total_r);
+  if (rows.length === 0) {
+    return <p className="empty">{emptyMessage}</p>;
+  }
+  const maxAbs = Math.max(...rows.map(([, s]) => Math.abs(s.total_r)), 0.01);
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={([key]) => key}
+      emptyMessage={emptyMessage}
+      renderFields={([key, s]) => {
+        const tone = s.total_r >= 0 ? "ok" : "fail";
+        const barPct = (Math.abs(s.total_r) / maxAbs) * 100;
+        return (
+          <>
+            <RowField label={dimensionLabel} value={`${key}${s.n < 5 ? " ⚠️" : ""}`} />
+            <RowField label="n" value={s.n} />
+            <RowField label="Win%" value={`${s.win_rate.toFixed(0)}%`} />
+            <RowField label="Expectancy" value={`${s.expectancy_r >= 0 ? "+ " : ""}${s.expectancy_r.toFixed(2)}R`} tone={tone} />
+            <RowField label="PF" value={s.profit_factor !== null ? s.profit_factor.toFixed(2) : "—"} />
+            <RowField
+              label="Total R"
+              value={
+                <div className="cell-bar-wrap">
+                  <span>{s.total_r >= 0 ? "+ " : ""}{s.total_r.toFixed(2)}R</span>
+                  <div className="cell-bar-track">
+                    <div className={`cell-bar-fill ${tone}`} style={{ width: `${barPct}%` }} />
+                  </div>
+                </div>
+              }
+              tone={tone}
+            />
+          </>
+        );
+      }}
+    />
+  );
+}
+
 function PolymarketCategoryTable({ byCategory, excludedCategories = [] }) {
   const [showExcluded, setShowExcluded] = useState(false);
   const allRows = Object.entries(byCategory || {}).sort((a, b) => b[1].total_r - a[1].total_r);
@@ -1246,6 +1294,12 @@ function CriptoTab({ data }) {
         emptyMessage="Sin trades cerrados todavía — las métricas aparecen cuando haya resultados reales."
         statCards={buildCryptoStatCards(data.stats, true)} />
       <div className="card">
+        <h2>Performance por confianza</h2>
+        <p className="card-subtitle">No es una probabilidad calculada (Cripto no arma una) — es la confianza 1-5 que le puso el motor a cada trade, agrupada para ver si un número más alto de verdad predice mejor resultado. La columna "confidence" recién se empezó a guardar — va a tardar en llenarse.</p>
+        <DimensionTable byDimension={data.crypto_stats_by_confidence} dimensionLabel="Confianza"
+          emptyMessage="Todavía no hay trades cerrados con confianza registrada — la columna es nueva, se llena con los próximos cierres." />
+      </div>
+      <div className="card">
         <h2>Posiciones abiertas</h2>
         <p className="card-subtitle">Operaciones en modo papel que el bot ya "abrió" y todavía no llegaron a su target ni a su stop.</p>
         <CryptoOpenTable rows={data.crypto_open} />
@@ -1304,6 +1358,12 @@ function PolymarketTab({ data }) {
         <h2>Performance por categoría</h2>
         <p className="card-subtitle">Categorías activas (no excluidas del filtro). Las excluidas quedan ocultas por defecto — hay un botón para mostrarlas si hace falta compararlas.</p>
         <PolymarketCategoryTable byCategory={data.polymarket_stats_by_category} excludedCategories={excluded} />
+      </div>
+      <div className="card">
+        <h2>Performance por confianza</h2>
+        <p className="card-subtitle">Tampoco hay una probabilidad calculada acá (ver Calibración — Clima para el motivo) — es la confianza 1-5 que le puso el motor a cada señal, para ver si un número más alto de verdad predice mejor resultado. Mismas categorías excluidas del filtro de arriba.</p>
+        <DimensionTable byDimension={data.polymarket_stats_by_confidence} dimensionLabel="Confianza"
+          emptyMessage="Todavía no hay señales resueltas con confianza registrada para desglosar." />
       </div>
       <div className="card">
         <h2>Señales abiertas ({data.polymarket_open?.length || 0})</h2>
