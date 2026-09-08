@@ -15,6 +15,16 @@ from telegram_notifier import TelegramNotifier
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("polymarket_track_results")
 
+def _safe_apply_pnl(fn, *args, **kwargs):
+    """FIX (08/09/2026): ver el mismo helper en app.py -- un fallo en el
+    tracking de equity por módulo (agregado 07/09/2026, migración SQL
+    de `module` en equity_history no incluida en el repo) no debe poder
+    abortar el resto del loop de resolución de señales de Polymarket."""
+    try:
+        fn(*args, **kwargs)
+    except Exception as e:
+        log.warning(f"[equity] no se pudo actualizar equity de {args[0] if args else '?'}: {e}")
+
 def check_open_signals(db, client, notifier, config):
     open_signals = db.get_open_polymarket_signals()
     if not open_signals:
@@ -94,7 +104,7 @@ def check_open_signals(db, client, notifier, config):
                 stop_distance = abs(sig["entry"] - sig["stop"])
                 if stop_distance > 0:
                     r_multiple = (final_price - sig["entry"]) / stop_distance
-                    db.apply_r_multiple_pnl("polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
+                    _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
                 log.warning(
                     f"[CERRADO SIN STOP DETECTADO A TIEMPO] {sig['question'][:60]} "
                     f"({sig['direction']}) — el mercado ya resolvió, precio final {final_price:.3f}, "
@@ -126,7 +136,7 @@ def check_open_signals(db, client, notifier, config):
         stop_distance = abs(sig["entry"] - sig["stop"])
         if stop_distance > 0:
             r_multiple = (exit_price - sig["entry"]) / stop_distance
-            db.apply_r_multiple_pnl("polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
+            _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
 
         # FIX (07/09/2026, pedido explícito del usuario): el mensaje mostraba
         # "Liquidez al cierre" siempre, pero no el beneficio real -- lo único
