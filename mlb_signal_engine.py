@@ -46,6 +46,7 @@ import requests
 
 from weather_signal_engine import compute_ev, _half_kelly_fraction
 from polymarket_signal_engine import analyze_probability_momentum, detect_inefficiency
+from config import Config
 
 log = logging.getLogger("mlb_signal_engine")
 
@@ -697,9 +698,10 @@ def build_mlb_memo(signal, markdown=True):
     lines.append("")
     lines.append(f"   Mi prob: {signal['my_prob']*100:.0f}%  ·  Mercado: {signal['market_price']*100:.1f}¢")
     lines.append(f"   Edge: {edge_pp:+.0f}pp  ·  EV: {signal['ev']*100:+.0f}% (mínimo exigido: {signal['min_ev_threshold']*100:.0f}%)")
-    kelly = _half_kelly_fraction(signal["my_prob"], signal["market_price"])
+    kelly = _half_kelly_fraction(signal["my_prob"], signal["market_price"], max_pct=Config.MAX_KELLY_STAKE_PCT)
     if kelly is not None:
-        lines.append(f"   Tamaño sugerido (½ Kelly, informativo): {kelly*100:.1f}% del bankroll")
+        capped_note = " (con techo)" if kelly >= Config.MAX_KELLY_STAKE_PCT else ""
+        lines.append(f"   Tamaño sugerido (½ Kelly, informativo){capped_note}: {kelly*100:.1f}% del bankroll")
     lines.append(f"   Confianza: {signal['confidence']}/5 (penalty {signal['confidence_penalty']:.2f})")
 
     if signal.get("url"):
