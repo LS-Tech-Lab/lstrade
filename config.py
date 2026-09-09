@@ -360,6 +360,20 @@ class Config:
     # Ver run_weather_track_results / run_mlb_track_results en app.py.
     WEATHER_MLB_STOP_LOSS_PCT = _float("WEATHER_MLB_STOP_LOSS_PCT", 0.20)
 
+    # AUDITORÍA (09/09/2026, pedido del usuario -- "saltos" raros en el
+    # equity de MLB): _half_kelly_fraction() en weather_signal_engine.py no
+    # tenía techo. Kelly = (prob - price) / (1 - price); con price bajo
+    # (ej. $0.05) y prob alta, la mitad de Kelly ya da ~45-49% del bankroll
+    # apostado en UNA sola señal, y el pago de esa señal es stake * (1-price)/
+    # price -- con price=$0.05 eso es *19x* el stake. Ese combo (motor de
+    # MLB "primer draft sin validar", ver mlb_signal_engine.py) es lo que
+    # produce saltos de varios cientos % en una sola resolución en vez de
+    # una curva de equity suave. Techo conservador mientras el modelo no
+    # esté calibrado (ver mlb_calibration_summary/weather_calibration_summary
+    # en supabase_db.py); se puede subir a medida que se confirme que las
+    # probabilidades están bien calibradas.
+    MAX_KELLY_STAKE_PCT = _float("MAX_KELLY_STAKE_PCT", 0.15)
+
     # AUDITORÍA (04/09/2026, tras 20 señales cerradas con 15% de aciertos):
     # best_trade se elegía con yes_price de Gamma (outcomePrices), que es el
     # ÚLTIMO PRECIO OPERADO, no el ask real -- en un bucket barato e ilíquido
