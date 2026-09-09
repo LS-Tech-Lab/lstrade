@@ -374,6 +374,29 @@ class Config:
     # probabilidades están bien calibradas.
     MAX_KELLY_STAKE_PCT = _float("MAX_KELLY_STAKE_PCT", 0.15)
 
+    # AUDITORÍA (09/09/2026, pedido del usuario -- backtest de calibración
+    # sobre 51 señales de MLB ya resueltas): el modelo de estimate_win_probability()
+    # está BIEN calibrado en 30-60% de probabilidad (44.4% predicho -> 44.4%
+    # ganado real; 56.2% -> 56.2% real), pero se rompe en cuanto pasa de
+    # 60%: 65.6% predicho -> solo 15.4% ganó de verdad (2 de 13 señales);
+    # 73.1% predicho -> 30.0% real; 82.9% predicho -> 33.3% real. O sea que
+    # justo donde el modelo dice estar MÁS seguro es donde menos confiable
+    # es -- probablemente algo en cómo se combinan home_field_edge/
+    # pitcher_edge/ERA sobre-amplifica la probabilidad cuando ya venía
+    # inclinada hacia un lado. Mientras no se identifique y corrija ese
+    # componente, se recorta la probabilidad del modelo a esta banda
+    # (validada empíricamente) antes de usarla para EV, confianza o tamaño
+    # de apuesta -- ver generate_mlb_signal() en mlb_signal_engine.py.
+    # OJO: reemplaza al guardarraíl de "desacuerdo con el mercado" que se
+    # había puesto antes (MLB_MAX_PROB_MARKET_DISAGREEMENT) -- ese filtro
+    # apuntaba al lado equivocado: el mismo backtest muestra que las
+    # señales con mayor desacuerdo crudo (mercado muy barato + modelo
+    # calibrado 30-60%) en realidad ganaron MÁS seguido (5 de 7), no
+    # menos -- un umbral de desacuerdo las habría bloqueado a ellas, no a
+    # las realmente rotas.
+    MLB_PROB_CLIP_MIN = _float("MLB_PROB_CLIP_MIN", 0.40)
+    MLB_PROB_CLIP_MAX = _float("MLB_PROB_CLIP_MAX", 0.60)
+
     # AUDITORÍA (04/09/2026, tras 20 señales cerradas con 15% de aciertos):
     # best_trade se elegía con yes_price de Gamma (outcomePrices), que es el
     # ÚLTIMO PRECIO OPERADO, no el ask real -- en un bucket barato e ilíquido
