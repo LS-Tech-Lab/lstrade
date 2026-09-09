@@ -206,6 +206,7 @@ create table if not exists mlb_signals (
     exit_price double precision,
     stake_dollars double precision,
     pnl_dollars double precision,
+    raw_my_prob double precision,
     ts_signaled timestamptz not null,
     outcome text,
     ts_resolved timestamptz
@@ -220,6 +221,17 @@ create table if not exists mlb_signals (
 -- Migración aplicada en Supabase: alter table mlb_signals add column if
 -- not exists stake_dollars double precision; alter table mlb_signals add
 -- column if not exists pnl_dollars double precision.
+--
+-- AUDITORÍA (09/09/2026, pedido del usuario -- backtest de calibración):
+-- my_prob ahora se recorta a Config.MLB_PROB_CLIP_MIN/MAX (40-60%, única
+-- banda validada como calibrada) antes de operar -- ver generate_mlb_signal()
+-- en mlb_signal_engine.py. raw_my_prob guarda la probabilidad SIN
+-- recortar, en paralelo, para seguir midiendo calibración de 60-100% sin
+-- arriesgar plata en ella (la muestra actual, 13/10/3 señales por
+-- bucket, es insuficiente para confirmar qué tan mal está calibrado esa
+-- zona -- hacen falta ~50-70 señales por bucket para un ±10pp confiable).
+-- Migración aplicada en Supabase: alter table mlb_signals add column if
+-- not exists raw_my_prob double precision.
 
 create index if not exists idx_mlb_signals_resolved on mlb_signals (ts_resolved desc) where outcome is not null;
 
