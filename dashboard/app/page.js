@@ -60,6 +60,18 @@ function formatMoney(price) {
   return price === null || price === undefined ? "—" : `$${formatPrice(price)}`;
 }
 
+// AUDITORÍA (09/09/2026, pedido del usuario): $ real ganado/perdido por
+// señal (stake_dollars/pnl_dollars, grabados por apply_binary_signal_pnl
+// en supabase_db.py al resolver) -- distinto del "Retorno" en % que ya
+// mostraban las tablas de MLB/clima, que es sobre una apuesta nocional de
+// $1 y no refleja el tamaño real (½ Kelly con techo) que sí mueve el
+// equity del módulo.
+function formatPnlDollars(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}$${formatPrice(Math.abs(value))}`;
+}
+
 function directionLabel(dir) {
   if (dir === "LONG") return "Compra";
   if (dir === "SHORT") return "Venta";
@@ -214,6 +226,25 @@ function EquityChart({ points }) {
           style={{ left: `${(xAt(hoverIdx) / w) * 100}%` }}
         >
           <div className="equity-tooltip-value">${hover.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          {hoverIdx > 0 && (() => {
+            // AUDITORÍA (09/09/2026, pedido del usuario -- "saltos" raros
+            // en el equity): antes el tooltip solo mostraba el valor y la
+            // fecha de ese punto, sin decir cuánto cambió respecto al
+            // anterior -- para ver si un salto puntual era razonable había
+            // que restar a mano entre dos hovers. Ahora se muestra el
+            // delta ($ y %) contra el punto inmediatamente anterior de esa
+            // misma serie.
+            const prev = points[hoverIdx - 1].equity;
+            const deltaDollars = hover.equity - prev;
+            const deltaPct = prev !== 0 ? (deltaDollars / Math.abs(prev)) * 100 : null;
+            const deltaPositive = deltaDollars >= 0;
+            return (
+              <div className={`equity-tooltip-delta ${deltaPositive ? "ok" : "fail"}`}>
+                {deltaPositive ? "▲" : "▼"} {formatPnlDollars(deltaDollars)}
+                {deltaPct !== null ? ` (${deltaPositive ? "+" : ""}${deltaPct.toFixed(1)}%)` : ""} vs. punto anterior
+              </div>
+            );
+          })()}
           <div className="equity-tooltip-date">{formatChartDate(hover.ts)}</div>
         </div>
       )}
@@ -1025,6 +1056,12 @@ function WeatherResolvedTable({ rows }) {
             <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
             <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
               value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
+            <RowField label="P&L real" tone={r.pnl_dollars > 0 ? "ok" : r.pnl_dollars < 0 ? "fail" : ""}
+              value={
+                r.pnl_dollars !== null && r.pnl_dollars !== undefined
+                  ? `${formatPnlDollars(r.pnl_dollars)}${r.stake_dollars ? ` (apostado ${formatMoney(r.stake_dollars)})` : ""}`
+                  : "—"
+              } />
             <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
               <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
             } />
@@ -1133,7 +1170,13 @@ function MlbResolvedTable({ rows }) {
             <RowField label="Precio mkt" value={r.market_price !== null && r.market_price !== undefined ? `$${r.market_price.toFixed(3)}` : "—"} />
             <RowField label="Retorno" tone={ret !== null ? (ret >= 0 ? "ok" : "fail") : ""}
               value={ret !== null ? `${ret >= 0 ? "+" : ""}${ret.toFixed(0)}%` : "—"} />
-            <RowField label="Resultado" tone={isWin ? "ok" : isVoid ? "" : "fail"} value={
+            <RowField label="P&L real" tone={r.pnl_dollars > 0 ? "ok" : r.pnl_dollars < 0 ? "fail" : ""}
+              value={
+                r.pnl_dollars !== null && r.pnl_dollars !== undefined
+                  ? `${formatPnlDollars(r.pnl_dollars)}${r.stake_dollars ? ` (apostado ${formatMoney(r.stake_dollars)})` : ""}`
+                  : "—"
+              } />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
               <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
             } />
             <RowField label="Resuelta" value={r.ts_resolved ? parseTs(r.ts_resolved).toLocaleString() : "—"} />
@@ -1143,6 +1186,8 @@ function MlbResolvedTable({ rows }) {
     />
   );
 }
+
+function MlbTab({ data }) {
 
 // NUEVO (07/09/2026): tarjeta de calibración -- responde "cuando el modelo
 // dice que algo tiene 65% de probabilidad, ¿de verdad pasa cerca del 65%
