@@ -571,6 +571,22 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
     prob_home, notes, penalty, components = estimate_win_probability(
         game["home_id"], game["away_id"], game["home_pitcher_id"], game["away_pitcher_id"], season,
     )
+
+    # AUDITORÍA (09/09/2026): recorte a la banda validada empíricamente --
+    # ver comentario largo en Config.MLB_PROB_CLIP_MIN/MAX (config.py).
+    # Se hace acá, apenas sale del modelo de fundamentos, para que TODO lo
+    # que se deriva después (EV, confidence, ½ Kelly vía my_prob) ya use
+    # el valor recortado -- ningún cálculo río abajo debe ver la
+    # probabilidad cruda sin validar.
+    raw_prob_home = prob_home
+    prob_home = min(max(prob_home, Config.MLB_PROB_CLIP_MIN), Config.MLB_PROB_CLIP_MAX)
+    if raw_prob_home != prob_home:
+        notes.append(
+            f"my_prob recortado de {raw_prob_home*100:.1f}% a {prob_home*100:.1f}% -- el modelo "
+            f"no está validado fuera de {Config.MLB_PROB_CLIP_MIN*100:.0f}-{Config.MLB_PROB_CLIP_MAX*100:.0f}% "
+            f"(ver backtest de calibración, 09/09/2026)."
+        )
+
     my_prob_yes = prob_home if team_yes == game["home_id"] else round(1 - prob_home, 3)
 
     yes_price = market.get("yes_price")
