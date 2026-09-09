@@ -1187,8 +1187,6 @@ function MlbResolvedTable({ rows }) {
   );
 }
 
-function MlbTab({ data }) {
-
 // NUEVO (07/09/2026): tarjeta de calibración -- responde "cuando el modelo
 // dice que algo tiene 65% de probabilidad, ¿de verdad pasa cerca del 65%
 // de las veces?". Es distinto de win rate/retorno: esos miden si ganaste
