@@ -974,7 +974,7 @@ def run_mlb_track_results():
                     # AUDITORÍA (07/09/2026): equity propio del módulo MLB
                     # (½ Kelly sobre my_prob/market_price ya guardados en la
                     # señal) -- ver apply_binary_signal_pnl en supabase_db.py.
-                    _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
+                    _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], "stop", exit_price=stop, signal_id=sig["id"], signal_table="mlb_signals")
                     resolved.append({
                         "game_pk": sig.get("game_pk"), "question": sig.get("question"),
                         "outcome": "stop", "exit_price": stop,
@@ -1012,7 +1012,7 @@ def run_mlb_track_results():
         # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop) --
         # mismo equity propio del módulo MLB, actualizado también en la
         # resolución completa (no solo en la salida anticipada por stop).
-        _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], outcome)
+        _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], outcome, signal_id=sig["id"], signal_table="mlb_signals")
         resolved.append({
             "game_pk": game_pk,
             "question": sig.get("question"),
@@ -1116,7 +1116,7 @@ def run_weather_track_results():
                     # AUDITORÍA (07/09/2026): equity propio del módulo clima
                     # (mismo mecanismo ½ Kelly que MLB -- ver
                     # apply_binary_signal_pnl en supabase_db.py).
-                    _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], "stop", exit_price=stop)
+                    _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], "stop", exit_price=stop, signal_id=sig["id"], signal_table="weather_signals")
                     resolved.append({"condition_id": condition_id, "outcome": "stop", "exit_price": stop})
                 continue
 
@@ -1171,7 +1171,7 @@ def run_weather_track_results():
         if not db.resolve_weather_signal(sig["id"], outcome, actual_high_f=actual_high_f):
             continue
         # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop).
-        _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], outcome)
+        _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], outcome, signal_id=sig["id"], signal_table="weather_signals")
         resolved.append({"condition_id": condition_id, "outcome": outcome, "actual_high_f": actual_high_f})
 
     return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
