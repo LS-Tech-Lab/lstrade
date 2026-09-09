@@ -588,6 +588,7 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         )
 
     my_prob_yes = prob_home if team_yes == game["home_id"] else round(1 - prob_home, 3)
+    raw_my_prob_yes = raw_prob_home if team_yes == game["home_id"] else round(1 - raw_prob_home, 3)
 
     yes_price = market.get("yes_price")
     no_price = market.get("no_price")
@@ -612,9 +613,11 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
 
     if ev_no is not None and (ev_yes is None or ev_no > ev_yes):
         direction_is_yes, my_prob, price = False, round(1 - my_prob_yes, 3), no_price
+        raw_my_prob = round(1 - raw_my_prob_yes, 3)
         token_id = market.get("no_token_id")
     else:
         direction_is_yes, my_prob, price = True, my_prob_yes, yes_price
+        raw_my_prob = raw_my_prob_yes
         token_id = market.get("yes_token_id")
     ev = ev_no if not direction_is_yes else ev_yes
     if ev is None:
@@ -656,6 +659,15 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         "away_pitcher_id": game["away_pitcher_id"],
         "direction": "YES" if direction_is_yes else "NO",
         "my_prob": my_prob,
+        # NUEVO (09/09/2026): probabilidad SIN recortar por
+        # Config.MLB_PROB_CLIP_MIN/MAX -- el clip evita apostar con
+        # confianza inflada, pero corta también la única fuente de datos
+        # para confirmar si 60-100% sigue tan mal calibrado como muestra
+        # el backtest de hoy (13/10/3 señales, insuficiente). Guardar la
+        # cruda en paralelo (sin que afecte EV/confianza/stake, que ya
+        # usan la recortada) permite seguir juntando muestra de
+        # calibración "en la sombra" sin arriesgar plata en ella.
+        "raw_my_prob": raw_my_prob,
         "market_price": price,
         "ev": ev,
         "min_ev_threshold": effective_min_ev,
