@@ -6,6 +6,7 @@ import time
 import json
 
 from weather_signal_engine import _half_kelly_fraction
+from config import Config
 
 class Database:
     def __init__(self, path):
@@ -165,12 +166,16 @@ class Database:
 
     def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None):
         """Ver apply_binary_signal_pnl en supabase_db.py (misma lógica, esta
-        es la variante SQLite para el modo VPS/local)."""
+        es la variante SQLite para el modo VPS/local).
+
+        AUDITORÍA (09/09/2026): mismo techo de tamaño (Config.MAX_KELLY_STAKE_PCT)
+        que la variante Supabase -- ver comentario ahí y en
+        _half_kelly_fraction (weather_signal_engine.py)."""
         base = self.last_equity(module)
         if base is None:
             base = 100.0
 
-        kelly = _half_kelly_fraction(my_prob, market_price)
+        kelly = _half_kelly_fraction(my_prob, market_price, max_pct=Config.MAX_KELLY_STAKE_PCT)
         pnl = 0.0
         if kelly and kelly > 0 and market_price and market_price > 0:
             stake = base * kelly
