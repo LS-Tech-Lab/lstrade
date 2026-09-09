@@ -162,10 +162,19 @@ create table if not exists weather_signals (
     yes_token_id text,
     stop double precision,
     exit_price double precision,
+    stake_dollars double precision,
+    pnl_dollars double precision,
     ts_signaled timestamptz not null,
     outcome text,
     ts_resolved timestamptz
 );
+
+-- AUDITORÍA (09/09/2026, pedido del usuario): mismo agregado que en
+-- mlb_signals más abajo -- ver comentario ahí (stake_dollars/pnl_dollars
+-- reales grabados al resolver, en vez de solo el % de retorno nocional).
+-- Migración aplicada en Supabase: alter table weather_signals add column
+-- if not exists stake_dollars double precision; alter table weather_signals
+-- add column if not exists pnl_dollars double precision.
 
 -- Motor de MLB (04/09/2026, ver mlb_signal_engine.py). A diferencia de
 -- weather_signals, `outcome` acá NO es "yes"/"no" -- es "win"/"loss" del
@@ -195,12 +204,25 @@ create table if not exists mlb_signals (
     token_id text,
     stop double precision,
     exit_price double precision,
+    stake_dollars double precision,
+    pnl_dollars double precision,
     ts_signaled timestamptz not null,
     outcome text,
     ts_resolved timestamptz
 );
 
+-- AUDITORÍA (09/09/2026, pedido del usuario): el historial de MLB/clima
+-- resuelto solo mostraba el % de retorno de una apuesta nocional de $1,
+-- sin relación con el tamaño real (½ Kelly, con techo desde ahora --
+-- ver MAX_KELLY_STAKE_PCT en config.py) que sí movía el equity simulado
+-- del módulo. stake_dollars/pnl_dollars quedan grabados por
+-- apply_binary_signal_pnl() en supabase_db.py al resolver cada señal.
+-- Migración aplicada en Supabase: alter table mlb_signals add column if
+-- not exists stake_dollars double precision; alter table mlb_signals add
+-- column if not exists pnl_dollars double precision.
+
 create index if not exists idx_mlb_signals_resolved on mlb_signals (ts_resolved desc) where outcome is not null;
+
 
 create table if not exists indicator_snapshots (
     id bigserial primary key,
