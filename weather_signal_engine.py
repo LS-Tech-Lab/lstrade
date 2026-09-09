@@ -36,6 +36,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from config import Config
+
 log = logging.getLogger("weather_signal_engine")
 
 NWS_API = "https://api.weather.gov"
@@ -1145,15 +1147,33 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
 # ---------------------------------------------------------------------------
 # STEP 4 — Formato de reporte (versión compacta para Telegram)
 # ---------------------------------------------------------------------------
-def _half_kelly_fraction(prob, price):
+def _half_kelly_fraction(prob, price, max_pct=None):
     """Fracción de Kelly (a mitad, por conservadurismo) para una apuesta
-    binaria que paga $1 si gana y cuesta `price`. Solo informativo: el
-    módulo de clima es de solo lectura y no ejecuta ni dimensiona órdenes
-    en Polymarket (a diferencia de risk_manager.py en el módulo cripto)."""
+    binaria que paga $1 si gana y cuesta `price`. Se usa tanto para el
+    tamaño sugerido que se muestra en los memos de Telegram (informativo)
+    como para dimensionar el equity simulado de clima/MLB en
+    apply_binary_signal_pnl (supabase_db.py) -- por eso vive acá, en un
+    solo lugar, y no en cada módulo por separado.
+
+    AUDITORÍA (09/09/2026, pedido del usuario -- saltos raros en el
+    equity de MLB): sin techo, un `price` bajo (ej. $0.05) con `prob` alta
+    puede dar una fracción de ½ Kelly de ~45-49% del bankroll en una sola
+    señal, y esa señal paga stake * (1-price)/price si gana -- con
+    price=$0.05 son ~19x el stake, o sea la posición completa puede
+    multiplicar el equity del módulo varias veces en una sola resolución.
+    Con el motor de MLB todavía sin calibrar (ver mlb_calibration_summary
+    en supabase_db.py, "primer draft" en mlb_signal_engine.py) eso es
+    ruido de dimensionamiento, no una señal real de que la apuesta vale
+    tanto. `max_pct` (default Config.MAX_KELLY_STAKE_PCT) limita la
+    fracción devuelta; se pasa explícito en vez de importarlo acá adentro
+    para que quien llama pueda ver/loguear qué techo se aplicó."""
     if not price or price <= 0 or price >= 1:
         return None
     kelly = (prob - price) / (1 - price)
-    return max(0.0, kelly) / 2
+    fraction = max(0.0, kelly) / 2
+    if max_pct is not None:
+        fraction = min(fraction, max_pct)
+    return fraction
 
 
 def build_weather_memo(signal, markdown=True):
@@ -1206,7 +1226,7 @@ def build_weather_memo(signal, markdown=True):
             f"   Mi prob: {bt['my_prob']*100:.0f}% | Mercado: {bt['market_price']*100:.1f}¢ | "
             f"Edge: {edge_pp:+.0f}pp | EV: {bt['ev']*100:+.0f}%"
         )
-        kelly = _half_kelly_fraction(bt["my_prob"], bt["market_price"])
+        kelly = _half_kelly_fraction(bt["my_prob"], bt["market_price"], max_pct=Config.MAX_KELLY_STAKE_PCT)
         if kelly is not None:
             lines.append(f"   Tamaño sugerido (½ Kelly, informativo): {kelly*100:.1f}% del bankroll")
         if bt.get("url"):
