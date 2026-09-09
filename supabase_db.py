@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from supabase import create_client
 
 from weather_signal_engine import _half_kelly_fraction
+from config import Config
 
 def _now_iso():
     """Timestamps ISO 8601 nativos de PostgreSQL (timestamptz)."""
@@ -40,7 +41,8 @@ class SupabaseDatabase:
         res = self.client.table("equity_history").select("equity").eq("module", module).order("ts", desc=True).limit(1).execute()
         return res.data[0]["equity"] if res.data else None
 
-    def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None):
+    def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None,
+                                 signal_id=None, signal_table=None):
         """
         NUEVO (07/09/2026, pedido del usuario): simula el equity de un
         módulo de mercados binarios (clima, MLB -- ambos con my_prob/
@@ -56,14 +58,30 @@ class SupabaseDatabase:
         (sin P&L real -- partido cancelado o similar, no mueve el equity
         pero tampoco rompe si se llama).
 
+        AUDITORÍA (09/09/2026, pedido del usuario -- "saltos" raros en el
+        equity de MLB): el tamaño ya no es ½ Kelly sin techo -- se limita a
+        Config.MAX_KELLY_STAKE_PCT del equity del módulo (ver comentario en
+        _half_kelly_fraction, weather_signal_engine.py) para que una sola
+        señal no pueda mover el equity varias veces su valor cuando
+        market_price es bajo. Además, si se pasan signal_id/signal_table
+        (la fila ya resuelta en weather_signals/mlb_signals), esta función
+        guarda stake_dollars/pnl_dollars en esa fila -- antes el $ real
+        apostado/ganado por cada señal solo vivía de paso acá adentro y no
+        quedaba en ningún lado para mostrarlo en el historial de cerrados
+        (dashboard mostraba solo el % de retorno nocional de $1, no el $
+        real que sí movió el equity). Ese guardado es solo informativo: si
+        falla, no debe tumbar el tracking de equity (que ya corre dentro
+        de _safe_apply_pnl en app.py).
+
         Devuelve el nuevo equity del módulo.
         """
         base = self.last_equity(module)
         if base is None:
             base = 100.0
 
-        kelly = _half_kelly_fraction(my_prob, market_price)
+        kelly = _half_kelly_fraction(my_prob, market_price, max_pct=Config.MAX_KELLY_STAKE_PCT)
         pnl = 0.0
+        stake = 0.0
         if kelly and kelly > 0 and market_price and market_price > 0:
             stake = base * kelly
             if outcome in ("yes", "win"):
@@ -76,6 +94,16 @@ class SupabaseDatabase:
 
         new_equity = base + pnl
         self.record_equity(new_equity, module=module)
+
+        if signal_id is not None and signal_table is not None:
+            try:
+                self.client.table(signal_table).update({
+                    "stake_dollars": round(stake, 2),
+                    "pnl_dollars": round(pnl, 2),
+                }).eq("id", signal_id).execute()
+            except Exception:
+                pass  # tracking secundario (ver docstring) -- nunca debe romper la resolución real
+
         return new_equity
 
     def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0):
