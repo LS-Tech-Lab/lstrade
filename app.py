@@ -898,6 +898,7 @@ def run_mlb_cycle():
                 home_win_pct=signal.get("home_win_pct"), away_win_pct=signal.get("away_win_pct"),
                 era_home=signal.get("era_home"), era_away=signal.get("era_away"),
                 pitcher_edge=signal.get("pitcher_edge"), home_field_edge=signal.get("home_field_edge"),
+                raw_my_prob=signal.get("raw_my_prob"),
             )
             notifier.send_message(memo)
             open_condition_ids.add(signal["condition_id"])
