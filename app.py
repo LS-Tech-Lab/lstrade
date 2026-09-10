@@ -1102,6 +1102,7 @@ def run_weather_track_results():
         # llamada) como proxy de que el precio ya cruzó el stop.
         stop = sig.get("stop")
         market = None
+        book = None
         if stop is not None:
             triggered_stop = False
             if sig.get("yes_token_id"):
@@ -1109,9 +1110,39 @@ def run_weather_track_results():
                 if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
                     triggered_stop = True
             if not triggered_stop:
+                # AUDITORÍA (10/09/2026, 32/32 señales de clima cerradas por
+                # stop desde que se agregó este fallback el 07/09): un
+                # bucket barato e ilíquido -- el perfil que este motor
+                # busca a propósito -- casi nunca tiene bids, así que casi
+                # todas las señales caían acá. El fallback confiaba en
+                # `yes_price` (último precio operado) solo, sin chequear
+                # el lado ASK del book que `fetch_order_book_snapshot` ya
+                # trae -- un print viejo y sin volumen real por debajo del
+                # stop bastaba para cerrar la posición aunque el mercado en
+                # vivo (vendedores reales pidiendo más) todavía la valorara
+                # por encima. Ahora se exige que el ASK real confirme el
+                # precio bajo antes de aceptar el print viejo como señal de
+                # que el stop se cruzó de verdad. Si no hay book en
+                # absoluto (fallo real de red/API al leerlo, no "sin
+                # bids") se mantiene el comportamiento anterior como red
+                # de seguridad de última instancia -- mejor cerrar tarde
+                # que no cerrar nunca si de verdad no hay forma de leer el
+                # mercado en vivo.
                 market = client.fetch_clob_market(condition_id)
                 if market and market.get("yes_price") is not None and market["yes_price"] <= stop:
-                    triggered_stop = True
+                    ask_confirms = (
+                        book is None
+                        or book.get("best_ask") is None
+                        or book["best_ask"] <= stop
+                    )
+                    if ask_confirms:
+                        triggered_stop = True
+                    else:
+                        print(
+                            f"[weather stop] {condition_id}: último precio {market['yes_price']:.3f} <= "
+                            f"stop {stop:.3f}, pero ask real del book ({book['best_ask']:.3f}) todavía "
+                            f"está por encima -- no se confía en el print viejo, se reintenta el próximo ciclo."
+                        )
             if triggered_stop:
                 if db.resolve_weather_signal(sig["id"], "stop", exit_price=stop):
                     # AUDITORÍA (07/09/2026): equity propio del módulo clima
