@@ -841,6 +841,36 @@ def build_bucket_distribution(center, buckets, base_sigma=1.6, confidence_penalt
 # ---------------------------------------------------------------------------
 # STEP 3 — Comparación contra mercado y EV
 # ---------------------------------------------------------------------------
+# AUDITORÍA (10/09/2026): tabla de calibración sobre 38 señales resueltas
+# yes/no (outcome IN ('yes','no') en weather_signals -- se excluyen los
+# 'stop', que son cierres anticipados, no resoluciones de mercado) mostró
+# que el modelo sobreestima la probabilidad real en TODOS los buckets de
+# confianza (23.1% promedio dicho vs. 7.9% real). Se probaron dos
+# recalibraciones sobre logit(my_prob) evaluadas con Leave-One-Out CV (no
+# in-sample, que con solo 3 positivos de 38 engaña fácil):
+#   - shift-only (1 parámetro, preserva el ranking exacto): log loss LOOCV
+#     0.2975 frente a 0.3502 sin calibrar.
+#   - Platt completo (2 parámetros): 0.3188 LOOCV -- PEOR que el shift a
+#     pesar de ajustar mejor in-sample (0.2660): con n=38 y 3 positivos,
+#     el segundo parámetro memoriza los 3 "yes" en vez de generalizar.
+# Gana el shift-only. CALIBRATION_SHIFT_C se reajusta corriendo
+# weather_calibration.py con datos frescos de weather_signals cada
+# ~30-50 señales nuevas -- revisar si el valor se estabiliza o se sigue
+# moviendo mucho (si se sigue moviendo mucho, es señal de que falta edge
+# real, no solo calibración).
+CALIBRATION_SHIFT_C = -1.296
+
+
+def apply_calibration(raw_prob, shift_c=CALIBRATION_SHIFT_C):
+    """Corrige el sesgo sistemático de sobreestimación detectado en
+    calibración. Es una transformación monótona en espacio logit -- no
+    cambia el ranking entre buckets, solo el nivel."""
+    eps = 1e-6
+    p = min(max(raw_prob, eps), 1 - eps)
+    logit_p = math.log(p / (1 - p))
+    return 1 / (1 + math.exp(-(logit_p + shift_c)))
+
+
 def compute_ev(prob, price):
     if not price or price <= 0:
         return None
@@ -988,13 +1018,21 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
 
     rows = []
     for m in buckets:
-        prob = distribution.get(m["condition_id"], 0.0)
+        raw_prob = distribution.get(m["condition_id"], 0.0)
+        # AUDITORÍA (10/09/2026): se aplica el shift de calibración (ver
+        # CALIBRATION_SHIFT_C arriba) sobre la probabilidad cruda de la
+        # distribución -- my_prob pasa a ser la probabilidad YA corregida
+        # (la que se usa para EV y para decidir la señal); raw_prob queda
+        # disponible para loggear y para re-ajustar el shift más adelante
+        # sin tener que revertir la calibración primero.
+        prob = apply_calibration(raw_prob)
         price = m.get("yes_price") or 0.0
         ev = compute_ev(prob, price)
         row = {
             "condition_id": m["condition_id"],
             "question": m["question"],
             "my_prob": prob,
+            "raw_my_prob": raw_prob,
             "market_price": price,
             "ev": ev,
             "liquidity": m.get("liquidity", 0),
