@@ -601,8 +601,16 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
     # ya en el extremo significa que el mercado real ya está prácticamente
     # decidido, sea por qué sea -- no hay edge real que capturar ahí, solo
     # ruido de un mercado en vías de liquidación.
-    MLB_EXTREME_PRICE_FLOOR = 0.02
-    if yes_price <= MLB_EXTREME_PRICE_FLOOR or yes_price >= (1 - MLB_EXTREME_PRICE_FLOOR):
+    #
+    # AUDITORÍA (10/09/2026): el piso vivía hardcodeado acá en 0.02 y no
+    # alcanzaba -- ver auditoría larga en Config.MLB_EXTREME_PRICE_FLOOR
+    # (config.py) para el caso real que lo disparó (Mets @ Marlins,
+    # market_price=$0.024, retorno simulado +4067%) y el dato que
+    # justifica subirlo a 0.10 (7 de 8 señales resueltas en la franja
+    # <10c/>90c, con el único fallo sugiriendo que ni siquiera es de baja
+    # varianza real). Se movió a Config para que sea ajustable por env var
+    # sin tocar código, igual que MLB_PROB_CLIP_MIN/MAX.
+    if yes_price <= Config.MLB_EXTREME_PRICE_FLOOR or yes_price >= (1 - Config.MLB_EXTREME_PRICE_FLOOR):
         return None
 
     # Evaluar los dos lados y quedarse con el de mejor EV -- el edge puede
