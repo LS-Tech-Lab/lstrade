@@ -397,6 +397,36 @@ class Config:
     MLB_PROB_CLIP_MIN = _float("MLB_PROB_CLIP_MIN", 0.40)
     MLB_PROB_CLIP_MAX = _float("MLB_PROB_CLIP_MAX", 0.60)
 
+    # AUDITORÍA (10/09/2026, sesión con Claude a partir de un caso real en
+    # el dashboard -- Mets @ Marlins, market_price=$0.024, my_prob=0.6,
+    # retorno simulado +4067%, equity de MLB inflado de $100 a >$2M en 48hs
+    # por interés compuesto de ½ Kelly sobre estas mismas señales).
+    # MLB_EXTREME_PRICE_FLOOR vivía hardcodeado en 0.02 dentro de
+    # generate_mlb_signal() (mlb_signal_engine.py) desde el 06/09, puesto
+    # ahí para el caso extremo de un partido ya Final que el chequeo de
+    # status todavía no había detectado (ver AUDITORÍA 06/09 en ese
+    # archivo). Se sube a Config y a 0.10 porque 0.02 no alcanza: de las
+    # señales MLB win/loss resueltas hasta hoy, las que cerraron con
+    # market_price < 10c o > 90c acertaron 7 de 8 (87.5%) -- muy por
+    # encima de lo que el modelo de fundamentos (log5 + ERA + localía, sin
+    # ningún dato de estado EN VIVO del partido) puede justificar. La
+    # lectura más simple es que a esos precios el partido ya estaba de
+    # hecho decidido (últimas entradas o recién terminado, status "Final"
+    # sin propagar todavía) y el modelo, ciego a eso, seguía calculando
+    # my_prob como si fuera antes del primer pitch -- de ahí el EV
+    # artificialmente gigante (hasta 2400% en estos casos). El 1 de 8 que
+    # perdió (Blue Jays @ Athletics, 5.5c) muestra que ni siquiera es una
+    # apuesta seria de baja varianza: a ese nivel de precio un mercado
+    # realmente decidido debería fallar mucho menos seguido que eso. Subir
+    # el piso a 10% no es una calibración fina (no hay dato de estado en
+    # vivo todavía para hacer eso bien) -- es sacar del universo de señales
+    # operables la franja de precio donde se concentró toda la
+    # contaminación observada. Revisar de nuevo apenas haya más señales
+    # resueltas con este piso puesto, y considerar en el futuro chequear
+    # el inning/marcador real (linescore de la MLB Stats API) en vez de
+    # inferirlo indirectamente por precio.
+    MLB_EXTREME_PRICE_FLOOR = _float("MLB_EXTREME_PRICE_FLOOR", 0.10)
+
     # AUDITORÍA (04/09/2026, tras 20 señales cerradas con 15% de aciertos):
     # best_trade se elegía con yes_price de Gamma (outcomePrices), que es el
     # ÚLTIMO PRECIO OPERADO, no el ask real -- en un bucket barato e ilíquido
