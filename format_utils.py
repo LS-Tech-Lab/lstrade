@@ -69,24 +69,31 @@ def format_duration_minutes(seconds):
     return f"{hours}h {rem}min" if rem else f"{hours}h"
 
 
-def build_crypto_memo(symbol, signal, plan, deadline_seconds=None, markdown=True):
+def format_pct(value):
+    """'+3.8%' / '-2.1%' — con signo siempre visible."""
+    return f"{value:+.1f}%"
+
+
+def build_crypto_memo(symbol, signal, plan, deadline_seconds=None, markdown=True,
+                       header=None, footer=None):
     """
     Memo de Telegram para una señal de cripto que ya pasó el filtro de
     riesgo (por eso no repite los checks acá: en este punto todos dieron
-    OK — el detalle completo sigue disponible en el dashboard). Mismo
-    patrón que build_weather_memo() / build_mlb_memo(): primero la
-    decisión en una frase ("COMPRAR"/"VENDER" + símbolo), después
-    cuánto se puede ganar/perder en pesos y no solo en ratio, y por
-    último — si se llama desde un memo de APROBACIÓN, no de "posición
-    abierta en papel" — cuánto tiempo hay para responder.
+    OK — el detalle completo sigue disponible en el dashboard).
 
-    AUDITORÍA (06/09/2026): unifica lo que antes eran dos copias casi
-    idénticas (app.py::build_memo_markdown y main.py::build_memo_text),
-    las dos con el mismo problema: mostraban Entrada/Stop/Target como
-    tres precios pelados con 6 decimales fijos y "Ratio R:B: 1:2.20"
-    sin traducir — alguien sin experiencia en trading no tenía forma de
-    saber, de un vistazo, si esto era pedirle aprobar una compra o una
-    venta, ni cuánta plata real estaba en juego.
+    AUDITORÍA (11/09/2026): rediseño de formato para más claridad —
+    Entrada/Target/Stop pasan de una sola oración corrida a líneas
+    propias con emoji distinto cada una (escaneable de un vistazo en
+    el celular), se agrega el % de distancia de cada nivel respecto a
+    la entrada (el precio solo no dice si el movimiento es chico o
+    grande), se acorta "Si arriesgás X podés ganar hasta Y" al formato
+    estándar riesgo/beneficio, y el tamaño de posición ahora también
+    muestra el valor en $ además de las unidades (0.5589 SOL solo no
+    dice cuánto capital hay en juego si no sabés el precio de memoria).
+    Además admite pasar header/footer para que main.py/app.py no
+    dupliquen ese texto por fuera de la función (antes "Posición
+    abierta (papel)" y el aviso de modo papel vivían afuera, repetidos
+    en las dos copias serverless/local).
     """
     direction = signal["direction"]
     is_long = direction == "LONG"
@@ -94,28 +101,43 @@ def build_crypto_memo(symbol, signal, plan, deadline_seconds=None, markdown=True
     confidence = signal.get("confidence", 0)
     stars = "★" * confidence + "☆" * max(0, 5 - confidence)
 
-    label = f"SEÑAL: {action} {symbol}"
-    lines = [f"🟢 *{label}*" if markdown else f"🟢 {label}"]
+    lines = []
+    if header:
+        lines.append(f"📈 *{header}* — {symbol}" if markdown else f"📈 {header} — {symbol}")
+        lines.append("")
+
+    label = f"SEÑAL: {action}"
+    lines.append(f"🟢 *{label}*" if markdown else f"🟢 {label}")
     lines.append(f"Confianza: {stars} ({confidence}/5)")
     lines.append("")
 
     if plan:
+        entry = plan["entry"]
+        stop = plan["stop"]
+        target = plan["target"]
         risk_amount = plan["risk_amount"]
         potential_gain = risk_amount * plan["rr"]
+
+        target_pct = (target - entry) / entry * 100 if is_long else (entry - target) / entry * 100
+        stop_pct = (stop - entry) / entry * 100 if is_long else (entry - stop) / entry * 100
+
+        # 2 decimales fijos acá (a diferencia de format_money, que usa 4
+        # para precios >=$1): en este memo prioriza legibilidad rápida
+        # sobre precisión completa — $107.9848 vs $107.99 no cambia la
+        # decisión de comprar/vender, y sí cambia cuánto cuesta leerlo.
+        lines.append(f"💰 Entrada: ${entry:,.2f}")
+        lines.append(f"🎯 Ganancia en: ${target:,.2f} ({format_pct(target_pct)})")
+        lines.append(f"🛑 Pérdida en: ${stop:,.2f} ({format_pct(stop_pct)})")
+        lines.append("")
         lines.append(
-            f"Si arriesgás {format_money(risk_amount)}, podés ganar hasta "
-            f"{format_money(potential_gain)} ({plan['rr']:.1f} veces lo arriesgado)"
+            f"📊 Riesgo/Beneficio: arriesgás ${risk_amount:,.2f} para ganar hasta "
+            f"${potential_gain:,.2f} ({plan['rr']:.1f}x)"
         )
-        entry_txt = format_money(plan["entry"])
-        stop_txt = format_money(plan["stop"])
-        target_txt = format_money(plan["target"])
-        fall_word = "baja" if is_long else "sube"
-        rise_word = "sube" if is_long else "baja"
+        position_value = plan["position_size"] * entry
         lines.append(
-            f"Entrada: {entry_txt}  |  Si {fall_word} a {stop_txt} se cierra con pérdida  |  "
-            f"Si {rise_word} a {target_txt} se cierra con ganancia"
+            f"📦 Tamaño: {plan['position_size']:.4f} {symbol.split('/')[0]} "
+            f"(~${position_value:,.2f} al precio de entrada)"
         )
-        lines.append(f"Tamaño de la posición: {plan['position_size']:.6f} unidades")
     else:
         lines.append(f"Precio actual: {format_money(signal.get('price'))}")
 
@@ -123,5 +145,9 @@ def build_crypto_memo(symbol, signal, plan, deadline_seconds=None, markdown=True
         lines.append("")
         deadline_txt = format_duration_minutes(deadline_seconds)
         lines.append(f"⏱ Tenés {deadline_txt} para responder — si no contestás, se rechaza sola.")
+
+    if footer:
+        lines.append("")
+        lines.append(f"_{footer}_" if markdown else footer)
 
     return "\n".join(lines)
