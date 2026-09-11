@@ -39,20 +39,34 @@ def format_blocked_message(symbol, signal, failed_checks):
     existe -- algunos labels (pensados para el checklist neutral del
     dashboard) leen como doble negación al mostrarse solos con ✕ delante
     (ver el check de "posición ya abierta" más abajo en este archivo).
+
+    AUDITORÍA (11/09/2026): se agrega espacio en blanco entre el título,
+    la frase de contexto y la línea de la señal (antes iban todas
+    pegadas, apretado de leer en el celular) -- mismo criterio de
+    respiración que ya se aplicó a los memos de cripto/Polymarket. Se
+    agrega también una línea de cierre aclarando que no hace falta
+    ninguna acción (el mensaje podía leerse como un aviso que requiere
+    respuesta, cuando en realidad es puramente informativo -- el bot ya
+    decidió no operar).
     """
     stars = "★" * signal.get("confidence", 0)
     price_str = format_money(signal.get("price"))
+    control_word = "control" if len(failed_checks) == 1 else "controles"
     lines = [
         f"\u26D4 *{symbol} bloqueado por riesgo*",
+        "",
         # AUDITORÍA (06/09/2026): se agrega esta frase en criollo antes de
         # la lista de checks — antes iba directo a la lista técnica y no
         # quedaba explícito que la conclusión es "el bot vio la señal pero
         # NO va a operar esto".
-        "El bot detectó esta señal pero decidió no operarla — no pasó estos controles de seguridad:",
+        "El bot detectó esta señal pero decidió no operarla:",
         f"{signal.get('type', '—')} · {direction_label(signal.get('direction'))} · Confianza {stars or '—'} · Precio {price_str}",
         "",
+        f"No pasó {'este' if len(failed_checks) == 1 else 'estos'} {control_word} de seguridad:",
     ]
     lines.extend(f"\u2715 {c.get('fail_reason') or c['label']}" for c in failed_checks)
+    lines.append("")
+    lines.append("_No hace falta que hagas nada — es solo informativo._")
     return "\n".join(lines)
 
 
