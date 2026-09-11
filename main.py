@@ -19,7 +19,8 @@ from format_utils import build_crypto_memo, format_money
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 log = logging.getLogger("main")
 
-def build_memo_text(symbol, signal, risk_report, plan, markdown=False, deadline_seconds=None):
+def build_memo_text(symbol, signal, risk_report, plan, markdown=False, deadline_seconds=None,
+                     header=None, footer=None):
     # AUDITORÍA (06/09/2026): delega en el mismo helper compartido que usa
     # app.py (format_utils.build_crypto_memo) — antes esta copia local
     # tenía el mismo problema de fondo (memo técnico sin decir "comprar" o
@@ -29,7 +30,12 @@ def build_memo_text(symbol, signal, risk_report, plan, markdown=False, deadline_
     # por Telegram — acá el memo llega solo cuando risk_report["pass"] ya
     # dio True, así que la lista de checks de acá siempre mostraba "OK" en
     # todos: no aportaba nada para decidir.
-    return build_crypto_memo(symbol, signal, plan, deadline_seconds=deadline_seconds, markdown=markdown)
+    # AUDITORÍA (11/09/2026): header/footer se pasan ahora al helper
+    # compartido en vez de concatenarse acá afuera (ver format_utils.py).
+    return build_crypto_memo(
+        symbol, signal, plan, deadline_seconds=deadline_seconds, markdown=markdown,
+        header=header, footer=footer,
+    )
 
 def print_memo(symbol, signal, risk_report, plan):
     print("\n" + "=" * 60)
@@ -134,10 +140,12 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
         # Mismo fix que app.py (modo serverless): mensaje simétrico con el
         # de cierre en vez de leerse como un memo de decisión pendiente.
         notifier.send_message(
-            f"\U0001F4C8 *Posición abierta (papel)* — {best_symbol}\n\n"
-            + build_memo_text(best_symbol, best_signal, risk_report, plan, markdown=True)
-            + "\n\n_(modo papel — no se ejecutó nada real, pero queda registrada "
-              "y se va a monitorear hasta que toque target o stop)_"
+            build_memo_text(
+                best_symbol, best_signal, risk_report, plan, markdown=True,
+                header="Posición abierta (papel)",
+                footer="modo papel — no se ejecutó nada real, pero queda registrada "
+                       "y se va a monitorear hasta que toque target o stop",
+            )
         )
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         # Simular apertura de trade para que el Trailing Stop funcione en papel
