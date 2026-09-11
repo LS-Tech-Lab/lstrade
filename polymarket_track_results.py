@@ -142,12 +142,31 @@ def check_open_signals(db, client, notifier, config):
                         if late_return_pct is not None
                         else f"💰 Entrada: ${sig['entry']:.3f} → Cierre: ${final_price:.3f}"
                     )
+                    # AUDITORÍA (11/09/2026): el aviso de "revisar
+                    # manualmente" solo tiene sentido cuando el resultado
+                    # es una PÉRDIDA -- ahí el stop debería haber saltado
+                    # antes y el precio real de salida en la práctica pudo
+                    # haber sido mejor que el final de mercado (0.00). En
+                    # una GANANCIA, el mercado resolvió completo a favor
+                    # (1.00) -- es el mejor resultado posible, no hay nada
+                    # que "revisar" ni una salida mejor que se haya perdido.
+                    if late_return_pct is not None and late_return_pct >= 0:
+                        closing_note = (
+                            "El mercado resolvió directo a favor de esta posición antes de que "
+                            "el bot llegara a detectar un cruce de target — no hay nada que revisar, "
+                            "es una ganancia real."
+                        )
+                    else:
+                        closing_note = (
+                            "El mercado ya cerró antes de que el bot detectara un cruce de stop.\n"
+                            "Revisar manualmente si esta posición se sostuvo hasta acá en la práctica "
+                            "— el precio real de salida pudo haber sido mejor que el cierre final."
+                        )
                     notifier.send_message(
                         f"⚠️ *Señal Polymarket resuelta sin aviso previo* — {sig['question'][:70]}\n\n"
                         f"Dirección: {sig['direction']}\n"
                         f"{late_profit_line}\n\n"
-                        f"El mercado ya cerró antes de que el bot detectara un cruce de stop/target.\n"
-                        f"Revisar manualmente si esta posición se sostuvo hasta acá en la práctica."
+                        f"{closing_note}"
                     )
             continue
 
