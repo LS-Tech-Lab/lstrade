@@ -214,9 +214,12 @@ class SupabaseDatabase:
         self.client.table("open_trades").update(update).eq("id", trade_id).execute()
 
     def close_trade_with_outcome(self, trade, exit_price, outcome):
+        """Devuelve (r_multiple, pnl_dollars) — o (False, None) si la fila
+        ya no estaba (otro handler la cerró primero). AUDITORÍA (11/09/2026):
+        ver mismo cambio y motivo en db.py."""
         deleted = self.client.table("open_trades").delete().eq("id", trade["id"]).execute()
         if not deleted.data:
-            return False
+            return False, None
         entry, direction, stop_distance = trade["entry_price"], trade["direction"], trade.get("stop_distance")
         r_multiple = ((exit_price - entry) / stop_distance) * (1 if direction == "LONG" else -1) if stop_distance else None
         self.client.table("closed_trades").insert({
@@ -235,6 +238,7 @@ class SupabaseDatabase:
         # ya existente en Supabase se rescaló x0.01 en la misma migración
         # que baja este default, para que la curva completa siga siendo
         # consistente con la nueva base).
+        pnl_dollars = None
         position_size = trade.get("position_size")
         if position_size:
             sign = 1 if direction == "LONG" else -1
@@ -244,7 +248,7 @@ class SupabaseDatabase:
                 base_equity = 100.0
             self.record_equity(base_equity + pnl_dollars, module="crypto")
 
-        return r_multiple
+        return r_multiple, pnl_dollars
 
     def stats_summary(self, since_ts=None):
         """
