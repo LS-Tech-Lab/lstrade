@@ -161,7 +161,7 @@ class PositionManager:
                     # segundo aviso de "posición cerrada" con un r_multiple
                     # falso. Antes esto se llamaba DESPUÉS del bloque del
                     # exchange, así que nunca evitaba nada.
-                    r_multiple = self.db.close_trade_with_outcome(trade, exit_price, outcome)
+                    r_multiple, pnl_dollars = self.db.close_trade_with_outcome(trade, exit_price, outcome)
                     if r_multiple is False:
                         log.info(
                             f"[CIERRE] {symbol}: ya resuelto por otro handler "
@@ -202,20 +202,28 @@ class PositionManager:
                     # en vivo: NEAR/USDT). El resultado real de la operación
                     # lo dice el signo de r_multiple, no cuál nivel (target o
                     # stop) fue el que se tocó -- son dos cosas distintas.
+                    # AUDITORÍA (11/09/2026): se agrega el $ ganado/perdido
+                    # (pnl_dollars, ya calculado en close_trade_with_outcome
+                    # para el equity, antes no se devolvía) -- "Ganaste 0.2
+                    # veces lo que arriesgaste" no dice cuánto fue eso en
+                    # plata real. También se dice si cerró por target o por
+                    # stop (antes solo se sabía mirando los logs).
+                    pnl_txt = f" (${pnl_dollars:+.2f})" if pnl_dollars is not None else ""
+                    outcome_txt = "tocó el target" if outcome == "target" else "tocó el stop"
                     if r_multiple is None:
                         emoji, result_label, r_text = "🛑" if outcome == "stop" else "✅", "Resultado sin calcular", ""
                     elif r_multiple > 0.001:
                         emoji, result_label = "✅", "ganancia"
-                        r_text = f" — Ganaste {r_multiple:.1f} veces lo que arriesgaste en esta operación"
+                        r_text = f" — Ganaste {r_multiple:.1f} veces lo que arriesgaste{pnl_txt}"
                     elif r_multiple < -0.001:
                         emoji, result_label = "🛑", "pérdida"
-                        r_text = f" — Perdiste {abs(r_multiple):.1f} veces lo que arriesgaste en esta operación"
+                        r_text = f" — Perdiste {abs(r_multiple):.1f} veces lo que arriesgaste{pnl_txt}"
                     else:
                         emoji, result_label = "⚪", "empate (breakeven)"
                         r_text = " — no ganaste ni perdiste: se cerró justo en el precio de entrada"
                     log.info(f"[CIERRE] {symbol} {direction}: {outcome} @ {exit_price:.6f} ({r_multiple})")
                     self.notifier.send_message(
-                        f"{emoji} *Posición cerrada* — {symbol} {direction_label(direction)}\n"
+                        f"{emoji} *Posición cerrada* — {symbol} {direction_label(direction)} ({outcome_txt})\n"
                         f"Resultado: {result_label}{r_text}\n"
                         f"Precio de salida: {format_money(exit_price)}"
                     )
