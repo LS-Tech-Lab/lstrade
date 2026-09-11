@@ -9,6 +9,7 @@ import time
 import concurrent.futures  # NUEVO (Semana 2): Para concurrencia en descargas de red
 from config import Config
 from db import Database
+from format_utils import format_days
 from polymarket_categories import categorize
 from polymarket_client import PolymarketClient
 from polymarket_signal_engine import detect_inefficiency, generate_polymarket_signal, verify_entry_against_book
@@ -56,6 +57,15 @@ def build_polymarket_memo(signal, markdown=False):
     "A vs B" las opciones en Polymarket son los nombres de los dos lados,
     no "Yes"/"No" — mostrar solo la dirección interna sin el nombre real
     no le decía al usuario qué tocar en la página.
+
+    AUDITORÍA (11/09/2026): mismo criterio de claridad que ya se aplicó
+    al memo de cripto (format_utils.build_crypto_memo) — el plan de
+    salida pasa de una sola línea corrida a mostrar también el % de
+    distancia de cada nivel respecto a la entrada y el ratio riesgo/
+    beneficio explícito (antes solo se podía inferir mirando los tres
+    precios). El plazo de cierre usa format_days() en vez de días fijos
+    ("0.1 días" es difícil de leer de un vistazo — ahora sale en horas
+    o minutos cuando el mercado cierra pronto).
     """
     m = signal["market"]
     lines = []
@@ -72,20 +82,30 @@ def build_polymarket_memo(signal, markdown=False):
     # los mensajes de Cripto y MLB — antes era el único de los cuatro
     # motores que mostraba "confianza X/5" en número pelado.
     stars = "★" * signal["confidence"] + "☆" * (5 - signal["confidence"])
-    lines.append(f"📌 Comprar: \"{pick_label}\" @ ${pick_price:.3f} (confianza {stars})")
+    lines.append(f"📌 Comprar: \"{pick_label}\" @ ${pick_price:.3f}")
     lines.append(f"   (la otra opción, \"{other_label}\", está a ${other_price:.3f})")
+    lines.append(f"⭐ Confianza: {stars} ({signal['confidence']}/5)")
 
     if signal.get("trade_plan"):
         tp = signal["trade_plan"]
+        entry, target, stop = tp["entry"], tp["target"], tp["stop"]
+        target_pct = (target - entry) / entry * 100 if entry else 0
+        stop_pct = (entry - stop) / entry * 100 if entry else 0
+        rr = (target - entry) / (entry - stop) if (entry - stop) > 0 else None
+
         lines.append("")
         lines.append("🎯 Plan sugerido (podés vender antes, no hace falta esperar a que se resuelva):")
-        lines.append(f"   Entrada: ${tp['entry']:.3f} | Vender con ganancia en: ${tp['target']:.3f} | Salir con pérdida en: ${tp['stop']:.3f}")
+        lines.append(f"   💰 Entrada: ${entry:.3f}")
+        lines.append(f"   📈 Vender con ganancia en: ${target:.3f} (+{target_pct:.1f}%)")
+        lines.append(f"   📉 Salir con pérdida en: ${stop:.3f} (-{stop_pct:.1f}%)")
+        if rr is not None:
+            lines.append(f"   📊 Riesgo/Beneficio: {rr:.1f}x")
 
     lines.append("")
     lines.append(f"💧 Liquidez: ${m['liquidity']:,.0f} | Volumen 24h: ${m['volume_24h']:,.0f}")
     if m.get("days_to_resolution") is not None:
         lines.append(
-            f"📅 El mercado cierra en {m['days_to_resolution']:.1f} días "
+            f"📅 El mercado cierra en {format_days(m['days_to_resolution'])} "
             f"(fecha límite de Polymarket para resolverlo, no cuándo termina el partido/evento)"
         )
 
