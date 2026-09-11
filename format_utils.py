@@ -69,6 +69,23 @@ def format_duration_minutes(seconds):
     return f"{hours}h {rem}min" if rem else f"{hours}h"
 
 
+def format_days(days):
+    """
+    Convierte 'días hasta el cierre' a una unidad legible. Antes se
+    mostraba siempre en días fijos ("0.1 días" para un mercado que
+    cierra en un par de horas) — técnicamente correcto pero difícil de
+    leer de un vistazo cuando el mercado cierra pronto.
+    """
+    if days is None:
+        return "—"
+    if days >= 1:
+        return f"{days:.1f} días"
+    hours = days * 24
+    if hours >= 1:
+        return f"{hours:.1f} horas"
+    return f"{round(hours * 60)} minutos"
+
+
 def format_pct(value):
     """'+3.8%' / '-2.1%' — con signo siempre visible."""
     return f"{value:+.1f}%"
