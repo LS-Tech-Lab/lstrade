@@ -305,6 +305,14 @@ class Database:
         (win/loss en R). Sin esto no había ninguna tabla que guardara qué pasó
         realmente con cada trade una vez que se abría — quedaba en open_trades
         para siempre o se borraba sin dejar rastro del resultado.
+
+        Devuelve (r_multiple, pnl_dollars) — o (False, None) si la fila ya
+        no estaba (otro handler la cerró primero, ver carrera documentada en
+        position_manager.py). AUDITORÍA (11/09/2026): antes solo devolvía
+        r_multiple; el mensaje de Telegram mostraba "Ganaste 0.2 veces lo
+        que arriesgaste" sin decir cuánto fue eso en plata real, aunque el
+        pnl_dollars ya se calculaba acá abajo para el equity — solo hacía
+        falta devolverlo también.
         """
         entry = trade["entry_price"]
         direction = trade["direction"]
@@ -339,6 +347,7 @@ class Database:
         # importar el resultado de los trades cerrados (ver auditoría).
         # AUDITORÍA (07/09/2026): base bajada de 10000.0 a 100.0 -- ver mismo
         # cambio en supabase_db.py.
+        pnl_dollars = None
         position_size = trade.get("position_size")
         if position_size:
             sign = 1 if direction == "LONG" else -1
@@ -348,7 +357,7 @@ class Database:
                 base_equity = 100.0
             self.record_equity(base_equity + pnl_dollars, module="crypto")
 
-        return r_multiple
+        return r_multiple, pnl_dollars
 
     def get_closed_trades(self, limit=500):
         return self.conn.execute(
