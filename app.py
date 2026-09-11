@@ -129,13 +129,19 @@ def _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots):
 # /api/cycle — un ciclo de escaneo, disparado por cron externo
 # ────────────────────────────────────────────────────────────────────
 
-def build_memo_markdown(symbol, signal, risk_report, plan, deadline_seconds=None):
+def build_memo_markdown(symbol, signal, risk_report, plan, deadline_seconds=None,
+                         header=None, footer=None):
     # AUDITORÍA (06/09/2026): delega en el helper compartido de
     # format_utils.py (ver ahí el detalle) — antes este memo mostraba
     # "Ratio R:B: 1:2.20" y tres precios pelados sin decir qué acción
     # se estaba pidiendo aprobar. risk_report queda como parámetro sin
     # usar por compatibilidad con los llamadores existentes.
-    return build_crypto_memo(symbol, signal, plan, deadline_seconds=deadline_seconds, markdown=True)
+    # AUDITORÍA (11/09/2026): header/footer se pasan ahora al helper
+    # compartido en vez de concatenarse acá afuera (ver format_utils.py).
+    return build_crypto_memo(
+        symbol, signal, plan, deadline_seconds=deadline_seconds, markdown=True,
+        header=header, footer=footer,
+    )
 
 def run_cycle():
     config = Config
@@ -313,10 +319,12 @@ def run_cycle():
 
     if not config.LIVE_TRADING:
         notifier.send_message(
-            f"\U0001F4C8 *Posición abierta (papel)* — {best_symbol}\n\n"
-            + build_memo_markdown(best_symbol, best_signal, risk_report, plan)
-            + "\n\n_(modo papel — no se ejecutó nada real, pero queda registrada "
-              "y se va a monitorear hasta que toque target o stop)_"
+            build_memo_markdown(
+                best_symbol, best_signal, risk_report, plan,
+                header="Posición abierta (papel)",
+                footer="modo papel — no se ejecutó nada real, pero queda registrada "
+                       "y se va a monitorear hasta que toque target o stop",
+            )
         )
         _touch_notification(db)
         db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
