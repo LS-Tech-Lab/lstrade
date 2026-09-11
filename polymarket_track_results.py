@@ -25,6 +25,26 @@ def _safe_apply_pnl(fn, *args, **kwargs):
     except Exception as e:
         log.warning(f"[equity] no se pudo actualizar equity de {args[0] if args else '?'}: {e}")
 
+def _safe_pnl_dollars(db, module, r_multiple, risk_pct):
+    """AUDITORÍA (11/09/2026): el mensaje de Telegram mostraba el
+    resultado solo en % ("Perdiste 22.5%"), pero no cuánto fue eso en
+    plata real -- igual que se corrigió para cripto/clima/MLB con
+    pnl_dollars. Se recalcula acá (mismo criterio que
+    apply_r_multiple_pnl en supabase_db.py: base = último equity del
+    módulo, o $100 si todavía no tiene historial) en vez de modificar
+    esa función para que devuelva el monto, así un fallo al leer el
+    equity no aborta el resto del loop -- devuelve None y el mensaje
+    cae de nuevo a mostrar solo el %."""
+    try:
+        base = db.last_equity(module)
+        if base is None:
+            base = 100.0
+        risk_amount = base * (risk_pct / 100.0)
+        return risk_amount * r_multiple
+    except Exception as e:
+        log.warning(f"[equity] no se pudo calcular pnl en $ de {module}: {e}")
+        return None
+
 def check_open_signals(db, client, notifier, config):
     open_signals = db.get_open_polymarket_signals()
     if not open_signals:
@@ -102,9 +122,12 @@ def check_open_signals(db, client, notifier, config):
                 # risk_manager.py para cripto (RISK_PCT_PER_TRADE). Ver
                 # apply_r_multiple_pnl en supabase_db.py.
                 stop_distance = abs(sig["entry"] - sig["stop"])
+                pnl_dollars = None
                 if stop_distance > 0:
                     r_multiple = (final_price - sig["entry"]) / stop_distance
-                    _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
+                    risk_pct = getattr(config, "RISK_PCT_PER_TRADE", 1.0)
+                    pnl_dollars = _safe_pnl_dollars(db, "polymarket", r_multiple, risk_pct)
+                    _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, risk_pct)
                 log.warning(
                     f"[CERRADO SIN STOP DETECTADO A TIEMPO] {sig['question'][:60]} "
                     f"({sig['direction']}) — el mercado ya resolvió, precio final {final_price:.3f}, "
@@ -112,16 +135,18 @@ def check_open_signals(db, client, notifier, config):
                 )
                 if notifier.enabled:
                     late_return_pct = ((final_price - sig["entry"]) / sig["entry"]) * 100 if sig["entry"] > 0 else None
+                    pnl_txt = f" (${pnl_dollars:+.2f})" if pnl_dollars is not None else ""
                     late_profit_line = (
-                        f"{'Ganaste' if late_return_pct >= 0 else 'Perdiste'} {abs(late_return_pct):.1f}% "
-                        f"(entrada ${sig['entry']:.3f} → cierre ${final_price:.3f})"
+                        f"{'📈 Ganaste' if late_return_pct >= 0 else '📉 Perdiste'} {abs(late_return_pct):.1f}%{pnl_txt}\n"
+                        f"💰 Entrada: ${sig['entry']:.3f} → Cierre: ${final_price:.3f}"
                         if late_return_pct is not None
-                        else f"Entrada: ${sig['entry']:.3f} → Cierre: ${final_price:.3f}"
+                        else f"💰 Entrada: ${sig['entry']:.3f} → Cierre: ${final_price:.3f}"
                     )
                     notifier.send_message(
-                        f"⚠️ *Señal Polymarket resuelta sin aviso previo* — {sig['question'][:70]}\n"
-                        f"Dirección: {sig['direction']} | El mercado ya cerró antes de cruzar stop/target.\n"
-                        f"{late_profit_line}\n"
+                        f"⚠️ *Señal Polymarket resuelta sin aviso previo* — {sig['question'][:70]}\n\n"
+                        f"Dirección: {sig['direction']}\n"
+                        f"{late_profit_line}\n\n"
+                        f"El mercado ya cerró antes de que el bot detectara un cruce de stop/target.\n"
                         f"Revisar manualmente si esta posición se sostuvo hasta acá en la práctica."
                     )
             continue
@@ -134,9 +159,12 @@ def check_open_signals(db, client, notifier, config):
         # AUDITORÍA (07/09/2026): ver comentario equivalente más arriba
         # (rama de cierre tardío sin cruce detectado a tiempo).
         stop_distance = abs(sig["entry"] - sig["stop"])
+        pnl_dollars = None
         if stop_distance > 0:
             r_multiple = (exit_price - sig["entry"]) / stop_distance
-            _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, getattr(config, "RISK_PCT_PER_TRADE", 1.0))
+            risk_pct = getattr(config, "RISK_PCT_PER_TRADE", 1.0)
+            pnl_dollars = _safe_pnl_dollars(db, "polymarket", r_multiple, risk_pct)
+            _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, risk_pct)
 
         # FIX (07/09/2026, pedido explícito del usuario): el mensaje mostraba
         # "Liquidez al cierre" siempre, pero no el beneficio real -- lo único
@@ -146,12 +174,16 @@ def check_open_signals(db, client, notifier, config):
         # Misma fórmula de retorno que ya usa el dashboard (route.js
         # computePolymarketStats) para que el número coincida con las
         # estadísticas agregadas: (salida - entrada) / entrada.
+        # AUDITORÍA (11/09/2026): se agrega el $ ganado/perdido (no solo el
+        # %) y se separa la línea de entrada/salida del resultado, mismo
+        # criterio de claridad que se aplicó al memo de cripto.
         return_pct = ((exit_price - sig["entry"]) / sig["entry"]) * 100 if sig["entry"] > 0 else None
         if return_pct is not None:
-            result_word = "Ganaste" if return_pct >= 0 else "Perdiste"
-            profit_line = f"{result_word} {abs(return_pct):.1f}% (entrada ${sig['entry']:.3f} → salida ${exit_price:.3f})"
+            result_word = "📈 Ganaste" if return_pct >= 0 else "📉 Perdiste"
+            pnl_txt = f" (${pnl_dollars:+.2f})" if pnl_dollars is not None else ""
+            profit_line = f"{result_word} {abs(return_pct):.1f}%{pnl_txt}\n💰 Entrada: ${sig['entry']:.3f} → Salida: ${exit_price:.3f}"
         else:
-            profit_line = f"Entrada: ${sig['entry']:.3f} → Salida: ${exit_price:.3f}"
+            profit_line = f"💰 Entrada: ${sig['entry']:.3f} → Salida: ${exit_price:.3f}"
 
         current_liquidity = client.fetch_order_book_liquidity(sig["token_id"])
         liquidity_warning = (
@@ -165,15 +197,16 @@ def check_open_signals(db, client, notifier, config):
         # signo del retorno, no cuál nivel (target/stop) fue el que se tocó.
         won = return_pct >= 0 if return_pct is not None else outcome == "target"
         emoji = "✅" if won else "🛑"
+        outcome_txt = "tocó el target" if outcome == "target" else "tocó el stop"
         log.info(f"[{outcome.upper()}] {sig['question'][:60]} ({sig['direction']}) — {profit_line}")
         if notifier.enabled:
             message = (
-                f"{emoji} *Señal Polymarket resuelta* — {sig['question'][:70]}\n"
-                f"Dirección: {sig['direction']}\n"
+                f"{emoji} *Señal Polymarket resuelta* — {sig['question'][:70]}\n\n"
+                f"Dirección: {sig['direction']} ({outcome_txt})\n"
                 f"{profit_line}"
             )
             if liquidity_warning:
-                message += f"\n{liquidity_warning}"
+                message += f"\n\n{liquidity_warning}"
             notifier.send_message(message)
         time.sleep(0.2)
 
