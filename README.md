@@ -266,13 +266,16 @@ usando el mismo historial que ya se descargaba para generar la señal.
 
 **Sí — con Supabase como base de datos, y así corre hoy en producción** (`lstrade.vercel.app`). Esta es la arquitectura ya incluida en el repo (`app.py`, `supabase_db.py`, `vercel.json`). Cosas a tener en cuenta respecto al modo VPS:
 
-1. **Desde 2026, el runtime Python de Vercel ya no soporta "un archivo = una función" dentro de `api/`.** Construye una sola Vercel Function a partir de un único entrypoint en la raíz que exponga una variable `app` (ASGI) — acá es **`app.py`** (FastAPI), que registra las 9 rutas reales:
+1. **Desde 2026, el runtime Python de Vercel ya no soporta "un archivo = una función" dentro de `api/`.** Construye una sola Vercel Function a partir de un único entrypoint en la raíz que exponga una variable `app` (ASGI) — acá es **`app.py`** (FastAPI), que registra las 11 rutas reales:
    `/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_history`,
-   `/api/manage_positions`, `/api/weather_cycle`, `/api/weather_track_results`, `/api/reset_halt` y
-   `/api/telegram_webhook`. (`/api/polymarket_track_results` existió como alias de `polymarket_resolve`
-   hasta el 03/09/2026 — se eliminó porque cron-job.org lo tenía dado de alta como job separado, disparando
-   casi al mismo segundo que `polymarket_resolve` y duplicando el trabajo sobre Supabase/Polymarket sin
-   ningún beneficio; ver "Cambios recientes".)
+   `/api/manage_positions`, `/api/weather_cycle`, `/api/weather_track_results`, `/api/mlb_cycle`,
+   `/api/mlb_track_results`, `/api/reset_halt` y `/api/telegram_webhook`. (`/api/polymarket_track_results`
+   existió como alias de `polymarket_resolve` hasta el 03/09/2026 — se eliminó porque cron-job.org lo tenía
+   dado de alta como job separado, disparando casi al mismo segundo que `polymarket_resolve` y duplicando
+   el trabajo sobre Supabase/Polymarket sin ningún beneficio; ver "Cambios recientes". Las dos rutas de MLB
+   se agregaron el 04-05/09/2026 junto con `mlb_signal_engine.py` — quedaron fuera de esta lista por un
+   descuido de documentación, no porque falten en `app.py`: verificadas con `curl` el 12/09/2026, ambas
+   responden `200 OK`.)
    Todo vive en `app.py` — no existe una carpeta `api/` separada con copias de cada endpoint (se eliminó
    porque nunca se desplegaba y quedaba desincronizada de la lógica real). Toda ruta nueva tiene que
    agregarse como endpoint dentro de `app.py` o queda inalcanzable: Vercel la sirve, pero FastAPI le
@@ -285,9 +288,12 @@ usando el mismo historial que ya se descargaba para generar la señal.
    con `workflow_dispatch` para forzar una corrida manual puntual — el `schedule` de GitHub Actions se
    sacó porque en la práctica corría cada 1-12h en vez de cada 10 min en intervalos cortos (limitación
    documentada de GitHub Actions, no un bug del código).
-3. **La aprobación humana ya no puede bloquear la función** (10s de timeout en Hobby). Por eso el ciclo
-   de cripto solo manda el memo por Telegram con botones y corta — `/api/telegram_webhook` es la ruta
-   aparte que recibe tu click y ahí sí ejecuta la orden real.
+3. **La aprobación humana ya no puede bloquear la función.** Por eso el ciclo de cripto solo manda el
+   memo por Telegram con botones y corta — `/api/telegram_webhook` es la ruta aparte que recibe tu click
+   y ahí sí ejecuta la orden real. El límite real de `maxDuration` en `vercel.json` es de 45s (subido
+   desde 25s el 12/09/2026, tras ver `weather_cycle` y `mlb_track_results` corriendo a 22-23s de duración
+   real, muy cerca del techo viejo) — el plan Hobby permite hasta 60s de `maxDuration` sin necesidad de
+   Fluid Compute ni de pasar a Pro.
 4. **Heartbeat**: si pasan `HEARTBEAT_INTERVAL_SECONDS` (6h por defecto) sin que se mande ningún mensaje
    a Telegram, `app.py` manda un aviso corto de "sigo vivo" con equity/drawdown y el último snapshot de
    indicadores — para no confundir horas seguidas de "no_signal" con que el bot dejó de correr.
@@ -328,14 +334,25 @@ curl -X POST "https://api.telegram.org/bot<TU_TOKEN>/setWebhook" \
 Creá un cron job por endpoint que necesite correr seguido, apuntando directo a la URL de Vercel con el
 header `Authorization: Bearer <CRON_SECRET>` (el valor que copiaste en el paso 2):
 
-| Endpoint | Frecuencia sugerida |
-|---|---|
-| `/api/cycle` | cada 10 min |
-| `/api/polymarket_cycle` | cada 10 min |
-| `/api/polymarket_resolve` | cada 30 min |
-| `/api/manage_positions` | cada 10-15 min |
-| `/api/weather_cycle` | cada 30 min (el pronóstico no cambia tan rápido como el precio) |
-| `/api/weather_track_results` | cada 60 min |
+| Endpoint | Frecuencia sugerida | Expresión cron sugerida |
+|---|---|---|
+| `/api/cycle` | cada 10 min | `1,11,21,31,41,51 * * * *` |
+| `/api/manage_positions` | cada 5 min | `4,9,14,19,24,29,34,39,44,49,54,59 * * * *` |
+| `/api/polymarket_cycle` | cada 10 min | `7,17,27,37,47,57 * * * *` |
+| `/api/polymarket_resolve` | cada 30 min | `12,42 * * * *` |
+| `/api/weather_cycle` | cada 30 min (el pronóstico no cambia tan rápido como el precio) | `22,52 * * * *` |
+| `/api/weather_track_results` | cada 60 min | `6 * * * *` |
+| `/api/mlb_cycle` | cada 30 min (punto de partida, sin afinar contra calendario real de partidos todavía) | `2,32 * * * *` |
+| `/api/mlb_track_results` | cada 60 min | `16 * * * *` |
+
+**Por qué la expresión cron, no solo "cada N minutos" desde `:00`:** si cargás los ocho jobs con el modo
+simple de cron-job.org ("cada 10 minutos" etc.), todos arrancan alineados en el minuto `:00` de la hora —
+eso disparó 6 de los 8 jobs casi al mismo segundo en una auditoría real (12/09/2026), generando invocaciones
+concurrentes de la misma función de Vercel, conexiones simultáneas a Supabase y llamadas paralelas a APIs
+externas (Polymarket, NWS/METAR, MLB Stats API) en el mismo instante. Las expresiones de arriba escalonan
+cada job en un minuto distinto dentro de la hora, manteniendo la misma frecuencia. Para cargarlas en
+cron-job.org: elegí "Personalizado" en el horario del job (no el modo simple) y pegá la expresión en el
+campo de Expresión Crontab.
 
 `/api/polymarket_history` no necesita cron — lo consulta el dashboard de Next.js bajo demanda, no se
 dispara periódicamente.
@@ -411,7 +428,8 @@ de raíz sin depender de VPN en tu propia conexión.
 | `weather_signal_engine.py` | Motor de análisis de clima para mercados de Polymarket (NWS + METAR/TAF, solo fuentes con API oficial) |
 | `weather_report.py` | Modo manual del análisis de clima — reporte completo para correr vos mismo, sin tocar el ciclo automático |
 | `polymarket_categories.py` | Categorización compartida de mercados de Polymarket por keywords (usada en producción y en el backtest offline) |
-| `app.py` | **Único entrypoint real de Vercel** (FastAPI) — registra las 9 rutas serverless (`/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_history`, `/api/manage_positions`, `/api/weather_cycle`, `/api/weather_track_results`, `/api/reset_halt`, `/api/telegram_webhook`) y el heartbeat |
+| `mlb_signal_engine.py` | Motor de análisis de MLB (log5 + localía + ERA de pitchers) para mercados de Polymarket — primer draft (04/09/2026), sin backtest propio todavía |
+| `app.py` | **Único entrypoint real de Vercel** (FastAPI) — registra las 11 rutas serverless (`/api/cycle`, `/api/polymarket_cycle`, `/api/polymarket_resolve`, `/api/polymarket_history`, `/api/manage_positions`, `/api/weather_cycle`, `/api/weather_track_results`, `/api/mlb_cycle`, `/api/mlb_track_results`, `/api/reset_halt`, `/api/telegram_webhook`) y el heartbeat |
 | `dashboard/` | Panel Next.js — bitácora, equity y estado del sistema |
 | `schema.sql` | Tablas de Supabase — correr una vez en el SQL Editor |
 | `deploy/trader-ia.service` | Unidad systemd para correrlo 24/7 en un VPS |
@@ -428,6 +446,15 @@ de raíz sin depender de VPN en tu propia conexión.
 
 ## Cambios recientes
 
+- **Corregido** (documentación, `vercel.json`, cron-job.org — auditoría 12/09/2026): esta sección y la
+  tabla de rutas de `app.py` decían 9 rutas serverless y no mencionaban `/api/mlb_cycle` ni
+  `/api/mlb_track_results`, agregadas junto con `mlb_signal_engine.py` el 04-05/09/2026 — descuido de
+  documentación, no un bug de código (ambas rutas responden `200 OK`, verificado con `curl` el
+  12/09/2026). De paso: `maxDuration` en `vercel.json` subido de 25s a 45s (el plan Hobby permite hasta
+  60s sin Fluid Compute) — `weather_cycle` y `mlb_track_results` ya corrían a 22-23s reales, muy cerca
+  del límite viejo. Y los 8 cron jobs externos se re-cargaron en cron-job.org con expresiones cron
+  escalonadas (ver tabla de frecuencias sugeridas más arriba) en vez del modo simple "cada N minutos",
+  que los tenía a 6 de los 8 disparando casi al mismo segundo en cada hora en punto.
 - **Nuevo** (`schema.sql`, `db.py`, `supabase_db.py`, `app.py`, `main.py`, `analyze_crypto_setups.py`):
   cada trade de cripto guarda ahora `setup_type`/`confidence`/`score` — antes no había forma de
   saber si un tipo de setup o nivel de confianza en particular arrastraba el win rate para abajo.
