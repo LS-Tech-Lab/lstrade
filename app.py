@@ -273,7 +273,6 @@ def run_cycle():
         try:
             snapshot = compute_indicator_snapshot(candles)
             if snapshot:
-                db.record_indicator_snapshot(symbol, snapshot)
                 snapshots.append((symbol, snapshot))
         except Exception as e:
             errors.append(f"{symbol} snapshot: {e}")
@@ -291,6 +290,16 @@ def run_cycle():
         signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias, min_score=config.CRYPTO_MIN_SCORE)
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol
+
+    # AUDITORÍA (12/09/2026): antes se hacía un db.record_indicator_snapshot()
+    # por símbolo DENTRO del loop de arriba (N round-trips secuenciales a
+    # Supabase). Se movió a UNA sola llamada batch acá afuera -- ver
+    # record_indicator_snapshots() en supabase_db.py para el motivo completo.
+    if snapshots:
+        try:
+            db.record_indicator_snapshots(snapshots)
+        except Exception as e:
+            errors.append(f"indicator_snapshots batch: {e}")
 
     if not best_signal:
         _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots)
