@@ -974,7 +974,32 @@ def run_mlb_track_results():
     outcome: "win" si el lado comprado ganó el partido, "loss" si
     perdió -- direction="YES" compró al home_team, "NO" compró al
     away_team (mismo esquema que ya usa schema.sql para mlb_signals).
-    """
+
+    AUDITORÍA (12/09/2026, timeout real en producción a las 12:00:06 con
+    504 FUNCTION_INVOCATION_TIMEOUT a los 25s): esta función no tenía
+    ningún presupuesto de tiempo -- a diferencia de run_cycle() (time_left())
+    y check_open_signals() de Polymarket (time_budget_seconds) -- pese a
+    hacer, por CADA señal abierta con stop, una llamada de red real a
+    fetch_order_book_snapshot() (timeout=15s) antes incluso de llegar a
+    fetch_game_result() (timeout=6s). Confirmado en Supabase: las 14
+    señales de MLB abiertas en ese momento tenían TODAS stop y token_id
+    cargados, o sea las 14 entraban a esa rama -- con solo 2 de esas 14
+    llamadas tardando cerca de su timeout de 15s ya se superaban los 25s
+    del maxDuration de vercel.json, sin ninguna forma de cortar antes.
+    Se agrega el mismo patrón de time_left() que ya usa run_cycle(): si el
+    presupuesto se agota a mitad del loop, se corta ahí, se devuelven las
+    señales ya resueltas hasta ese punto (el trabajo hecho no se pierde --
+    cada resolve_mlb_signal()/apply_binary_signal_pnl() ya commitea antes
+    de pasar a la siguiente señal) y las que quedaron pendientes se
+    reintentan solas en la próxima corrida del cron, en vez de que TODA la
+    invocación termine en 504 sin dejar rastro de qué sí se alcanzó a
+    procesar."""
+    started = time.monotonic()
+    time_budget = float(os.environ.get("MLB_TRACK_TIME_BUDGET_SECONDS", "20.0"))
+
+    def time_left():
+        return time_budget - (time.monotonic() - started)
+
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     client = PolymarketClient(Config)
 
@@ -983,7 +1008,11 @@ def run_mlb_track_results():
         return {"status": "no_open_signals"}
 
     resolved = []
+    checked = 0
     for sig in open_signals:
+        if time_left() < 1.0:
+            break
+        checked += 1
         # NUEVO (06/09/2026): mismo mecanismo de stop-loss que
         # run_weather_track_results -- ver comentario ahí. Se chequea
         # antes de gastar la llamada a fetch_game_result.
@@ -1041,7 +1070,11 @@ def run_mlb_track_results():
             "final_score": f"{result['away_score']}-{result['home_score']} (visita-local)",
         })
 
-    return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
+    return {
+        "status": "ok", "resolved": resolved,
+        "still_open": len(open_signals) - len(resolved),
+        "skipped_no_time": len(open_signals) - checked,
+    }
 
 
 async def _mlb_track_results_endpoint(request: Request):
