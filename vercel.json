@@ -1,6 +1,6 @@
 {
   "functions": {
-    "app.py": { "maxDuration": 25 }
+    "app.py": { "maxDuration": 45 }
   },
   "crons": [
     { "path": "/api/cycle", "schedule": "0 12 * * *" }
