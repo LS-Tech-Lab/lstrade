@@ -282,11 +282,23 @@ class SupabaseNotifyStateAdapter:
         self.db = db
         self.resend_cooldown_hours = resend_cooldown_hours
         self.min_score_increase_pct = min_score_increase_pct
+        self._recent_pairs_cache = None  # ver preload_recent_pairs()
+
+    def preload_recent_pairs(self, condition_ids):
+        """
+        2026-09-12: trae en UNA sola llamada las señales abiertas/recientes
+        para todos los condition_ids del ciclo, en vez de 2 queries por
+        candidato. Llamar una vez por ciclo antes de should_notify().
+        """
+        self._recent_pairs_cache = self.db.bulk_recent_polymarket_pairs(
+            condition_ids, self.resend_cooldown_hours
+        )
 
     def should_notify(self, condition_id, direction, score):
         return self.db.should_notify_polymarket(
             condition_id, direction, score,
             self.resend_cooldown_hours, self.min_score_increase_pct,
+            recent_pairs_cache=self._recent_pairs_cache,
         )
 
     def record_notified(self, condition_id, direction, score):
@@ -408,6 +420,12 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
             "markets_scanned": len(parsed_markets),
             "candidates_analyzed": analyzed,
         }
+
+    # 2026-09-12: una sola llamada a Supabase para todas las señales del ciclo,
+    # en vez de 2 por candidato (ver SupabaseNotifyStateAdapter.preload_recent_pairs
+    # y bulk_recent_polymarket_pairs en supabase_db.py).
+    if hasattr(state_store, "preload_recent_pairs"):
+        state_store.preload_recent_pairs([s["market"]["condition_id"] for s in signals])
 
     new_signals = [
         s for s in signals
