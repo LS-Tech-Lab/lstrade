@@ -6,6 +6,7 @@ Semana 3: Agrega validación de liquidez para evitar falsos positivos por slippa
 import argparse
 import logging
 import time
+import concurrent.futures  # 2026-09-12: prefetch de historiales en paralelo (ver check_open_signals)
 
 from config import Config
 from db import Database
@@ -45,16 +46,72 @@ def _safe_pnl_dollars(db, module, r_multiple, risk_pct):
         log.warning(f"[equity] no se pudo calcular pnl en $ de {module}: {e}")
         return None
 
-def check_open_signals(db, client, notifier, config):
-    open_signals = db.get_open_polymarket_signals()
+def check_open_signals(db, client, notifier, config, open_signals=None, time_budget_seconds=18, request_timeout=6):
+    """
+    2026-09-12: FIX de FUNCTION_INVOCATION_TIMEOUT (Vercel, maxDuration=25s
+    en vercel.json) -- esta función no tenía NINGÚN presupuesto de tiempo,
+    a diferencia de run_polymarket_cycle_serverless (polymarket_main.py),
+    que sí lo tiene desde la Semana 2. Con 11 señales abiertas, cada una
+    haciendo 1-3 llamadas de red secuenciales a Polymarket (price history,
+    y a veces clob_market/order_book_liquidity) más Telegram, el loop
+    entero podía superar fácil los 25s y Vercel mataba la invocación a la
+    mitad -- sin llegar siquiera a loguear un error propio (por eso el
+    500 se veía como un 504 de Supabase: la función murió en medio de
+    OTRA request, no por culpa de Supabase).
+
+    Dos cambios:
+    1. Se prefetchean los historiales de precio de TODAS las señales en
+       PARALELO (ThreadPoolExecutor, mismo patrón que la Semana 2 de
+       polymarket_main.py) en vez de uno por uno en el loop.
+    2. Se corta el loop si el tiempo se está agotando, dejando las señales
+       restantes para la PRÓXIMA corrida del cron -- es seguro porque
+       resolve_polymarket_signal() ya es idempotente (guard is_("outcome",
+       "null")) y las señales no resueltas simplemente se re-evalúan la
+       próxima vez, no se pierden.
+
+    `open_signals`: si se pasa (ver run_polymarket_resolve en app.py), evita
+    repetir la query que ya hizo el caller. Si no, se busca acá (compatible
+    con el uso desde main()/CLI).
+    """
+    started = time.monotonic()
+    def time_left():
+        return time_budget_seconds - (time.monotonic() - started)
+
+    if open_signals is None:
+        open_signals = db.get_open_polymarket_signals()
     if not open_signals:
         log.info("Sin señales de Polymarket pendientes de resultado.")
         return
 
     log.info(f"Revisando {len(open_signals)} señal(es) pendiente(s)...")
     min_liquidity = getattr(config, "POLYMARKET_MIN_EXIT_LIQUIDITY", 500.0)
-    
+
+    def fetch_history_for_signal(sig):
+        try:
+            return sig["id"], client.fetch_price_history(sig["token_id"], interval="1d", fidelity=60, timeout=request_timeout)
+        except Exception as e:
+            log.warning(f"Error obteniendo historial para señal {sig['id']}: {e}")
+            return sig["id"], []
+
+    history_by_signal_id = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_history_for_signal, sig): sig for sig in open_signals}
+        for future in concurrent.futures.as_completed(futures):
+            if time_left() < 3.0:
+                log.warning("Presupuesto de tiempo agotado durante el prefetch de historiales.")
+                break
+            sig_id, history = future.result()
+            history_by_signal_id[sig_id] = history
+
+    processed = 0
     for sig in open_signals:
+        if time_left() < 2.0:
+            log.warning(
+                f"Presupuesto de tiempo agotado -- procesadas {processed}/{len(open_signals)} señales. "
+                f"Las restantes se reintentan en la próxima corrida."
+            )
+            break
+        processed += 1
         # AUDITORÍA (03/09/2026, usuario reportó señales con pérdidas de
         # 60% hasta 100%): antes el chequeo de liquidez del order book iba
         # PRIMERO y, si estaba baja, hacía `continue` sin siquiera mirar el
@@ -86,7 +143,7 @@ def check_open_signals(db, client, notifier, config):
         # cruce de precio). interval="1d" trae ~24 puntos (uno por hora del
         # último día) incluso para tokens ilíquidos, así current_price casi
         # nunca es None salvo que el token no tenga NINGÚN trade en 24h.
-        history = client.fetch_price_history(sig["token_id"], interval="1d", fidelity=60)
+        history = history_by_signal_id.get(sig["id"], [])
         current_price = history[-1]["p"] if history else None
 
         hit_target = current_price is not None and current_price >= sig["target"]
