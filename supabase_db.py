@@ -14,6 +14,29 @@ def _now_iso():
     """Timestamps ISO 8601 nativos de PostgreSQL (timestamptz)."""
     return datetime.now(timezone.utc).isoformat()
 
+# 2026-09-12: los ciclos serverless (polymarket_cycle, etc.) hacen muchas
+# llamadas REST secuenciales a Supabase por invocación. Un 504 Gateway
+# Timeout transitorio en Supabase (ver logs de Vercel/Supabase del 12/09)
+# en CUALQUIERA de esas llamadas tumbaba el ciclo entero con 500, aunque
+# fuera un hiccup de un solo request. _with_retry reintenta con backoff
+# exponencial SOLO ante errores transitorios de gateway/red; errores reales
+# (datos inválidos, permisos, etc.) se propagan de inmediato.
+_TRANSIENT_MARKERS = ("504", "Gateway Timeout", "502", "503",
+                      "JSON could not be generated", "Connection", "timeout", "Timeout")
+
+def _with_retry(fn, retries=3, base_delay=0.4):
+    last_exc = None
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            if attempt < retries - 1 and any(m in str(e) for m in _TRANSIENT_MARKERS):
+                time.sleep(base_delay * (2 ** attempt))
+                continue
+            raise
+    raise last_exc
+
 class SupabaseDatabase:
     def __init__(self, url, key):
         self.client = create_client(url, key)
@@ -136,11 +159,11 @@ class SupabaseDatabase:
         return (total_risk / equity) * 100 if equity > 0 else 0.0
 
     def get_state(self, key, default=None):
-        res = self.client.table("bot_state").select("value").eq("key", key).execute()
+        res = _with_retry(lambda: self.client.table("bot_state").select("value").eq("key", key).execute())
         return res.data[0]["value"] if res.data else default
 
     def set_state(self, key, value):
-        self.client.table("bot_state").upsert({"key": key, "value": str(value)}).execute()
+        _with_retry(lambda: self.client.table("bot_state").upsert({"key": key, "value": str(value)}).execute())
 
     def log_decision(self, symbol, signal, risk_report, plan, decision, order_detail=None):
         self.client.table("decisions").insert({
@@ -302,7 +325,7 @@ class SupabaseDatabase:
         return result
 
     def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None):
-        self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "score": score, "confidence": confidence, "ts_signaled": _now_iso()}).execute()
+        _with_retry(lambda: self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "score": score, "confidence": confidence, "ts_signaled": _now_iso()}).execute())
 
     def get_open_polymarket_signals(self):
         return self.client.table("polymarket_signals").select("*").is_("outcome", "null").execute().data or []
@@ -577,19 +600,47 @@ class SupabaseDatabase:
         condiciones de carrera (race conditions) entre múltiples instancias de Vercel.
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        res = self.client.table("polymarket_signals").select("id").eq("condition_id", condition_id).eq("direction", direction).is_("outcome", "null").gte("ts_signaled", cutoff).limit(1).execute()
+        res = _with_retry(lambda: self.client.table("polymarket_signals").select("id")
+                           .eq("condition_id", condition_id).eq("direction", direction)
+                           .is_("outcome", "null").gte("ts_signaled", cutoff).limit(1).execute())
         return bool(res.data)
 
-    def should_notify_polymarket(self, condition_id, direction, score, resend_cooldown_hours=6.0, min_score_increase_pct=0.20):
-        # 1. Bloqueo primario: ¿Ya existe una señal ABIERTA reciente para esta dirección?
-        if self.has_recent_polymarket_signal(condition_id, direction, resend_cooldown_hours):
-            return False
-        
-        # 2. Bloqueo anti-flip-flop: ¿Se notificó la dirección OPUESTA recientemente?
-        # (Evita que el bot mande YES y luego NO para el mismo mercado en poco tiempo)
+    def bulk_recent_polymarket_pairs(self, condition_ids, hours=6.0):
+        """
+        2026-09-12: versión en lote de has_recent_polymarket_signal.
+        Antes should_notify_polymarket disparaba 2 queries (dirección propia +
+        opuesta) POR CADA candidato de un ciclo -- con ~10-15 candidatos por
+        ciclo eso son 20-30 round trips secuenciales a Supabase, y bastaba que
+        UNO tuviera un 504 transitorio para tumbar el ciclo entero.
+        Esta versión trae en UNA sola llamada todas las señales abiertas y
+        recientes para el set de condition_ids del ciclo, y arma un set de
+        pares (condition_id, direction) para lookup en memoria O(1).
+        """
+        if not condition_ids:
+            return set()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        res = _with_retry(lambda: self.client.table("polymarket_signals").select("condition_id,direction")
+                           .in_("condition_id", list(set(condition_ids)))
+                           .is_("outcome", "null").gte("ts_signaled", cutoff).execute())
+        return {(row["condition_id"], row["direction"]) for row in (res.data or [])}
+
+    def should_notify_polymarket(self, condition_id, direction, score, resend_cooldown_hours=6.0,
+                                  min_score_increase_pct=0.20, recent_pairs_cache=None):
+        # 1 y 2. Bloqueo primario (misma dirección) + anti-flip-flop (dirección opuesta).
+        # Si se pasó recent_pairs_cache (ver bulk_recent_polymarket_pairs), se resuelve
+        # en memoria sin ir a la red; si no, cae al comportamiento anterior por
+        # compatibilidad (callers que aún no arman el cache).
         opposite = "YES" if direction == "NO" else "NO"
-        if self.has_recent_polymarket_signal(condition_id, opposite, resend_cooldown_hours):
-            return False
+        if recent_pairs_cache is not None:
+            if (condition_id, direction) in recent_pairs_cache:
+                return False
+            if (condition_id, opposite) in recent_pairs_cache:
+                return False
+        else:
+            if self.has_recent_polymarket_signal(condition_id, direction, resend_cooldown_hours):
+                return False
+            if self.has_recent_polymarket_signal(condition_id, opposite, resend_cooldown_hours):
+                return False
 
         # 3. Chequeo secundario de estado en caché (para lógica de score y compatibilidad)
         # FIX: Ahora la clave INCLUYE la dirección para evitar colisiones YES/NO.
