@@ -189,6 +189,32 @@ class SupabaseDatabase:
             "trend_align": snapshot.get("trend_align"), "trend_bias": snapshot.get("trend_bias"),
         }).execute())
 
+    def record_indicator_snapshots(self, snapshots):
+        """AUDITORÍA (12/09/2026): run_cycle() en app.py llamaba a
+        record_indicator_snapshot() una vez POR SYMBOL dentro del loop --
+        con SYMBOLS largo (8 en producción, no los 2 del default) eso son
+        8 POST secuenciales a Supabase por invocación, ~0.4-0.6s cada uno
+        SIN contar reintentos si Supabase tiene un 504 transitorio en medio
+        (ver logs de Vercel/Supabase del 12/09, timeout de la función a los
+        25s con exactamente ese patrón: 8 inserts uno por uno al final del
+        ciclo). Este método reemplaza esas N llamadas por UNA sola con un
+        insert de lista (soportado nativamente por PostgREST/supabase-py),
+        recibiendo `snapshots` como la misma lista de tuplas (symbol,
+        snapshot) que run_cycle() ya arma para _maybe_send_heartbeat(). No
+        elimina el riesgo de que un 504 puntual de Supabase tumbe el ciclo,
+        pero sí baja de N round-trips a 1 el costo fijo de esta parte del
+        presupuesto de 25s. record_indicator_snapshot() (singular) se deja
+        intacto por compatibilidad con cualquier otro caller futuro."""
+        if not snapshots:
+            return
+        rows = [{
+            "symbol": symbol, "ts": _now_iso(), "price": snapshot.get("price"), "rsi": snapshot.get("rsi"),
+            "atr_pct": snapshot.get("atr_pct"), "volume_ratio": snapshot.get("volume_ratio"),
+            "volatility": snapshot.get("volatility"), "momentum": snapshot.get("momentum"),
+            "trend_align": snapshot.get("trend_align"), "trend_bias": snapshot.get("trend_bias"),
+        } for symbol, snapshot in snapshots]
+        _with_retry(lambda: self.client.table("indicator_snapshots").insert(rows).execute())
+
     def count_open_trades_by_direction(self, direction):
         res = _with_retry(lambda: self.client.table("open_trades").select("id", count="exact").eq("direction", direction).execute())
         return res.count or 0
