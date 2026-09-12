@@ -161,9 +161,42 @@ def fetch_game_result(game_pk, timeout=DEFAULT_TIMEOUT):
     }
 
 HOME_FIELD_EDGE = 0.04       # ver AUDITORÍA arriba -- sin calibrar
-PITCHER_ERA_SCALE = 0.10     # cuánta prob. mueve 1.0 de diferencia de ERA -- sin calibrar
+
+# AUDITORÍA (12/09/2026, sesión con Claude a partir del panel de MLB
+# mostrando 26.1% de acierto / calibración invertida en 60-90%): se aisló
+# con datos reales de Supabase cuál de los dos componentes (pitcher_edge
+# vs. el log5 de win% de equipo) explica más el exceso de confianza.
+#
+# 1) Sobre las 31 señales pre-clip con my_prob>=60% agrupadas por qué tan
+#    extremo estaba pitcher_edge: el grupo con pitcher_edge en su techo
+#    (±0.15, n=8) tuvo 0% de acierto real con 76.0% de confianza promedio
+#    -- 8 de 8 perdidas. El grupo con pitcher_edge≈0 (n=18) también estuvo
+#    mal (27.8% real contra 69.4% dicho), pero no tan extremo.
+# 2) Contrafactual sobre las 22 señales con componentes guardados
+#    (07/09 en adelante): recalculando my_prob SIN pitcher_edge (solo
+#    log5 + localía), el Brier score mejora de 0.388 a 0.298 (~23% mejor)
+#    -- confirma que pitcher_edge es el mayor contribuyente individual al
+#    exceso de confianza, aunque no el único (0.298 sigue lejos de 0.25).
+#
+# Lectura: con MIN_INNINGS_FOR_ERA=15 el ERA de temporada de un probable
+# puede estar dominado por 1-2 salidas atípicas, y además esa ERA ya está
+# parcialmente reflejada en home_win_pct/away_win_pct (un equipo con buena
+# rotación tiende a ganar más en la temporada) -- pitcher_edge puede estar
+# contando dos veces la misma señal de "este equipo es bueno" en vez de
+# aportar información independiente, y encima con más ruido.
+# Se reduce el impacto (no se elimina -- SÍ hay señal real de "quién
+# pitchea hoy", solo hay que exigirle más muestra y pesar menos su cola):
+# MIN_INNINGS_FOR_ERA sube a 30 (ERA más confiable antes de usarla) y
+# PITCHER_ERA_SCALE/el techo de pitcher_edge() bajan a la mitad. Revisar
+# de nuevo con la próxima tanda de señales resueltas (idealmente 40-50
+# más) para confirmar si esto ya corrige el Brier hacia 0.25 o si hace
+# falta seguir bajando -- o mirar también SEASON_FORM_WEIGHT, que la
+# contrafactual de arriba muestra que tampoco está limpio del todo
+# (log5+localía solos siguen en Brier 0.298, no 0.25).
+PITCHER_ERA_SCALE = 0.05     # AUDITORÍA 12/09/2026 arriba -- bajado de 0.10
+PITCHER_EDGE_CAP = 0.08      # AUDITORÍA 12/09/2026 arriba -- bajado de 0.15 (antes hardcodeado en pitcher_edge())
 SEASON_FORM_WEIGHT = 0.7     # peso de win% de temporada vs. últimos-10 en blended_win_pct
-MIN_INNINGS_FOR_ERA = 15.0   # por debajo de esto, ERA de pocas salidas es ruido
+MIN_INNINGS_FOR_ERA = 30.0   # AUDITORÍA 12/09/2026 arriba -- subido de 15.0 (ERA de pocas salidas es ruido)
 MOMENTUM_DISAGREEMENT_THRESHOLD = 0.08  # ver price_disagrees_with_model() -- sin calibrar
 
 # id MLB -> (nombre completo, nombre corto/"teamName", abreviatura)
@@ -412,15 +445,16 @@ def log5(pct_a, pct_b):
     return (pct_a - pct_a * pct_b) / denom
 
 
-def pitcher_edge(era_a, era_b, scale=PITCHER_ERA_SCALE):
+def pitcher_edge(era_a, era_b, scale=PITCHER_ERA_SCALE, cap=PITCHER_EDGE_CAP):
     """Diferencia de ERA entre los dos probables -> ajuste de probabilidad
-    a favor de A. Positivo si A tiene mejor (más bajo) ERA. Cap a ±0.15
+    a favor de A. Positivo si A tiene mejor (más bajo) ERA. Cap a ±cap
+    (ver PITCHER_EDGE_CAP y AUDITORÍA 12/09/2026 junto a PITCHER_ERA_SCALE)
     para que un mismatch de ERA extremo no domine por sí solo toda la
     estimación -- mismo espíritu que el cap de sanidad al final de
     estimate_win_probability."""
     if era_a is None or era_b is None:
         return 0.0
-    return max(-0.15, min(0.15, (era_b - era_a) * scale))
+    return max(-cap, min(cap, (era_b - era_a) * scale))
 
 
 def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id, season,
