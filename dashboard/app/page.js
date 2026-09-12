@@ -1239,18 +1239,65 @@ function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
   );
 }
 
+// Fecha de corte legible en español ("9 de septiembre de 2026"), derivada
+// de mlb_fix_cutoff (ver MLB_CALIBRATION_FIX_CUTOFF en route.js) en vez de
+// hardcodeada acá, para que si el backend mueve el corte el texto no quede
+// desactualizado.
+function formatCutoffEs(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" });
+}
+
+// NUEVO (12/09/2026, pedido del usuario tras ver el panel con 26.1% de
+// acierto / calibración invertida): esos números mezclaban señales de
+// ANTES y DESPUÉS del fix de calibración del 09/09 (MLB_PROB_CLIP_MIN/MAX,
+// ver AUDITORÍA junto a MLB_CALIBRATION_FIX_CUTOFF en route.js) en un solo
+// promedio, así que no se podía saber si el clip realmente arregló algo
+// hacia adelante. Se separa en dos bloques con las mismas tarjetas de
+// siempre (PerformanceCard/CalibrationCard, sin cambios) para que
+// "histórico" y "post-fix" se puedan leer aparte.
 function MlbTab({ data }) {
+  const cutoffLabel = formatCutoffEs(data.mlb_fix_cutoff);
   return (
     <>
       <PlainSummary halted={false} stats={data.mlb_stats} label="MLB" />
-      <PerformanceCard title="Performance — MLB (señales resueltas)"
-        subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal."
+
+      {cutoffLabel && (
+        <p className="card-subtitle" style={{ margin: "0 0 12px" }}>
+          El {cutoffLabel} se corrigió un sesgo del modelo que sobre-confiaba por encima
+          de 60% de probabilidad (ver auditoría de calibración). Las señales de antes y
+          después de esa fecha se muestran por separado abajo para poder confirmar si el
+          fix funcionó, además del combinado histórico.
+        </p>
+      )}
+
+      <PerformanceCard title="Performance — MLB (todas las señales resueltas, histórico)"
+        subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal. Incluye señales de antes y después del fix de calibración del 09/09 — ver desglose abajo."
         emptyMessage="Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real."
         statCards={buildMlbStatCards(data.mlb_stats)} />
-      <CalibrationCard title="Calibración — MLB"
+      <CalibrationCard title="Calibración — MLB (todas las señales, histórico)"
         subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces ganó de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
         emptyMessage="Todavía no hay suficientes señales de MLB con resultado real (ganó/perdió) para calibrar — los stop-loss y partidos cancelados no cuentan acá porque no sabemos si el lado elegido hubiera ganado."
         calibration={data.mlb_calibration} />
+
+      <PerformanceCard title={`Performance — MLB (antes del ${cutoffLabel || "fix"}, sin recorte de probabilidad)`}
+        subtitle="Señales generadas con my_prob sin recortar a 40-60% — el período que mostró la calibración rota."
+        emptyMessage="Sin señales de MLB resueltas en este período."
+        statCards={buildMlbStatCards(data.mlb_stats_pre_fix)} />
+      <CalibrationCard title={`Calibración — MLB (antes del ${cutoffLabel || "fix"})`}
+        subtitle="Mismo cálculo que arriba, solo con señales generadas antes del fix."
+        emptyMessage="Sin señales de MLB resueltas en este período."
+        calibration={data.mlb_calibration_pre_fix} />
+
+      <PerformanceCard title={`Performance — MLB (desde el ${cutoffLabel || "fix"}, con recorte 40-60%)`}
+        subtitle="Señales generadas con my_prob ya recortado a la banda 40-60% validada empíricamente."
+        emptyMessage="Todavía no hay señales de MLB resueltas generadas después del fix."
+        statCards={buildMlbStatCards(data.mlb_stats_post_fix)} />
+      <CalibrationCard title={`Calibración — MLB (desde el ${cutoffLabel || "fix"})`}
+        subtitle="Mismo cálculo que arriba, solo con señales generadas después del fix. Si el clip funcionó, esta tabla no debería tener buckets fuera de 40-60%."
+        emptyMessage="Todavía no hay suficientes señales de MLB resueltas generadas después del fix para calibrar."
+        calibration={data.mlb_calibration_post_fix} />
+
       <div className="card">
         <h2>Señales abiertas ({data.mlb_open?.length || 0})</h2>
         <p className="card-subtitle">Partidos de hoy donde el modelo (log5 + localía + pitchers probables) encontró ventaja contra el precio de Polymarket.</p>
