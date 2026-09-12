@@ -449,7 +449,10 @@ def run_polymarket_resolve():
     client = PolymarketClient(config)
     notifier = TelegramNotifier(config)
     open_before = db.get_open_polymarket_signals()
-    check_open_signals(db, client, notifier, config)
+    # 2026-09-12: se pasa open_before para que check_open_signals no repita
+    # la misma query (antes se veían 2 GET idénticos a polymarket_signals
+    # en los logs de Vercel, uno acá y otro adentro de check_open_signals).
+    check_open_signals(db, client, notifier, config, open_signals=open_before)
     open_after = db.get_open_polymarket_signals()
     return {
         "status": "ok",
