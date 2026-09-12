@@ -1115,7 +1115,30 @@ def run_weather_track_results():
     seguía bajo en la primera hora (que para un long-shot pasa casi
     siempre, termine ganando o no). Fix: usar fetch_market_by_condition_id(),
     que trae el campo `closed` real de la Gamma API — solo se resuelve la
-    señal cuando el mercado efectivamente cerró y liquidó."""
+    señal cuando el mercado efectivamente cerró y liquidó.
+
+    AUDITORÍA (12/09/2026): mismo problema encontrado y arreglado hoy en
+    run_mlb_track_results() (ver comentario ahí, timeout real en
+    producción con 14 señales de MLB) -- esta función hace el mismo tipo
+    de loop sin presupuesto de tiempo, con hasta 3 llamadas de red por
+    señal abierta con stop (fetch_order_book_snapshot timeout=15s,
+    fetch_clob_market timeout=15s, fetch_station_max_today con
+    DEFAULT_TIMEOUT=6s) y ninguna se cortaba si el ciclo se quedaba sin
+    presupuesto. Todavía no dio timeout en producción (menos señales de
+    clima abiertas que las 14 de MLB que sí lo gatillaron), pero es el
+    mismo riesgo latente -- se aplica preventivamente el mismo time_left()
+    que ya usan run_cycle() y run_mlb_track_results(). Bonus: se conecta
+    time_left_fn a fetch_station_max_today(), que YA soporta ese parámetro
+    (weather_signal_engine.py lo usa al generar la señal original, vía
+    _capped_timeout) pero no estaba conectado acá -- ahora también acorta
+    su propio timeout interno si queda poco presupuesto, en vez de arrancar
+    una llamada de hasta 6s fijos sin importar cuánto quede."""
+    started = time.monotonic()
+    time_budget = float(os.environ.get("WEATHER_TRACK_TIME_BUDGET_SECONDS", "20.0"))
+
+    def time_left():
+        return time_budget - (time.monotonic() - started)
+
     config = Config
     db = SupabaseDatabase(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     client = PolymarketClient(config)
@@ -1125,7 +1148,11 @@ def run_weather_track_results():
         return {"status": "no_open_signals"}
 
     resolved = []
+    checked = 0
     for sig in open_signals:
+        if time_left() < 1.0:
+            break
+        checked += 1
         condition_id = sig.get("condition_id")
         if not condition_id:
             continue
@@ -1245,7 +1272,7 @@ def run_weather_track_results():
                 station = station_by_icao(station_icao)
                 if station:
                     target_date = date.fromisoformat(target_date_str)
-                    station_max = fetch_station_max_today(station_icao, station, config, target_date=target_date)
+                    station_max = fetch_station_max_today(station_icao, station, config, target_date=target_date, time_left_fn=time_left)
                     if station_max:
                         actual_high_f = station_max.get("max_so_far_f")
             except Exception:
@@ -1259,7 +1286,11 @@ def run_weather_track_results():
         _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], outcome, signal_id=sig["id"], signal_table="weather_signals")
         resolved.append({"condition_id": condition_id, "outcome": outcome, "actual_high_f": actual_high_f})
 
-    return {"status": "ok", "resolved": resolved, "still_open": len(open_signals) - len(resolved)}
+    return {
+        "status": "ok", "resolved": resolved,
+        "still_open": len(open_signals) - len(resolved),
+        "skipped_no_time": len(open_signals) - checked,
+    }
 
 async def _weather_track_results_endpoint(request: Request):
     expected = os.environ.get("CRON_SECRET")
