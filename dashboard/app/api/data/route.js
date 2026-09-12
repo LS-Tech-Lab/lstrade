@@ -294,6 +294,51 @@ function mlbReturnPct(row) {
   return -100; // "loss"
 }
 
+// AUDITORÍA (12/09/2026, pedido del usuario tras ver el panel de MLB con
+// 26.1% de acierto / Brier 0.321 / calibración invertida en 60-90%): esos
+// números son reales, pero mlb_stats y mlb_calibration promediaban TODO
+// el histórico de mlb_signals sin distinguir de cuándo es cada señal. El
+// 09/09/2026 (commit 7010fa9, "Introduce MLB_PROB_CLIP_MIN and
+// MLB_PROB_CLIP_MAX") se recortó my_prob a la banda 40-60% validada
+// empíricamente ANTES de generar cada señal nueva (ver AUDITORÍA larga en
+// Config.MLB_PROB_CLIP_MIN/MAX, config.py) -- pero my_prob se guarda una
+// sola vez, al momento de generar la señal, y nunca se recalcula
+// retroactivamente. Entonces las señales de ANTES del 09/09 siguen en la
+// tabla con su my_prob sin recortar (de ahí que la calibración muestre
+// buckets de 60-90% pese al clip ya estar activo), y el panel las sigue
+// promediando junto con las de DESPUÉS como si fueran una sola muestra
+// homogénea -- no hay forma de ver, mirando el panel, si el clip
+// realmente arregló el comportamiento hacia adelante o si el modelo
+// sigue roto también dentro de la banda recortada.
+// Corte elegido: el timestamp exacto del commit que introdujo el clip
+// (19:08:29 -04:00, hora del commit -- no se tiene el timestamp exacto
+// del deploy a Vercel, pero al ser deploy automático en push suele ir
+// pegado al commit en minutos). Se filtra por ts_signaled (momento en que
+// se calculó my_prob), no por ts_resolved (momento en que se supo el
+// resultado) -- lo que cambió fue la lógica de generación, no la de
+// resolución.
+const MLB_CALIBRATION_FIX_CUTOFF = "2026-09-09T19:08:29-04:00";
+
+// Divide señales de MLB resueltas en las generadas antes/después del
+// cutoff de arriba -- ver esa auditoría para el porqué. `ts_signaled`
+// ausente o no parseable se trata como "antes del fix" (conservador: no
+// se le atribuye al modelo corregido una señal de la que no se sabe
+// cuándo se generó).
+function splitMlbByFixCutoff(resolvedSignals, cutoff = MLB_CALIBRATION_FIX_CUTOFF) {
+  const cutoffMs = new Date(cutoff).getTime();
+  const preFix = [];
+  const postFix = [];
+  for (const r of resolvedSignals || []) {
+    const ts = r.ts_signaled ? new Date(r.ts_signaled).getTime() : NaN;
+    if (!Number.isNaN(ts) && ts >= cutoffMs) {
+      postFix.push(r);
+    } else {
+      preFix.push(r);
+    }
+  }
+  return { preFix, postFix };
+}
+
 function computeMlbStats(resolvedSignals) {
   // FIX (07/09/2026): se agregó el outcome "void" (partido cancelado sin
   // resultado jugado, ver run_mlb_track_results en app.py) después de que
@@ -516,6 +561,8 @@ export async function GET() {
     const resolvedSignals = polymarketResolvedRes.error ? [] : (polymarketResolvedRes.data || []);
     const weatherResolved = weatherResolvedRes.error ? [] : (weatherResolvedRes.data || []);
     const mlbResolved = mlbResolvedRes.error ? [] : (mlbResolvedRes.data || []);
+    // Ver AUDITORÍA (12/09/2026) sobre MLB_CALIBRATION_FIX_CUTOFF más arriba.
+    const { preFix: mlbResolvedPreFix, postFix: mlbResolvedPostFix } = splitMlbByFixCutoff(mlbResolved);
     // "Core" = sin las categorías excluidas (ver EXCLUDED_CATEGORIES) — es
     // lo que se muestra como indicador principal para que una categoría ya
     // identificada como mala no tape el desempeño real del resto.
@@ -575,6 +622,17 @@ export async function GET() {
       mlb_stats: mlbResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
         : computeMlbStats(mlbResolved),
       mlb_calibration: mlbResolvedRes.error ? { n: 0, buckets: [] } : computeMlbCalibration(mlbResolved),
+      // NUEVO (12/09/2026): mismo dato que mlb_stats/mlb_calibration de
+      // arriba, pero separado en antes/después del fix de calibración del
+      // 09/09 (MLB_PROB_CLIP_MIN/MAX) -- ver AUDITORÍA junto a
+      // MLB_CALIBRATION_FIX_CUTOFF. Permite confirmar si el clip realmente
+      // corrigió el comportamiento hacia adelante en vez de seguir viendo
+      // un promedio contaminado por el batch de señales pre-fix.
+      mlb_fix_cutoff: MLB_CALIBRATION_FIX_CUTOFF,
+      mlb_stats_pre_fix: computeMlbStats(mlbResolvedPreFix),
+      mlb_stats_post_fix: computeMlbStats(mlbResolvedPostFix),
+      mlb_calibration_pre_fix: computeMlbCalibration(mlbResolvedPreFix),
+      mlb_calibration_post_fix: computeMlbCalibration(mlbResolvedPostFix),
       weather_calibration: weatherResolvedRes.error ? { n: 0, buckets: [] } : computeWeatherCalibration(weatherResolved),
       crypto_stats_by_confidence: closedTradesRes.error ? {} : computeStatsByConfidence(closedTradesRes.data || []),
       polymarket_stats_by_confidence: polymarketResolvedRes.error ? {} : computePolymarketStatsByConfidence(resolvedSignalsCore),
