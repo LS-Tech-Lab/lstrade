@@ -51,17 +51,17 @@ class SupabaseDatabase:
         # historial de cripto de base 10000 a base 100) y los métodos
         # apply_binary_signal_pnl/apply_r_multiple_pnl más abajo, que son
         # los que alimentan las series de clima/Polymarket/MLB.
-        self.client.table("equity_history").insert({"ts": _now_iso(), "equity": equity, "module": module}).execute()
+        _with_retry(lambda: self.client.table("equity_history").insert({"ts": _now_iso(), "equity": equity, "module": module}).execute())
 
     def peak_equity(self, module="crypto"):
-        res = self.client.table("equity_history").select("equity").eq("module", module).order("equity", desc=True).limit(1).execute()
+        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).order("equity", desc=True).limit(1).execute())
         return res.data[0]["equity"] if res.data else None
 
     def last_equity(self, module="crypto"):
         """Último equity registrado (no el pico histórico) PARA ESE MÓDULO.
         Es el que hay que usar como base para aplicar el P&L de un trade
         que se acaba de cerrar en ese mismo módulo."""
-        res = self.client.table("equity_history").select("equity").eq("module", module).order("ts", desc=True).limit(1).execute()
+        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).order("ts", desc=True).limit(1).execute())
         return res.data[0]["equity"] if res.data else None
 
     def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None,
@@ -154,7 +154,7 @@ class SupabaseDatabase:
 
     def current_exposure_pct(self, equity):
         cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        res = self.client.table("decisions").select("plan_detail").in_("decision", ["approved", "auto_executed"]).gte("ts", cutoff).execute()
+        res = _with_retry(lambda: self.client.table("decisions").select("plan_detail").in_("decision", ["approved", "auto_executed"]).gte("ts", cutoff).execute())
         total_risk = sum((row.get("plan_detail") or {}).get("risk_amount", 0.0) for row in res.data or [])
         return (total_risk / equity) * 100 if equity > 0 else 0.0
 
@@ -166,35 +166,39 @@ class SupabaseDatabase:
         _with_retry(lambda: self.client.table("bot_state").upsert({"key": key, "value": str(value)}).execute())
 
     def log_decision(self, symbol, signal, risk_report, plan, decision, order_detail=None):
-        self.client.table("decisions").insert({
+        _with_retry(lambda: self.client.table("decisions").insert({
             "ts": _now_iso(), "symbol": symbol,
             "signal_type": signal.get("type") if signal else None,
             "direction": signal.get("direction") if signal else None,
             "confidence": signal.get("confidence") if signal else None,
             "risk_pass": bool(risk_report["pass"]) if risk_report else None,
             "risk_detail": risk_report, "plan_detail": plan, "decision": decision, "order_detail": order_detail,
-        }).execute()
+        }).execute())
 
     def recent_decisions(self, limit=20):
         return self.client.table("decisions").select("*").order("ts", desc=True).limit(limit).execute().data
 
     def record_indicator_snapshot(self, symbol, snapshot):
-        self.client.table("indicator_snapshots").insert({
+        # 2026-09-12: se llama una vez POR SYMBOL dentro de un loop en run_cycle()
+        # (app.py) -- mismo patrón de riesgo que tumbó polymarket_cycle, aunque
+        # con SYMBOLS típicamente corto (2 por default). Retry por las dudas.
+        _with_retry(lambda: self.client.table("indicator_snapshots").insert({
             "symbol": symbol, "ts": _now_iso(), "price": snapshot.get("price"), "rsi": snapshot.get("rsi"),
             "atr_pct": snapshot.get("atr_pct"), "volume_ratio": snapshot.get("volume_ratio"),
             "volatility": snapshot.get("volatility"), "momentum": snapshot.get("momentum"),
             "trend_align": snapshot.get("trend_align"), "trend_bias": snapshot.get("trend_bias"),
-        }).execute()
+        }).execute())
 
     def count_open_trades_by_direction(self, direction):
-        res = self.client.table("open_trades").select("id", count="exact").eq("direction", direction).execute()
+        res = _with_retry(lambda: self.client.table("open_trades").select("id", count="exact").eq("direction", direction).execute())
         return res.count or 0
 
     def get_open_trades(self):
-        return self.client.table("open_trades").select("*").execute().data or []
+        res = _with_retry(lambda: self.client.table("open_trades").select("*").execute())
+        return res.data or []
 
     def has_open_trade_for_symbol(self, symbol):
-        res = self.client.table("open_trades").select("id", count="exact").eq("symbol", symbol).limit(1).execute()
+        res = _with_retry(lambda: self.client.table("open_trades").select("id", count="exact").eq("symbol", symbol).limit(1).execute())
         return (res.count or 0) > 0
 
     # AUDITORÍA (08/09/2026): setup_type/confidence/score agregados como
@@ -207,12 +211,16 @@ class SupabaseDatabase:
         if stop_distance is None:
             stop_distance = abs(entry_price - stop_price)
         try:
-            self.client.table("open_trades").insert({
+            # 2026-09-12: _with_retry solo reintenta 504/502/503/timeout --
+            # una violación de unicidad (23505, ver abajo) no matchea esos
+            # marcadores y se re-lanza de inmediato, así que el manejo de
+            # duplicados sigue funcionando igual.
+            _with_retry(lambda: self.client.table("open_trades").insert({
                 "symbol": symbol, "direction": direction, "entry_price": entry_price, "current_stop": stop_price,
                 "target_price": target_price, "position_size": position_size, "order_id": order_id,
                 "ts_opened": _now_iso(), "stop_distance": stop_distance,
                 "setup_type": setup_type, "confidence": confidence, "score": score,
-            }).execute()
+            }).execute())
             return True
         except Exception as e:
             # FIX (auditoría 02/09/2026): uq_open_trades_symbol (schema.sql)
@@ -231,27 +239,30 @@ class SupabaseDatabase:
             raise
 
     def update_trade_stop(self, trade_id, new_stop_price, new_order_id=None):
+        # 2026-09-12: llamado una vez POR POSICIÓN ABIERTA dentro del loop de
+        # PositionManager.manage_open_positions() -- mismo patrón de riesgo
+        # que polymarket_cycle si hay varias posiciones abiertas a la vez.
         update = {"current_stop": new_stop_price}
         if new_order_id is not None:
             update["order_id"] = new_order_id
-        self.client.table("open_trades").update(update).eq("id", trade_id).execute()
+        _with_retry(lambda: self.client.table("open_trades").update(update).eq("id", trade_id).execute())
 
     def close_trade_with_outcome(self, trade, exit_price, outcome):
         """Devuelve (r_multiple, pnl_dollars) — o (False, None) si la fila
         ya no estaba (otro handler la cerró primero). AUDITORÍA (11/09/2026):
         ver mismo cambio y motivo en db.py."""
-        deleted = self.client.table("open_trades").delete().eq("id", trade["id"]).execute()
+        deleted = _with_retry(lambda: self.client.table("open_trades").delete().eq("id", trade["id"]).execute())
         if not deleted.data:
             return False, None
         entry, direction, stop_distance = trade["entry_price"], trade["direction"], trade.get("stop_distance")
         r_multiple = ((exit_price - entry) / stop_distance) * (1 if direction == "LONG" else -1) if stop_distance else None
-        self.client.table("closed_trades").insert({
+        _with_retry(lambda: self.client.table("closed_trades").insert({
             "symbol": trade["symbol"], "direction": direction, "entry_price": entry, "exit_price": exit_price,
             "outcome": outcome, "r_multiple": r_multiple, "ts_opened": trade["ts_opened"], "ts_closed": _now_iso(),
             # AUDITORÍA (08/09/2026): copiados desde open_trades (get_open_trades
             # hace SELECT *, así que ya vienen en `trade` si la columna existe).
             "setup_type": trade.get("setup_type"), "confidence": trade.get("confidence"), "score": trade.get("score"),
-        }).execute()
+        }).execute())
 
         # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
         # equity de modo papel se quedaba pegado en el pico histórico sin
@@ -328,10 +339,14 @@ class SupabaseDatabase:
         _with_retry(lambda: self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "score": score, "confidence": confidence, "ts_signaled": _now_iso()}).execute())
 
     def get_open_polymarket_signals(self):
-        return self.client.table("polymarket_signals").select("*").is_("outcome", "null").execute().data or []
+        res = _with_retry(lambda: self.client.table("polymarket_signals").select("*").is_("outcome", "null").execute())
+        return res.data or []
 
     def resolve_polymarket_signal(self, signal_id, exit_price, outcome):
-        res = self.client.table("polymarket_signals").update({"outcome": outcome, "exit_price": exit_price, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute()
+        # 2026-09-12: llamado una vez POR SEÑAL ABIERTA dentro del loop de
+        # check_open_signals() (polymarket_track_results.py) -- mismo patrón
+        # de riesgo que tumbó polymarket_cycle.
+        res = _with_retry(lambda: self.client.table("polymarket_signals").update({"outcome": outcome, "exit_price": exit_price, "ts_resolved": _now_iso()}).eq("id", signal_id).is_("outcome", "null").execute())
         return bool(res.data)
 
     def polymarket_stats_summary(self):
@@ -420,10 +435,11 @@ class SupabaseDatabase:
     # resolve_weather_signal() más abajo para actual_high_f (el otro dato
     # que faltaba: el máximo real que terminó marcando el día).
     def record_weather_signal(self, condition_id, question, event_title, station_icao, my_prob, market_price, ev, center_estimate_f, sigma, yes_token_id, stop=None, target_date=None, trajectory_slope_f_per_hr=None):
-        self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "stop": stop, "target_date": target_date, "trajectory_slope_f_per_hr": trajectory_slope_f_per_hr, "ts_signaled": _now_iso()}).execute()
+        _with_retry(lambda: self.client.table("weather_signals").insert({"condition_id": condition_id, "question": question, "event_title": event_title, "station_icao": station_icao, "my_prob": my_prob, "market_price": market_price, "ev": ev, "center_estimate_f": center_estimate_f, "sigma": sigma, "yes_token_id": yes_token_id, "stop": stop, "target_date": target_date, "trajectory_slope_f_per_hr": trajectory_slope_f_per_hr, "ts_signaled": _now_iso()}).execute())
 
     def get_open_weather_signals(self):
-        return self.client.table("weather_signals").select("*").is_("outcome", "null").execute().data or []
+        res = _with_retry(lambda: self.client.table("weather_signals").select("*").is_("outcome", "null").execute())
+        return res.data or []
 
     def get_stopped_weather_condition_ids(self):
         """
@@ -441,7 +457,7 @@ class SupabaseDatabase:
         que el modelo todavía no absorbió -- no se vuelve a entrar al
         mismo bucket ese día.
         """
-        res = self.client.table("weather_signals").select("condition_id").eq("outcome", "stop").execute()
+        res = _with_retry(lambda: self.client.table("weather_signals").select("condition_id").eq("outcome", "stop").execute())
         return {r["condition_id"] for r in (res.data or [])}
 
     def count_weather_signals_for_event(self, station_icao, event_title):
@@ -465,13 +481,13 @@ class SupabaseDatabase:
         poner un tope duro de intentos por (estación, evento) sin importar
         si siguen abiertas o ya se resolvieron.
         """
-        res = (
+        res = _with_retry(lambda: (
             self.client.table("weather_signals")
             .select("id", count="exact")
             .eq("station_icao", station_icao)
             .eq("event_title", event_title)
             .execute()
-        )
+        ))
         return res.count or 0
 
     def resolve_weather_signal(self, signal_id, outcome, exit_price=None, actual_high_f=None):
@@ -489,7 +505,7 @@ class SupabaseDatabase:
             update["exit_price"] = exit_price
         if actual_high_f is not None:
             update["actual_high_f"] = actual_high_f
-        res = self.client.table("weather_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute()
+        res = _with_retry(lambda: self.client.table("weather_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute())
         return bool(res.data)
 
     def record_mlb_signal(self, condition_id, game_pk, question, home_team, away_team, direction,
@@ -508,10 +524,11 @@ class SupabaseDatabase:
         # generate_mlb_signal() (mlb_signal_engine.py). Guardado aparte de
         # my_prob (que ya viene recortado) para seguir midiendo
         # calibración fuera de 40-60% sin arriesgar plata en ella.
-        self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "home_win_pct": home_win_pct, "away_win_pct": away_win_pct, "era_home": era_home, "era_away": era_away, "pitcher_edge": pitcher_edge, "home_field_edge": home_field_edge, "raw_my_prob": raw_my_prob, "ts_signaled": _now_iso()}).execute()
+        _with_retry(lambda: self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "home_win_pct": home_win_pct, "away_win_pct": away_win_pct, "era_home": era_home, "era_away": era_away, "pitcher_edge": pitcher_edge, "home_field_edge": home_field_edge, "raw_my_prob": raw_my_prob, "ts_signaled": _now_iso()}).execute())
 
     def get_open_mlb_signals(self):
-        return self.client.table("mlb_signals").select("*").is_("outcome", "null").execute().data or []
+        res = _with_retry(lambda: self.client.table("mlb_signals").select("*").is_("outcome", "null").execute())
+        return res.data or []
 
     def resolve_mlb_signal(self, signal_id, outcome, exit_price=None):
         # NUEVO (06/09/2026): mismo agregado que resolve_weather_signal --
@@ -520,7 +537,7 @@ class SupabaseDatabase:
         update = {"outcome": outcome, "ts_resolved": _now_iso()}
         if exit_price is not None:
             update["exit_price"] = exit_price
-        res = self.client.table("mlb_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute()
+        res = _with_retry(lambda: self.client.table("mlb_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute())
         return bool(res.data)
        
     def weather_calibration_summary(self, bucket_size=0.1):
@@ -674,27 +691,28 @@ class SupabaseDatabase:
     # =========================================================================
 
     def create_pending_decision(self, message_id, symbol, signal, risk_report, plan):
-        self.client.table("pending_decisions").insert({"message_id": message_id, "ts": _now_iso(), "symbol": symbol, "signal": signal, "risk_report": risk_report, "plan": plan, "resolved": False}).execute()
+        _with_retry(lambda: self.client.table("pending_decisions").insert({"message_id": message_id, "ts": _now_iso(), "symbol": symbol, "signal": signal, "risk_report": risk_report, "plan": plan, "resolved": False}).execute())
 
     def get_pending_decision(self, message_id):
-        res = self.client.table("pending_decisions").select("*").eq("message_id", message_id).eq("resolved", False).execute()
+        res = _with_retry(lambda: self.client.table("pending_decisions").select("*").eq("message_id", message_id).eq("resolved", False).execute())
         return res.data[0] if res.data else None
 
     def expire_stale_pending_decisions(self, older_than_seconds):
         cutoff = datetime.now(timezone.utc).timestamp() - older_than_seconds
-        res = self.client.table("pending_decisions").select("*").eq("resolved", False).execute()
+        res = _with_retry(lambda: self.client.table("pending_decisions").select("*").eq("resolved", False).execute())
         to_expire = [r["message_id"] for r in (res.data or []) if (datetime.fromisoformat(r["ts"].replace('Z', '+00:00')).timestamp() if isinstance(r["ts"], str) else r["ts"]) < cutoff]
         if to_expire:
-            self.client.table("pending_decisions").update({"resolved": True}).in_("message_id", to_expire).execute()
+            _with_retry(lambda: self.client.table("pending_decisions").update({"resolved": True}).in_("message_id", to_expire).execute())
             return [r for r in (res.data or []) if r["message_id"] in to_expire]
         return []
 
     def claim_pending_decision(self, message_id):
-        res = self.client.table("pending_decisions").update({"resolved": True}).eq("message_id", message_id).eq("resolved", False).execute()
+        res = _with_retry(lambda: self.client.table("pending_decisions").update({"resolved": True}).eq("message_id", message_id).eq("resolved", False).execute())
         return res.data[0] if res.data else None
 
     def has_open_pending_decision(self):
-        return bool(self.client.table("pending_decisions").select("message_id").eq("resolved", False).limit(1).execute().data)
+        res = _with_retry(lambda: self.client.table("pending_decisions").select("message_id").eq("resolved", False).limit(1).execute())
+        return bool(res.data)
 
     def resolve_pending_decision(self, message_id):
-        self.client.table("pending_decisions").update({"resolved": True}).eq("message_id", message_id).execute()
+        _with_retry(lambda: self.client.table("pending_decisions").update({"resolved": True}).eq("message_id", message_id).execute())
