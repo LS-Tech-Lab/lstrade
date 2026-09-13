@@ -1210,8 +1210,15 @@ function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
           // salirse un poco por azar).
           const relevant = Math.abs(gapPts) > 15 && b.n >= 5;
           return (
-            <div className="calibration-row" key={b.range}>
-              <span>{b.range}</span>
+            <div className={`calibration-row${b.capped ? " calibration-row-capped" : ""}`} key={b.range}>
+              <span>
+                {b.range}
+                {/* AUDITORÍA (13/09/2026): estas filas no son una probabilidad
+                    orgánica del modelo, son señales topeadas por el clip (ver
+                    computeMlbCalibration en route.js) -- el aviso evita que se
+                    lean como si el modelo hubiera "dicho" un 60% real. */}
+                {b.capped && <span className="calibration-capped-note"> — no comparable con un bucket normal</span>}
+              </span>
               <span>{b.n}</span>
               <span className={relevant ? (gapPts < 0 ? "fail" : "ok") : ""}>
                 {(b.actual_freq * 100).toFixed(0)}%
