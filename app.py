@@ -213,7 +213,9 @@ def run_cycle():
             _touch_notification(db)
 
         if db.has_open_pending_decision():
-            equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity("crypto") or 100.0)
+            # AUDITORÍA (13/09/2026): fallback bajado de 100.0 a 20.0 -- ver
+            # mismo cambio más abajo en este archivo y en db.py/supabase_db.py.
+            equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity("crypto") or 20.0)
             dd_pct = risk_manager.update_equity_and_check_kill_switch(equity)
             _maybe_send_heartbeat(db, notifier, equity, dd_pct, [])
             return {"status": "waiting_for_human_approval"}
@@ -223,7 +225,11 @@ def run_cycle():
         # del usuario de arrancar el equity simulado de cripto en $100 (ver
         # migración que rescala el historial existente en equity_history y
         # el mismo cambio de default en close_trade_with_outcome, supabase_db.py).
-        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity("crypto") or 100.0)
+        # AUDITORÍA (13/09/2026): fallback bajado otra vez, de 100.0 a 20.0 --
+        # pedido del usuario de unificar los 4 módulos en la misma base de $20
+        # (ver migración que rescala x0.2 todo equity_history y los mismos
+        # cambios de default en db.py/supabase_db.py/main.py).
+        equity = exchange_client.fetch_equity() if config.LIVE_TRADING else (db.last_equity("crypto") or 20.0)
     except Exception as e:
         return {"status": "error", "detail": f"No se pudo obtener equity real del exchange: {e}"}
 
