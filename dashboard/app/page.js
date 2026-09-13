@@ -1183,6 +1183,14 @@ function MlbResolvedTable({ rows }) {
 // 08/09/2026, también Clima -- mismo cálculo que weather_calibration_summary()
 // en supabase_db.py, ahora conectado vía computeWeatherCalibration() en
 // route.js).
+// AUDITORÍA (13/09/2026, pedido del usuario): la tabla de calibración
+// (buckets de probabilidad apilados en filas) se estiraba mucho la pantalla
+// cuando había varios buckets -- MLB por ejemplo muestra 3 tarjetas de
+// calibración a la vez (histórico/pre-fix/post-fix), cada una con sus
+// propias filas. Se cambia al mismo patrón de carrusel horizontal
+// (RowCarousel/RowField) que ya usan las demás tablas del panel
+// (CryptoOpenTable, WeatherResolvedTable, etc.) -- un bucket por tarjeta,
+// con scroll lateral, en vez de una lista vertical larga.
 function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
   if (!calibration || calibration.n === 0) {
     return (
@@ -1196,13 +1204,11 @@ function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
     <div className="card">
       <h2>{title}</h2>
       {subtitle && <p className="card-subtitle">{subtitle}</p>}
-      <div className="calibration-table">
-        <div className="calibration-row calibration-head">
-          <span>Probabilidad del modelo</span>
-          <span>Señales</span>
-          <span>Pasó de verdad</span>
-        </div>
-        {calibration.buckets.map((b) => {
+      <RowCarousel
+        items={calibration.buckets}
+        keyExtractor={(b) => b.range}
+        emptyMessage={emptyMessage}
+        renderFields={(b) => {
           const gapPts = (b.actual_freq - b.avg_predicted) * 100;
           // Más de 15 puntos de diferencia entre lo que el modelo dijo y lo
           // que pasó en la práctica = desviación que vale la pena mirar,
@@ -1210,19 +1216,25 @@ function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
           // salirse un poco por azar).
           const relevant = Math.abs(gapPts) > 15 && b.n >= 5;
           return (
-            <div className="calibration-row" key={b.range}>
-              <span>{b.range}</span>
-              <span>{b.n}</span>
-              <span className={relevant ? (gapPts < 0 ? "fail" : "ok") : ""}>
-                {(b.actual_freq * 100).toFixed(0)}%
-                {relevant && (
-                  <span className="calibration-gap"> ({gapPts > 0 ? "+" : ""}{gapPts.toFixed(0)} pts vs. lo que dijo)</span>
-                )}
-              </span>
-            </div>
+            <>
+              <RowField label="Probabilidad del modelo" value={b.range} />
+              <RowField label="Señales" value={b.n} />
+              <RowField
+                label="Pasó de verdad"
+                tone={relevant ? (gapPts < 0 ? "fail" : "ok") : undefined}
+                value={
+                  <>
+                    {(b.actual_freq * 100).toFixed(0)}%
+                    {relevant && (
+                      <span className="calibration-gap"> ({gapPts > 0 ? "+" : ""}{gapPts.toFixed(0)} pts vs. lo que dijo)</span>
+                    )}
+                  </>
+                }
+              />
+            </>
           );
-        })}
-      </div>
+        }}
+      />
     </div>
   );
 }
