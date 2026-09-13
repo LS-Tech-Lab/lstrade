@@ -307,53 +307,58 @@ function mlbReturnPct(row) {
 // AUDITORÍA (12/09/2026, pedido del usuario tras ver el panel de MLB con
 // 26.1% de acierto / Brier 0.321 / calibración invertida en 60-90%): esos
 // números son reales, pero mlb_stats y mlb_calibration promediaban TODO
-// el histórico de mlb_signals sin distinguir de cuándo es cada señal. El
-// 09/09/2026 (commit 7010fa9, "Introduce MLB_PROB_CLIP_MIN and
-// MLB_PROB_CLIP_MAX") se recortó my_prob a la banda 40-60% validada
-// empíricamente ANTES de generar cada señal nueva (ver AUDITORÍA larga en
-// Config.MLB_PROB_CLIP_MIN/MAX, config.py) -- pero my_prob se guarda una
-// sola vez, al momento de generar la señal, y nunca se recalcula
-// retroactivamente. Entonces las señales de ANTES del 09/09 siguen en la
-// tabla con su my_prob sin recortar (de ahí que la calibración muestre
-// buckets de 60-90% pese al clip ya estar activo), y el panel las sigue
-// promediando junto con las de DESPUÉS como si fueran una sola muestra
-// homogénea -- no hay forma de ver, mirando el panel, si el clip
-// realmente arregló el comportamiento hacia adelante o si el modelo
-// sigue roto también dentro de la banda recortada.
-// AUDITORÍA (13/09/2026, segunda vuelta -- panel post-fix mostraba +197.5%
-// de retorno promedio con un solo bucket de calibración "invertido" en
-// 60-70%): el corte original (19:08:29 -04:00, commit 7010fa9 del clip de
-// probabilidad) dejaba adentro de "post-fix" una ventana de ~11 horas
-// donde el clip YA estaba activo pero MLB_EXTREME_PRICE_FLOOR todavía
-// vivía hardcodeado en 0.02 (no se subió a 0.10 hasta el commit
-// b5ab3d7/696369f, 10/09/2026 06:19:51 -04:00 -- ver AUDITORÍA en
-// Config.MLB_EXTREME_PRICE_FLOOR, config.py). En esa ventana entraron 4
-// señales con market_price < 10c (mínimo 2.4c), y una sola de ellas
-// (ganadora, a 2.4c) aporta ~+4067% de retorno simulado -- suficiente para
-// arrastrar el promedio de las 55 señales post-fix de -0.96% a +197.5%.
-// Se mueve el corte al commit del piso de precio (el fix más tardío de
-// los dos) para que "post-fix" signifique de verdad "con AMBOS arreglos
-// activos", no solo el del clip de probabilidad.
-const MLB_CALIBRATION_FIX_CUTOFF = "2026-09-10T06:19:51-04:00";
+// el histórico de mlb_signals sin distinguir de cuándo es cada señal.
+// AUDITORÍA (13/09/2026): esto ya pasó DOS veces -- el clip de
+// probabilidad del 09/09 y el ajuste de pitcher_edge del 12/09 -- y las
+// dos veces hubo que ir a `git log`, encontrar el commit exacto y
+// hardcodear una fecha de corte acá (MLB_CALIBRATION_FIX_CUTOFF, ver
+// historial de este archivo). El corte por fecha además es frágil por
+// diseño: la segunda auditoría del 13/09 tuvo que MOVER el corte porque
+// dos fixes relacionados (el clip y el piso de precio) quedaron a 11h de
+// distancia y un solo cutoff no podía representar ambos a la vez. Con
+// model_version (ver mlb_signal_engine.py, guardado en cada fila desde
+// esta misma sesión) el agrupamiento es automático y exacto: cada fila ya
+// dice con qué configuración se generó, así que no hace falta -- ni acá
+// ni la próxima vez que se toque una constante -- ninguna arqueología de
+// git ni ningún cutoff a mano. Las filas anteriores a esta migración no
+// tienen model_version (columna no existía todavía) y se agrupan aparte
+// como "legacy".
+const MLB_LEGACY_VERSION_LABEL = "legacy (sin model_version)";
 
-// Divide señales de MLB resueltas en las generadas antes/después del
-// cutoff de arriba -- ver esa auditoría para el porqué. `ts_signaled`
-// ausente o no parseable se trata como "antes del fix" (conservador: no
-// se le atribuye al modelo corregido una señal de la que no se sabe
-// cuándo se generó).
-function splitMlbByFixCutoff(resolvedSignals, cutoff = MLB_CALIBRATION_FIX_CUTOFF) {
-  const cutoffMs = new Date(cutoff).getTime();
-  const preFix = [];
-  const postFix = [];
+// Agrupa señales de MLB resueltas por model_version -- reemplaza el
+// cutoff hardcodeado de arriba. Cada grupo trae sus propias stats +
+// calibración (mismas funciones de siempre, sin cambios), más el rango de
+// fechas que cubre para poder mostrarlo en el panel. Se ordena por
+// primera aparición (más vieja primero) para que el panel lea como una
+// línea de tiempo de versiones del modelo.
+function groupMlbByVersion(resolvedSignals) {
+  const groups = {};
   for (const r of resolvedSignals || []) {
-    const ts = r.ts_signaled ? new Date(r.ts_signaled).getTime() : NaN;
-    if (!Number.isNaN(ts) && ts >= cutoffMs) {
-      postFix.push(r);
-    } else {
-      preFix.push(r);
-    }
+    const key = r.model_version || MLB_LEGACY_VERSION_LABEL;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
   }
-  return { preFix, postFix };
+  return Object.entries(groups)
+    .map(([version, rows]) => {
+      const timestamps = rows
+        .map((r) => (r.ts_signaled ? new Date(r.ts_signaled).getTime() : NaN))
+        .filter((t) => !Number.isNaN(t));
+      return {
+        model_version: version,
+        is_legacy: version === MLB_LEGACY_VERSION_LABEL,
+        n: rows.length,
+        first_seen: timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : null,
+        last_seen: timestamps.length ? new Date(Math.max(...timestamps)).toISOString() : null,
+        stats: computeMlbStats(rows),
+        calibration: computeMlbCalibration(rows),
+      };
+    })
+    .sort((a, b) => {
+      // Legacy siempre primero (es lo más viejo por definición), después
+      // por fecha de primera señal ascendente.
+      if (a.is_legacy !== b.is_legacy) return a.is_legacy ? -1 : 1;
+      return new Date(a.first_seen || 0) - new Date(b.first_seen || 0);
+    });
 }
 
 function computeMlbStats(resolvedSignals) {
@@ -644,8 +649,6 @@ export async function GET() {
     const resolvedSignals = polymarketResolvedRes.error ? [] : (polymarketResolvedRes.data || []);
     const weatherResolved = weatherResolvedRes.error ? [] : (weatherResolvedRes.data || []);
     const mlbResolved = mlbResolvedRes.error ? [] : (mlbResolvedRes.data || []);
-    // Ver AUDITORÍA (12/09/2026) sobre MLB_CALIBRATION_FIX_CUTOFF más arriba.
-    const { preFix: mlbResolvedPreFix, postFix: mlbResolvedPostFix } = splitMlbByFixCutoff(mlbResolved);
     // "Core" = sin las categorías excluidas (ver EXCLUDED_CATEGORIES) — es
     // lo que se muestra como indicador principal para que una categoría ya
     // identificada como mala no tape el desempeño real del resto.
@@ -707,17 +710,13 @@ export async function GET() {
       mlb_stats: mlbResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, brier_score: null }
         : computeMlbStats(mlbResolved),
       mlb_calibration: mlbResolvedRes.error ? { n: 0, buckets: [] } : computeMlbCalibration(mlbResolved),
-      // NUEVO (12/09/2026): mismo dato que mlb_stats/mlb_calibration de
-      // arriba, pero separado en antes/después del fix de calibración del
-      // 09/09 (MLB_PROB_CLIP_MIN/MAX) -- ver AUDITORÍA junto a
-      // MLB_CALIBRATION_FIX_CUTOFF. Permite confirmar si el clip realmente
-      // corrigió el comportamiento hacia adelante en vez de seguir viendo
-      // un promedio contaminado por el batch de señales pre-fix.
-      mlb_fix_cutoff: MLB_CALIBRATION_FIX_CUTOFF,
-      mlb_stats_pre_fix: computeMlbStats(mlbResolvedPreFix),
-      mlb_stats_post_fix: computeMlbStats(mlbResolvedPostFix),
-      mlb_calibration_pre_fix: computeMlbCalibration(mlbResolvedPreFix),
-      mlb_calibration_post_fix: computeMlbCalibration(mlbResolvedPostFix),
+      // NUEVO (13/09/2026): reemplaza mlb_stats_pre_fix/post_fix +
+      // mlb_fix_cutoff -- ver AUDITORÍA junto a groupMlbByVersion más
+      // arriba. Un array (no un par fijo de campos) porque el número de
+      // versiones activas crece cada vez que se toca una constante del
+      // modelo, no solo una vez; el frontend itera esto en vez de tener
+      // un bloque de JSX por cada fix.
+      mlb_by_version: mlbResolvedRes.error ? [] : groupMlbByVersion(mlbResolved),
       weather_calibration: weatherResolvedRes.error ? { n: 0, buckets: [] } : computeWeatherCalibration(weatherResolved),
       crypto_stats_by_confidence: closedTradesRes.error ? {} : computeStatsByConfidence(closedTradesRes.data || []),
       polymarket_stats_by_confidence: polymarketResolvedRes.error ? {} : computePolymarketStatsByConfidence(resolvedSignalsCore),
