@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 
 // ────────────────────────────────────────────────────────────────────
 // Diccionario en español simple. Centraliza las explicaciones de los
@@ -1234,40 +1234,32 @@ function CalibrationCard({ title, subtitle, calibration, emptyMessage }) {
   );
 }
 
-// Fecha de corte legible en español ("9 de septiembre de 2026"), derivada
-// de mlb_fix_cutoff (ver MLB_CALIBRATION_FIX_CUTOFF en route.js) en vez de
-// hardcodeada acá, para que si el backend mueve el corte el texto no quede
-// desactualizado.
-function formatCutoffEs(iso) {
-  if (!iso) return null;
-  return new Date(iso).toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric" });
+// Rango de fechas legible en español (ej. "9 sept 2026 – 12 sept 2026")
+// para un grupo de model_version, a partir de first_seen/last_seen que ya
+// vienen calculados por groupMlbByVersion() en route.js.
+function formatVersionRangeEs(firstSeen, lastSeen) {
+  const fmt = (iso) => iso && new Date(iso).toLocaleDateString("es-ES", { day: "numeric", month: "short", year: "numeric" });
+  const start = fmt(firstSeen);
+  const end = fmt(lastSeen);
+  if (!start) return null;
+  return start === end ? start : `${start} – ${end}`;
 }
 
-// NUEVO (12/09/2026, pedido del usuario tras ver el panel con 26.1% de
-// acierto / calibración invertida): esos números mezclaban señales de
-// ANTES y DESPUÉS del fix de calibración del 09/09 (MLB_PROB_CLIP_MIN/MAX,
-// ver AUDITORÍA junto a MLB_CALIBRATION_FIX_CUTOFF en route.js) en un solo
-// promedio, así que no se podía saber si el clip realmente arregló algo
-// hacia adelante. Se separa en dos bloques con las mismas tarjetas de
-// siempre (PerformanceCard/CalibrationCard, sin cambios) para que
-// "histórico" y "post-fix" se puedan leer aparte.
+// NUEVO (13/09/2026): reemplaza el bloque hardcodeado de "antes/después
+// del fix" -- ver AUDITORÍA junto a groupMlbByVersion en route.js. Cada
+// vez que se ajusta una constante del modelo (HOME_FIELD_EDGE,
+// PITCHER_ERA_SCALE, el clip, etc.) aparece automáticamente un bloque
+// nuevo acá, con las mismas tarjetas de siempre (PerformanceCard/
+// CalibrationCard, sin cambios) -- ya no hace falta tocar page.js ni
+// route.js para que el panel refleje una versión nueva del modelo.
 function MlbTab({ data }) {
-  const cutoffLabel = formatCutoffEs(data.mlb_fix_cutoff);
+  const byVersion = data.mlb_by_version || [];
   return (
     <>
       <PlainSummary halted={false} stats={data.mlb_stats} label="MLB" />
 
-      {cutoffLabel && (
-        <p className="card-subtitle" style={{ margin: "0 0 12px" }}>
-          El {cutoffLabel} se corrigió un sesgo del modelo que sobre-confiaba por encima
-          de 60% de probabilidad (ver auditoría de calibración). Las señales de antes y
-          después de esa fecha se muestran por separado abajo para poder confirmar si el
-          fix funcionó, además del combinado histórico.
-        </p>
-      )}
-
       <PerformanceCard title="Performance — MLB (todas las señales resueltas, histórico)"
-        subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal. Incluye señales de antes y después del fix de calibración del 09/09 — ver desglose abajo."
+        subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal. Incluye todas las versiones del modelo — ver desglose por versión abajo."
         emptyMessage="Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real."
         statCards={buildMlbStatCards(data.mlb_stats)} />
       <CalibrationCard title="Calibración — MLB (todas las señales, histórico)"
@@ -1275,23 +1267,33 @@ function MlbTab({ data }) {
         emptyMessage="Todavía no hay suficientes señales de MLB con resultado real (ganó/perdió) para calibrar — los stop-loss y partidos cancelados no cuentan acá porque no sabemos si el lado elegido hubiera ganado."
         calibration={data.mlb_calibration} />
 
-      <PerformanceCard title={`Performance — MLB (antes del ${cutoffLabel || "fix"}, sin recorte de probabilidad)`}
-        subtitle="Señales generadas con my_prob sin recortar a 40-60% — el período que mostró la calibración rota."
-        emptyMessage="Sin señales de MLB resueltas en este período."
-        statCards={buildMlbStatCards(data.mlb_stats_pre_fix)} />
-      <CalibrationCard title={`Calibración — MLB (antes del ${cutoffLabel || "fix"})`}
-        subtitle="Mismo cálculo que arriba, solo con señales generadas antes del fix."
-        emptyMessage="Sin señales de MLB resueltas en este período."
-        calibration={data.mlb_calibration_pre_fix} />
+      {byVersion.length > 0 && (
+        <p className="card-subtitle" style={{ margin: "0 0 12px" }}>
+          Desglose por versión del modelo (cada fila de mlb_signals guarda con qué
+          configuración de constantes se generó — ver model_version). {byVersion.length}{" "}
+          {byVersion.length === 1 ? "versión encontrada" : "versiones encontradas"} en el histórico resuelto.
+        </p>
+      )}
 
-      <PerformanceCard title={`Performance — MLB (desde el ${cutoffLabel || "fix"}, con recorte 40-60%)`}
-        subtitle="Señales generadas con my_prob ya recortado a la banda 40-60% validada empíricamente."
-        emptyMessage="Todavía no hay señales de MLB resueltas generadas después del fix."
-        statCards={buildMlbStatCards(data.mlb_stats_post_fix)} />
-      <CalibrationCard title={`Calibración — MLB (desde el ${cutoffLabel || "fix"})`}
-        subtitle="Mismo cálculo que arriba, solo con señales generadas después del fix. Las filas de piso/techo del clip son esperables (el modelo quiso ir más allá de 40-60% y se lo recortó) -- lo que sí importaría es un bucket orgánico de 0.1 fuera de esa banda, algo que ya no puede pasar con el clip activo."
-        emptyMessage="Todavía no hay suficientes señales de MLB resueltas generadas después del fix para calibrar."
-        calibration={data.mlb_calibration_post_fix} />
+      {byVersion.map((v) => {
+        const range = formatVersionRangeEs(v.first_seen, v.last_seen);
+        const label = v.is_legacy
+          ? "legacy (señales de antes de guardar model_version)"
+          : `versión ${v.model_version}`;
+        const subtitleSuffix = range ? ` — ${range}` : "";
+        return (
+          <Fragment key={v.model_version}>
+            <PerformanceCard title={`Performance — MLB (${label})`}
+              subtitle={`${v.n} señal${v.n === 1 ? "" : "es"} resuelta${v.n === 1 ? "" : "s"}${subtitleSuffix}.`}
+              emptyMessage="Sin señales de MLB resueltas en esta versión."
+              statCards={buildMlbStatCards(v.stats)} />
+            <CalibrationCard title={`Calibración — MLB (${label})`}
+              subtitle="Mismo cálculo que arriba, solo con señales generadas con esta configuración del modelo."
+              emptyMessage="Sin señales suficientes en esta versión para calibrar."
+              calibration={v.calibration} />
+          </Fragment>
+        );
+      })}
 
       <EquityCard title="Equity — MLB"
         subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
