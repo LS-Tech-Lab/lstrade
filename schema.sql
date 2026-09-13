@@ -207,6 +207,7 @@ create table if not exists mlb_signals (
     stake_dollars double precision,
     pnl_dollars double precision,
     raw_my_prob double precision,
+    model_version text,
     ts_signaled timestamptz not null,
     outcome text,
     ts_resolved timestamptz
@@ -221,6 +222,17 @@ create table if not exists mlb_signals (
 -- Migración aplicada en Supabase: alter table mlb_signals add column if
 -- not exists stake_dollars double precision; alter table mlb_signals add
 -- column if not exists pnl_dollars double precision.
+--
+-- AUDITORÍA (13/09/2026): ver MODEL_VERSION en mlb_signal_engine.py --
+-- hash corto de las constantes activas del modelo al momento de generar
+-- cada señal, para que el dashboard pueda agrupar/calibrar por versión
+-- sin ir a buscar el commit y hardcodear una fecha de corte en route.js
+-- cada vez que se ajusta una constante (ya pasó dos veces: el clip de
+-- probabilidad del 09/09 y el ajuste de pitcher_edge del 12/09). Filas
+-- anteriores a esta migración quedan con model_version=NULL -- el
+-- dashboard las agrupa aparte como "legacy / sin versión registrada".
+-- Migración aplicada en Supabase: alter table mlb_signals add column if
+-- not exists model_version text;
 --
 -- AUDITORÍA (09/09/2026, pedido del usuario -- backtest de calibración):
 -- my_prob ahora se recorta a Config.MLB_PROB_CLIP_MIN/MAX (40-60%, única
