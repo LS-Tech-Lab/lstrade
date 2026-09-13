@@ -1,0 +1,56 @@
+name: Backtest MLB (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      seasons:
+        description: "Temporadas separadas por coma"
+        default: "2023,2024,2025"
+      sweep:
+        description: "Grid search de HOME_FIELD_EDGE/PITCHER_ERA_SCALE/SEASON_FORM_WEIGHT (true/false)"
+        default: "true"
+      oos_frac:
+        description: "Fracción final (0-1) a reportar aparte como out-of-sample, 0 = sin split"
+        default: "0.3"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # AUDITORÍA (13/09/2026): a diferencia de backtest-polymarket.yml, acá
+      # SÍ conviene cachear .backtest_cache/mlb entre corridas -- el schedule
+      # de una temporada terminada y el gameLog de un pitcher que ya jugó no
+      # cambian, así que una segunda corrida (ej. con --sweep distinto) no
+      # debería volver a pegarle a la MLB Stats API por las mismas
+      # temporadas. La key incluye "seasons" para no reusar caché de otro
+      # rango de temporadas por error.
+      - name: Cachear schedule/gameLogs de MLB Stats API
+        uses: actions/cache@v4
+        with:
+          path: .backtest_cache/mlb
+          key: mlb-backtest-cache-${{ inputs.seasons }}
+
+      - name: Correr backtest histórico de MLB
+        run: |
+          python backtest_mlb.py \
+            --seasons ${{ inputs.seasons }} \
+            --oos-frac ${{ inputs.oos_frac }} \
+            $([ "${{ inputs.sweep }}" = "true" ] && echo --sweep) \
+            --output resultados_mlb.csv
+
+      - name: Subir resultados como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-mlb-${{ github.run_id }}
+          path: resultados_mlb.csv
+          retention-days: 30
