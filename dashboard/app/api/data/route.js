@@ -450,6 +450,17 @@ const OPEN_ROWS_LIMIT = 100;
 // de más.
 const INDICATOR_SNAPSHOT_LIMIT = 50;
 
+// AUDITORÍA (13/09/2026, pedido del usuario): el equity de MLB tuvo un pico
+// a ~$2.4M entre el 08/09 y el 10/09 (bug de Kelly sin techo, ya corregido
+// -- ver MAX_KELLY_STAKE_PCT en config.py) y el usuario lo reseteó a mano a
+// $20 el 10/09 10:15 UTC. Esos puntos del pico se dejan en equity_history
+// (no se borran, quedan como registro), pero se excluyen de la serie que ve
+// el dashboard -- si entraran, el eje Y del gráfico quedaría dominado por
+// el pico (todo lo demás se vería pegado a cero) y el "% desde el inicio
+// del historial" se calcularía contra un valor previo al reset, no contra
+// la base real de $20 vigente desde ese momento.
+const MLB_EQUITY_RESET_TS = "2026-09-10T10:15:47.388163+00:00";
+
 export async function GET() {
   try {
     const supabase = getClient();
@@ -487,7 +498,7 @@ export async function GET() {
       supabase.from("equity_history").select("ts,equity").eq("module", "crypto").order("ts", { ascending: false }).limit(200),
       supabase.from("equity_history").select("ts,equity").eq("module", "weather").order("ts", { ascending: false }).limit(200),
       supabase.from("equity_history").select("ts,equity").eq("module", "polymarket").order("ts", { ascending: false }).limit(200),
-      supabase.from("equity_history").select("ts,equity").eq("module", "mlb").order("ts", { ascending: false }).limit(200),
+      supabase.from("equity_history").select("ts,equity").eq("module", "mlb").gte("ts", MLB_EQUITY_RESET_TS).order("ts", { ascending: false }).limit(200),
       supabase.from("decisions").select("*").order("ts", { ascending: false }).limit(30),
       supabase.from("bot_state").select("*"),
       supabase.from("pending_decisions").select("*").eq("resolved", false),
