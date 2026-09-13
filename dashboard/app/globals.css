@@ -164,19 +164,11 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 
 .error{color:var(--bad); font-size:12px;}
 
-/* NUEVO (07/09/2026): tabla de calibración (Probabilidad del modelo vs.
-   Pasó de verdad) -- una fila compacta por rango de probabilidad, pensada
-   para leerse bien en mobile igual que el resto del panel. */
-.calibration-table{display:flex; flex-direction:column; gap:2px;}
-.calibration-row{
-  display:grid; grid-template-columns:1.1fr 0.6fr 1.3fr; gap:8px; align-items:center;
-  padding:8px 4px; border-bottom:1px solid var(--line); font-size:12.5px;
-}
-.calibration-row:last-child{border-bottom:none;}
-.calibration-head{
-  font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft);
-  border-bottom:1px solid var(--line); padding-bottom:6px;
-}
+/* AUDITORÍA (13/09/2026): tabla de calibración reemplazada por el carrusel
+   de tarjetas (RowCarousel/RowField, ver CalibrationCard en page.js) --
+   .calibration-table/.calibration-row/.calibration-head quedaron sin uso y
+   se eliminaron. .calibration-gap sigue vigente (detalle dentro del valor
+   "Pasó de verdad" de cada tarjeta). */
 .calibration-gap{font-size:10.5px; font-weight:400; opacity:0.85;}
 
 /* NUEVO: navegación por pestañas Cripto/Polymarket */
