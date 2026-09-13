@@ -190,13 +190,10 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 .tab.active{background:var(--accent-dim); color:var(--accent); box-shadow:inset 0 0 0 1px rgba(61,220,151,0.35);}
 .tab:not(.active):hover{color:var(--ink); background:rgba(255,255,255,0.03);}
 
-/* NUEVO (07/09/2026): mismo estilo de .tabs/.tab de arriba, reusado para el
-   selector de módulo de equity (Cripto/Clima/Polymarket/MLB) dentro de la
-   card de Equity -- ver EquityModuleTabs en page.js. Solo se achica un
-   poco el padding/margen porque vive adentro de una card, no a nivel de
-   página como la navegación principal. */
-.equity-module-tabs{margin-bottom:12px; padding:3px;}
-.equity-module-tabs .tab{padding:7px 10px; font-size:10.5px;}
+/* AUDITORÍA (13/09/2026): eliminado .equity-module-tabs -- el selector de
+   módulo de equity (Cripto/Clima/Polymarket/MLB) desapareció, ahora cada
+   tab muestra directo el gráfico de su propio módulo (ver EquityCard en
+   page.js). */
 
 /* NUEVO: carrusel de tarjetas de indicadores — scroll horizontal nativo
    con snap. Cada tarjeta ocupa el 100% del ancho del carrusel (mobile y
