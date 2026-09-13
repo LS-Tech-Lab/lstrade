@@ -199,6 +199,33 @@ SEASON_FORM_WEIGHT = 0.7     # peso de win% de temporada vs. últimos-10 en blen
 MIN_INNINGS_FOR_ERA = 30.0   # AUDITORÍA 12/09/2026 arriba -- subido de 15.0 (ERA de pocas salidas es ruido)
 MOMENTUM_DISAGREEMENT_THRESHOLD = 0.08  # ver price_disagrees_with_model() -- sin calibrar
 
+# AUDITORÍA (13/09/2026): ya van dos veces (el clip de probabilidad del
+# 09/09 y este mismo ajuste de pitcher_edge del 12/09) que un cambio de
+# constante se mezcla en el dashboard con señales generadas ANTES del
+# cambio, porque no había ningún campo en mlb_signals que dijera con qué
+# configuración se generó cada una -- había que ir a `git log`, encontrar
+# el commit y hardcodear una fecha de corte en route.js (ver
+# MLB_CALIBRATION_FIX_CUTOFF, ya retirado). MODEL_VERSION es un hash corto
+# (8 hex) de TODAS las constantes que afectan estimate_win_probability()/
+# el clip/el piso de precio, calculado una sola vez al importar este
+# módulo. Se guarda en cada fila de mlb_signals (ver record_mlb_signal en
+# supabase_db.py) para que el dashboard pueda agrupar/calibrar por versión
+# automáticamente sin arqueología de git ni cutoffs a mano cada vez que se
+# toque una constante acá o en Config. Nota: es un fingerprint de los
+# VALORES activos (incluye overrides por env var de Config), no del commit
+# -- dos commits distintos con los mismos valores activos comparten
+# versión, y un mismo commit con un env var distinto en producción no.
+def _compute_model_version():
+    import hashlib
+    fingerprint = "|".join(str(v) for v in [
+        HOME_FIELD_EDGE, PITCHER_ERA_SCALE, PITCHER_EDGE_CAP, SEASON_FORM_WEIGHT,
+        MIN_INNINGS_FOR_ERA, MOMENTUM_DISAGREEMENT_THRESHOLD,
+        Config.MLB_PROB_CLIP_MIN, Config.MLB_PROB_CLIP_MAX, Config.MLB_EXTREME_PRICE_FLOOR,
+    ])
+    return hashlib.sha256(fingerprint.encode()).hexdigest()[:8]
+
+MODEL_VERSION = _compute_model_version()
+
 # id MLB -> (nombre completo, nombre corto/"teamName", abreviatura)
 # fuente: https://github.com/pseudo-r/Public-MLB-API (docs/teams.md)
 TEAMS = {
@@ -710,6 +737,11 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         # usan la recortada) permite seguir juntando muestra de
         # calibración "en la sombra" sin arriesgar plata en ella.
         "raw_my_prob": raw_my_prob,
+        # NUEVO (13/09/2026): ver AUDITORÍA junto a MODEL_VERSION arriba --
+        # fingerprint de las constantes activas al momento de generar esta
+        # señal puntual, para poder agrupar/calibrar por versión en el
+        # dashboard sin cutoffs hardcodeados.
+        "model_version": MODEL_VERSION,
         "market_price": price,
         "ev": ev,
         "min_ev_threshold": effective_min_ev,
