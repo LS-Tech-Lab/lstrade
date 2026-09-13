@@ -548,7 +548,7 @@ class SupabaseDatabase:
     def record_mlb_signal(self, condition_id, game_pk, question, home_team, away_team, direction,
                            my_prob, market_price, ev, confidence, confidence_penalty, token_id, stop=None,
                            home_win_pct=None, away_win_pct=None, era_home=None, era_away=None,
-                           pitcher_edge=None, home_field_edge=None, raw_my_prob=None):
+                           pitcher_edge=None, home_field_edge=None, raw_my_prob=None, model_version=None):
         # AUDITORÍA (07/09/2026): se agregan los componentes de
         # estimate_win_probability() (home_win_pct/away_win_pct/era_home/
         # era_away/pitcher_edge/home_field_edge) -- antes solo se guardaba
@@ -561,7 +561,14 @@ class SupabaseDatabase:
         # generate_mlb_signal() (mlb_signal_engine.py). Guardado aparte de
         # my_prob (que ya viene recortado) para seguir midiendo
         # calibración fuera de 40-60% sin arriesgar plata en ella.
-        _with_retry(lambda: self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "home_win_pct": home_win_pct, "away_win_pct": away_win_pct, "era_home": era_home, "era_away": era_away, "pitcher_edge": pitcher_edge, "home_field_edge": home_field_edge, "raw_my_prob": raw_my_prob, "ts_signaled": _now_iso()}).execute())
+        # AUDITORÍA (13/09/2026): + model_version -- hash corto de las
+        # constantes activas del modelo (ver MODEL_VERSION en
+        # mlb_signal_engine.py), para que el dashboard agrupe/calibre por
+        # versión sin cutoffs hardcodeados cada vez que se ajuste una
+        # constante. Columna nueva vía migración
+        # 2026-09-13_add_model_version_to_mlb_signals.sql -- filas
+        # anteriores a esta migración quedan con model_version=NULL.
+        _with_retry(lambda: self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "home_win_pct": home_win_pct, "away_win_pct": away_win_pct, "era_home": era_home, "era_away": era_away, "pitcher_edge": pitcher_edge, "home_field_edge": home_field_edge, "raw_my_prob": raw_my_prob, "model_version": model_version, "ts_signaled": _now_iso()}).execute())
 
     def get_open_mlb_signals(self):
         res = _with_retry(lambda: self.client.table("mlb_signals").select("*").is_("outcome", "null").execute())
