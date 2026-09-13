@@ -1289,7 +1289,7 @@ function MlbTab({ data }) {
         emptyMessage="Todavía no hay señales de MLB resueltas generadas después del fix."
         statCards={buildMlbStatCards(data.mlb_stats_post_fix)} />
       <CalibrationCard title={`Calibración — MLB (desde el ${cutoffLabel || "fix"})`}
-        subtitle="Mismo cálculo que arriba, solo con señales generadas después del fix. Si el clip funcionó, esta tabla no debería tener buckets fuera de 40-60%."
+        subtitle="Mismo cálculo que arriba, solo con señales generadas después del fix. Las filas de piso/techo del clip son esperables (el modelo quiso ir más allá de 40-60% y se lo recortó) -- lo que sí importaría es un bucket orgánico de 0.1 fuera de esa banda, algo que ya no puede pasar con el clip activo."
         emptyMessage="Todavía no hay suficientes señales de MLB resueltas generadas después del fix para calibrar."
         calibration={data.mlb_calibration_post_fix} />
 
