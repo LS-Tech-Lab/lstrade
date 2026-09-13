@@ -170,10 +170,13 @@ class Database:
 
         AUDITORÍA (09/09/2026): mismo techo de tamaño (Config.MAX_KELLY_STAKE_PCT)
         que la variante Supabase -- ver comentario ahí y en
-        _half_kelly_fraction (weather_signal_engine.py)."""
+        _half_kelly_fraction (weather_signal_engine.py).
+
+        AUDITORÍA (13/09/2026): default bajado de 100.0 a 20.0, igual que en
+        supabase_db.py -- ver ese comentario para el motivo."""
         base = self.last_equity(module)
         if base is None:
-            base = 100.0
+            base = 20.0
 
         kelly = _half_kelly_fraction(my_prob, market_price, max_pct=Config.MAX_KELLY_STAKE_PCT)
         pnl = 0.0
@@ -192,10 +195,13 @@ class Database:
 
     def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0):
         """Ver apply_r_multiple_pnl en supabase_db.py (misma lógica, esta es
-        la variante SQLite para el modo VPS/local)."""
+        la variante SQLite para el modo VPS/local).
+
+        AUDITORÍA (13/09/2026): default bajado de 100.0 a 20.0, igual que en
+        supabase_db.py."""
         base = self.last_equity(module)
         if base is None:
-            base = 100.0
+            base = 20.0
         risk_amount = base * (risk_pct / 100.0)
         pnl = risk_amount * r_multiple
         new_equity = base + pnl
@@ -347,6 +353,8 @@ class Database:
         # importar el resultado de los trades cerrados (ver auditoría).
         # AUDITORÍA (07/09/2026): base bajada de 10000.0 a 100.0 -- ver mismo
         # cambio en supabase_db.py.
+        # AUDITORÍA (13/09/2026): base bajada otra vez, de 100.0 a 20.0 --
+        # ver mismo cambio en supabase_db.py.
         pnl_dollars = None
         position_size = trade.get("position_size")
         if position_size:
@@ -354,7 +362,7 @@ class Database:
             pnl_dollars = (exit_price - entry) * position_size * sign
             base_equity = self.last_equity("crypto")
             if base_equity is None:
-                base_equity = 100.0
+                base_equity = 20.0
             self.record_equity(base_equity + pnl_dollars, module="crypto")
 
         return r_multiple, pnl_dollars
