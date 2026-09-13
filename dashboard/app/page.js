@@ -313,11 +313,27 @@ function PerformanceCard({ title, subtitle, emptyMessage, statCards }) {
     <div className="card">
       <h2>{title}</h2>
       {subtitle && <p className="card-subtitle">{subtitle}</p>}
-      <div className="stats-grid">
+      <StatCarousel statCards={statCards} />
+    </div>
+  );
+}
+
+// AUDITORÍA (13/09/2026, pedido del usuario): mismo cambio que
+// CalibrationCard -- .stats-grid pasa de un grid que envolvía en varias
+// filas a scroll horizontal con flechas/puntos, reusando useCarouselNav/
+// CarouselNav (definidos más abajo, junto con RowCarousel). Cada
+// StatCard mantiene su tamaño fijo y compacto (ver .stat-card en
+// globals.css) en vez de estirarse a lo ancho de una celda de grid.
+function StatCarousel({ statCards }) {
+  const { containerRef, active, handleScroll, goTo } = useCarouselNav();
+  return (
+    <div>
+      <div className="stats-grid" ref={containerRef} onScroll={handleScroll}>
         {statCards.map((sc) => (
           <StatCard key={sc.label} {...sc} />
         ))}
       </div>
+      <CarouselNav count={statCards.length} active={active} goTo={goTo} />
     </div>
   );
 }
