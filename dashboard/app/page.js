@@ -258,6 +258,10 @@ function EquityChart({ points }) {
 // apply_binary_signal_pnl/apply_r_multiple_pnl en supabase_db.py), así que
 // el gráfico único de antes necesita una forma de elegir cuál mostrar sin
 // ocupar 4 cards separadas.
+// AUDITORÍA (13/09/2026): base unificada bajada de $100 a $20 (pedido del
+// usuario) -- historial completo de equity_history (los 4 módulos)
+// rescalado x0.2 en Supabase, y los defaults de apply_binary_signal_pnl/
+// apply_r_multiple_pnl/close_trade_with_outcome bajados a 20.0.
 const EQUITY_MODULES = [
   { key: "equity", label: "Cripto" },
   { key: "equity_weather", label: "Clima" },
@@ -1396,7 +1400,7 @@ function CriptoTab({ data }) {
       </div>
       <div className="card">
         <h2>Equity</h2>
-        <p className="card-subtitle">Evolución del capital simulado a lo largo del tiempo, por módulo (cada uno arranca en $100).</p>
+        <p className="card-subtitle">Evolución del capital simulado a lo largo del tiempo, por módulo (cada uno arranca en $20).</p>
         <EquityModuleTabs data={data} />
       </div>
       <div className="card">
