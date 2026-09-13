@@ -27,18 +27,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # AUDITORÍA (13/09/2026): a diferencia de backtest-polymarket.yml, acá
-      # SÍ conviene cachear .backtest_cache/mlb entre corridas -- el schedule
-      # de una temporada terminada y el gameLog de un pitcher que ya jugó no
-      # cambian, así que una segunda corrida (ej. con --sweep distinto) no
-      # debería volver a pegarle a la MLB Stats API por las mismas
-      # temporadas. La key incluye "seasons" para no reusar caché de otro
-      # rango de temporadas por error.
+      # AUDITORÍA (13/09/2026, corrección tras primer run fallido -- "Key
+      # Validation Error: ... cannot contain commas"): actions/cache exige
+      # que la key no tenga comas, y --seasons se pasa justamente separado
+      # por comas ("2023,2024,2025"). Se arma una versión saneada (comas ->
+      # guiones) en una variable de entorno ANTES del paso de cache, en vez
+      # de interpolar inputs.seasons directo en la key.
+      - name: Armar key de caché sin comas
+        run: echo "seasons_key=$(echo '${{ inputs.seasons }}' | tr ',' '-')" >> "$GITHUB_ENV"
+
+      # A diferencia de backtest-polymarket.yml, acá SÍ conviene cachear
+      # .backtest_cache/mlb entre corridas -- el schedule de una temporada
+      # terminada y el gameLog de un pitcher que ya jugó no cambian, así que
+      # una segunda corrida (ej. con --sweep distinto) no debería volver a
+      # pegarle a la MLB Stats API por las mismas temporadas. La key incluye
+      # "seasons_key" para no reusar caché de otro rango de temporadas por
+      # error.
       - name: Cachear schedule/gameLogs de MLB Stats API
         uses: actions/cache@v4
         with:
           path: .backtest_cache/mlb
-          key: mlb-backtest-cache-${{ inputs.seasons }}
+          key: mlb-backtest-cache-${{ env.seasons_key }}
 
       - name: Correr backtest histórico de MLB
         run: |
