@@ -149,23 +149,13 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 .decision-rejected, .decision-blocked{color:var(--bad); font-weight:700;}
 .decision-watchlist, .decision-paper_logged, .decision-paper_logged_no_telegram, .decision-pending_approval{color:var(--ink-soft); font-weight:700;}
 
-/* AUDITORÍA (13/09/2026, pedido del usuario): .stats-grid era un CSS grid
-   que envolvía (repeat(auto-fit...) en desktop, 2 columnas fijas en
-   mobile) -- con 4-5 tarjetas por card de Performance, y hasta 3 cards de
-   Performance seguidas en un mismo tab (MLB: histórico/pre-fix/post-fix),
-   terminaba estirando mucho la pantalla. Pasa a scroll horizontal con
-   snap, mismo lenguaje que el resto de los carruseles del panel (ver
-   StatCarousel en page.js). */
+/* NUEVO: tarjetas de estadísticas (win rate / expectancy / profit factor) */
 .stats-grid{
-  display:flex; gap:12px; overflow-x:auto; -webkit-overflow-scrolling:touch;
-  scroll-snap-type:x mandatory; scroll-padding-left:2px;
-  padding:2px 2px 4px; margin:0 -2px;
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:10px;
 }
-.stats-grid::-webkit-scrollbar{display:none;}
-.stats-grid{scrollbar-width:none;}
 .stat-card{
   border:1px solid var(--line); border-radius:10px; padding:11px 13px;
-  background:var(--paper); flex:0 0 132px; scroll-snap-align:start;
+  background:var(--paper);
 }
 .stat-card.ok{border-color:rgba(61,220,151,0.35); background:var(--good-dim);}
 .stat-card.fail{border-color:rgba(255,93,108,0.35); background:var(--bad-dim);}
@@ -174,11 +164,19 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 
 .error{color:var(--bad); font-size:12px;}
 
-/* AUDITORÍA (13/09/2026): tabla de calibración reemplazada por el carrusel
-   de tarjetas (RowCarousel/RowField, ver CalibrationCard en page.js) --
-   .calibration-table/.calibration-row/.calibration-head quedaron sin uso y
-   se eliminaron. .calibration-gap sigue vigente (detalle dentro del valor
-   "Pasó de verdad" de cada tarjeta). */
+/* NUEVO (07/09/2026): tabla de calibración (Probabilidad del modelo vs.
+   Pasó de verdad) -- una fila compacta por rango de probabilidad, pensada
+   para leerse bien en mobile igual que el resto del panel. */
+.calibration-table{display:flex; flex-direction:column; gap:2px;}
+.calibration-row{
+  display:grid; grid-template-columns:1.1fr 0.6fr 1.3fr; gap:8px; align-items:center;
+  padding:8px 4px; border-bottom:1px solid var(--line); font-size:12.5px;
+}
+.calibration-row:last-child{border-bottom:none;}
+.calibration-head{
+  font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft);
+  border-bottom:1px solid var(--line); padding-bottom:6px;
+}
 .calibration-gap{font-size:10.5px; font-weight:400; opacity:0.85;}
 
 /* NUEVO: navegación por pestañas Cripto/Polymarket */
@@ -430,6 +428,7 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 
   .tab{padding:10px 8px; font-size:10.5px;}
 
+  .stats-grid{grid-template-columns:repeat(2, 1fr);}
   .stat-value{font-size:18px;}
 
   .indicator-mini-grid{grid-template-columns:repeat(2, 1fr);}
@@ -443,6 +442,7 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 }
 
 @media (max-width: 380px){
+  .stats-grid{grid-template-columns:1fr 1fr;}
   .indicator-mini-grid{grid-template-columns:1fr 1fr;}
   .header h1{font-size:16px;}
 }
