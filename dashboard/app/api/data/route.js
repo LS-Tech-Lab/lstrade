@@ -15,6 +15,16 @@ function getClient() {
   return createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 }
 
+// AUDITORÍA (13/09/2026): mismos defaults que Config.MLB_PROB_CLIP_MIN/MAX
+// en config.py (fuente de verdad -- ver AUDITORÍA larga ahí). Se duplican
+// acá porque este archivo corre en Next.js/Vercel y no puede importar
+// config.py directamente; si se cambia el env var de un lado hay que
+// cambiarlo del otro. Usados solo para identificar señales topeadas por el
+// clip en computeMlbCalibration (ver más abajo), no para volver a clipear
+// nada.
+const MLB_PROB_CLIP_MIN = parseFloat(process.env.MLB_PROB_CLIP_MIN || "0.40");
+const MLB_PROB_CLIP_MAX = parseFloat(process.env.MLB_PROB_CLIP_MAX || "0.60");
+
 // FIX (08/09/2026, auditoría pedida por LS): win_rate y profit_factor
 // definían ganador/perdedor por el MOTIVO de cierre (outcome === "target"
 // vs "stop") en vez del resultado real de la operación (signo de
@@ -310,14 +320,21 @@ function mlbReturnPct(row) {
 // homogénea -- no hay forma de ver, mirando el panel, si el clip
 // realmente arregló el comportamiento hacia adelante o si el modelo
 // sigue roto también dentro de la banda recortada.
-// Corte elegido: el timestamp exacto del commit que introdujo el clip
-// (19:08:29 -04:00, hora del commit -- no se tiene el timestamp exacto
-// del deploy a Vercel, pero al ser deploy automático en push suele ir
-// pegado al commit en minutos). Se filtra por ts_signaled (momento en que
-// se calculó my_prob), no por ts_resolved (momento en que se supo el
-// resultado) -- lo que cambió fue la lógica de generación, no la de
-// resolución.
-const MLB_CALIBRATION_FIX_CUTOFF = "2026-09-09T19:08:29-04:00";
+// AUDITORÍA (13/09/2026, segunda vuelta -- panel post-fix mostraba +197.5%
+// de retorno promedio con un solo bucket de calibración "invertido" en
+// 60-70%): el corte original (19:08:29 -04:00, commit 7010fa9 del clip de
+// probabilidad) dejaba adentro de "post-fix" una ventana de ~11 horas
+// donde el clip YA estaba activo pero MLB_EXTREME_PRICE_FLOOR todavía
+// vivía hardcodeado en 0.02 (no se subió a 0.10 hasta el commit
+// b5ab3d7/696369f, 10/09/2026 06:19:51 -04:00 -- ver AUDITORÍA en
+// Config.MLB_EXTREME_PRICE_FLOOR, config.py). En esa ventana entraron 4
+// señales con market_price < 10c (mínimo 2.4c), y una sola de ellas
+// (ganadora, a 2.4c) aporta ~+4067% de retorno simulado -- suficiente para
+// arrastrar el promedio de las 55 señales post-fix de -0.96% a +197.5%.
+// Se mueve el corte al commit del piso de precio (el fix más tardío de
+// los dos) para que "post-fix" signifique de verdad "con AMBOS arreglos
+// activos", no solo el del clip de probabilidad.
+const MLB_CALIBRATION_FIX_CUTOFF = "2026-09-10T06:19:51-04:00";
 
 // Divide señales de MLB resueltas en las generadas antes/después del
 // cutoff de arriba -- ver esa auditoría para el porqué. `ts_signaled`
@@ -369,18 +386,46 @@ function computeMlbStats(resolvedSignals) {
 // y "void": un stop-loss corta la posición antes de que el partido termine,
 // así que no sabemos si ese lado realmente hubiera ganado o perdido; un
 // void es un partido que no se jugó.
+// AUDITORÍA (13/09/2026, pedido del usuario tras ver el bucket "60-70%"
+// con 12 señales y 25% de acierto en el panel post-fix): esas 12 señales
+// tenían TODAS my_prob === MLB_PROB_CLIP_MAX (0.60) exacto, ninguna con
+// una probabilidad real de 60-70%. El floor(my_prob/0.1 + 1e-9) las manda
+// ahí porque, bajo la misma convención que arregló el caso de 0.30 el
+// 07/09 (0.30 -> bucket "30-40%", no "20-30%"), cualquier valor EXACTO en
+// el borde de un bucket cae en el bucket de ARRIBA -- eso es correcto y
+// deseado para una probabilidad orgánica de 0.30, pero engañoso para
+// my_prob=0.60: ese valor no es "el modelo dijo algo entre 60 y 70%", es
+// "el modelo dijo 60% o más y se lo recortó al techo del clip" (ver
+// Config.MLB_PROB_CLIP_MIN/MAX, config.py) -- no sabemos si la estimación
+// cruda era 61% o 95%. Ajustar el floor para que 0.60 caiga en "50-60%"
+// en vez de "60-70%" no arregla esto, solo mueve el mismo problema de
+// lugar (y further rompería el caso de 0.30 si se aplica la misma regla
+// parejo). La solución real es no mezclarlas con buckets orgánicos: se
+// separan las señales con my_prob exactamente en el piso o el techo del
+// clip en sus propias filas ("Piso/Techo del clip"), y el resto de los
+// buckets de 0.1 sigue con el floor+epsilon de siempre (ver comentario de
+// abajo), que sigue siendo correcto para las señales que SÍ caen
+// orgánicamente dentro de la banda 40-60%.
 function computeMlbCalibration(resolvedSignals, bucketSize = 0.1) {
   const rows = (resolvedSignals || []).filter(
     (r) => (r.outcome === "win" || r.outcome === "loss") && r.my_prob !== null && r.my_prob !== undefined
   );
   if (rows.length === 0) return { n: 0, buckets: [] };
+
+  const isClipped = (p) =>
+    Math.abs(p - MLB_PROB_CLIP_MIN) < 1e-9 || Math.abs(p - MLB_PROB_CLIP_MAX) < 1e-9;
+  const clippedRows = rows.filter((r) => isClipped(r.my_prob));
+  const organicRows = rows.filter((r) => !isClipped(r.my_prob));
+
   const buckets = {};
-  for (const r of rows) {
+  for (const r of organicRows) {
     const actual = r.outcome === "win" ? 1 : 0;
     // FIX (07/09/2026): +1e-9 antes del floor -- sin esto, 0.30/0.1 da
     // 2.9999999999999996 en JS (error de punto flotante normal, no un bug
     // de lógica) y una probabilidad de exactamente 30% caía en el bucket
-    // "20-30%" en vez de "30-40%".
+    // "20-30%" en vez de "30-40%". Ya no aplica a los valores topeados por
+    // el clip (filtrados arriba), así que no hay conflicto con la
+    // AUDITORÍA de más arriba.
     const key = Math.min(Math.floor(r.my_prob / bucketSize + 1e-9), Math.floor(1 / bucketSize) - 1);
     if (!buckets[key]) buckets[key] = { predicted: [], actual: [] };
     buckets[key].predicted.push(r.my_prob);
@@ -396,9 +441,36 @@ function computeMlbCalibration(resolvedSignals, bucketSize = 0.1) {
         n: b.predicted.length,
         avg_predicted: b.predicted.reduce((s, x) => s + x, 0) / b.predicted.length,
         actual_freq: b.actual.reduce((s, x) => s + x, 0) / b.actual.length,
+        capped: false,
       };
     });
-  return { n: rows.length, buckets: bucketRows };
+
+  // Filas separadas para piso/techo del clip -- mismo formato que un
+  // bucket normal (para que CalibrationCard las renderice sin cambios),
+  // pero con `capped: true` y una etiqueta explícita en vez de un rango,
+  // para que quede claro que no son una probabilidad orgánica.
+  const cappedGroups = {};
+  for (const r of clippedRows) {
+    const label = Math.abs(r.my_prob - MLB_PROB_CLIP_MAX) < 1e-9 ? "max" : "min";
+    if (!cappedGroups[label]) cappedGroups[label] = { predicted: [], actual: [] };
+    cappedGroups[label].predicted.push(r.my_prob);
+    cappedGroups[label].actual.push(r.outcome === "win" ? 1 : 0);
+  }
+  const cappedRows = ["min", "max"]
+    .filter((label) => cappedGroups[label])
+    .map((label) => {
+      const g = cappedGroups[label];
+      const pct = (label === "max" ? MLB_PROB_CLIP_MAX : MLB_PROB_CLIP_MIN) * 100;
+      return {
+        range: `${pct.toFixed(0)}% (${label === "max" ? "techo" : "piso"} del clip)`,
+        n: g.predicted.length,
+        avg_predicted: g.predicted.reduce((s, x) => s + x, 0) / g.predicted.length,
+        actual_freq: g.actual.reduce((s, x) => s + x, 0) / g.actual.length,
+        capped: true,
+      };
+    });
+
+  return { n: rows.length, buckets: [...bucketRows, ...cappedRows] };
 }
 
 // NUEVO (08/09/2026): equivalente de computeMlbCalibration() para Clima --
