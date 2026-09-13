@@ -252,40 +252,21 @@ function EquityChart({ points }) {
   );
 }
 
-// Selector de módulo para el gráfico de equity — AUDITORÍA (07/09/2026,
-// pedido del usuario): ahora hay 4 series de equity independientes (cripto/
-// clima/Polymarket/MLB, cada una arrancando en $100 -- ver
-// apply_binary_signal_pnl/apply_r_multiple_pnl en supabase_db.py), así que
-// el gráfico único de antes necesita una forma de elegir cuál mostrar sin
-// ocupar 4 cards separadas.
-// AUDITORÍA (13/09/2026): base unificada bajada de $100 a $20 (pedido del
-// usuario) -- historial completo de equity_history (los 4 módulos)
-// rescalado x0.2 en Supabase, y los defaults de apply_binary_signal_pnl/
-// apply_r_multiple_pnl/close_trade_with_outcome bajados a 20.0.
-const EQUITY_MODULES = [
-  { key: "equity", label: "Cripto" },
-  { key: "equity_weather", label: "Clima" },
-  { key: "equity_polymarket", label: "Polymarket" },
-  { key: "equity_mlb", label: "MLB" },
-];
-
-function EquityModuleTabs({ data }) {
-  const [active, setActive] = useState("equity");
+// Tarjeta de equity reutilizable — AUDITORÍA (13/09/2026, pedido del
+// usuario): antes las 4 series de equity (cripto/clima/Polymarket/MLB)
+// vivían todas agrupadas en un selector de pestañas dentro del tab Cripto
+// (EquityModuleTabs, ver historial en git). Eso hacía que para ver el
+// equity de MLB, por ejemplo, hubiera que ir al tab Cripto y tocar otra
+// pestaña ahí adentro -- confuso, porque el equity de MLB no tiene nada
+// que ver con cripto. Ahora cada tab (CriptoTab/WeatherTab/MlbTab/
+// PolymarketTab) muestra directamente el gráfico de SU propio módulo, acá
+// mismo donde vive el resto de sus métricas.
+function EquityCard({ title, subtitle, points }) {
   return (
-    <div>
-      <div className="tabs equity-module-tabs">
-        {EQUITY_MODULES.map((m) => (
-          <button
-            key={m.key}
-            type="button"
-            className={`tab ${active === m.key ? "active" : ""}`}
-            onClick={() => setActive(m.key)}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-      <EquityChart points={data[active]} />
+    <div className="card">
+      <h2>{title}</h2>
+      <p className="card-subtitle">{subtitle}</p>
+      <EquityChart points={points} />
     </div>
   );
 }
@@ -1089,6 +1070,9 @@ function WeatherTab({ data }) {
         subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces resolvió 'sí' de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
         emptyMessage="Todavía no hay suficientes señales de clima con resultado real (sí/no) para calibrar — los stop-loss no cuentan acá porque no sabemos si el bucket elegido hubiera resuelto 'sí' o 'no' en la realidad."
         calibration={data.weather_calibration} />
+      <EquityCard title="Equity — Clima"
+        subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
+        points={data.equity_weather} />
       <div className="card">
         <h2>Señales abiertas ({data.weather_open?.length || 0})</h2>
         <p className="card-subtitle">Buckets de temperatura que el bot encontró con ventaja y todavía no se resolvieron.</p>
@@ -1302,6 +1286,10 @@ function MlbTab({ data }) {
         emptyMessage="Todavía no hay suficientes señales de MLB resueltas generadas después del fix para calibrar."
         calibration={data.mlb_calibration_post_fix} />
 
+      <EquityCard title="Equity — MLB"
+        subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
+        points={data.equity_mlb} />
+
       <div className="card">
         <h2>Señales abiertas ({data.mlb_open?.length || 0})</h2>
         <p className="card-subtitle">Partidos de hoy donde el modelo (log5 + localía + pitchers probables) encontró ventaja contra el precio de Polymarket.</p>
@@ -1398,11 +1386,9 @@ function CriptoTab({ data }) {
         <p className="card-subtitle">Operaciones en modo papel que el bot ya "abrió" y todavía no llegaron a su target ni a su stop.</p>
         <CryptoOpenTable rows={data.crypto_open} />
       </div>
-      <div className="card">
-        <h2>Equity</h2>
-        <p className="card-subtitle">Evolución del capital simulado a lo largo del tiempo, por módulo (cada uno arranca en $20).</p>
-        <EquityModuleTabs data={data} />
-      </div>
+      <EquityCard title="Equity — Cripto"
+        subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
+        points={data.equity} />
       <div className="card">
         <h2>Bitácora de decisiones</h2>
         <p className="card-subtitle">Cada vez que el bot detecta una señal, queda registrado acá qué decidió hacer con ella.</p>
@@ -1459,6 +1445,9 @@ function PolymarketTab({ data }) {
         <DimensionTable byDimension={data.polymarket_stats_by_confidence} dimensionLabel="Confianza"
           emptyMessage="Todavía no hay señales resueltas con confianza registrada para desglosar." />
       </div>
+      <EquityCard title="Equity — Polymarket"
+        subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
+        points={data.equity_polymarket} />
       <div className="card">
         <h2>Señales abiertas ({data.polymarket_open?.length || 0})</h2>
         <p className="card-subtitle">Mercados de predicción que el bot encontró y todavía no se resolvieron.</p>
