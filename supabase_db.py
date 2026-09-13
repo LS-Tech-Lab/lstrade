@@ -97,10 +97,16 @@ class SupabaseDatabase:
         de _safe_apply_pnl en app.py).
 
         Devuelve el nuevo equity del módulo.
+
+        AUDITORÍA (13/09/2026): default bajado de 100.0 a 20.0 -- pedido del
+        usuario de que todos los módulos arranquen en $20 (antes cripto
+        arrancaba en $100 mientras el resto ya usaba este mismo default; se
+        unificó todo a $20 y se rescaló x0.2 el historial completo en la
+        misma migración que baja este número).
         """
         base = self.last_equity(module)
         if base is None:
-            base = 100.0
+            base = 20.0
 
         kelly = _half_kelly_fraction(my_prob, market_price, max_pct=Config.MAX_KELLY_STAKE_PCT)
         pnl = 0.0
@@ -141,11 +147,12 @@ class SupabaseDatabase:
         ese % del equity del módulo por señal, y el resultado (r_multiple,
         ya calculado igual que en polymarket_stats_summary/
         polymarket_recent_history) determina la ganancia o pérdida real.
-        Arranca en $100 si el módulo no tiene historial todavía.
+        Arranca en $20 si el módulo no tiene historial todavía (AUDITORÍA
+        13/09/2026: bajado de $100, ver mismo cambio en apply_binary_signal_pnl).
         """
         base = self.last_equity(module)
         if base is None:
-            base = 100.0
+            base = 20.0
         risk_amount = base * (risk_pct / 100.0)
         pnl = risk_amount * r_multiple
         new_equity = base + pnl
@@ -298,6 +305,10 @@ class SupabaseDatabase:
         # ya existente en Supabase se rescaló x0.01 en la misma migración
         # que baja este default, para que la curva completa siga siendo
         # consistente con la nueva base).
+        # AUDITORÍA (13/09/2026): base bajada otra vez, de 100.0 a 20.0 --
+        # pedido del usuario de unificar los 4 módulos (cripto, MLB, clima,
+        # Polymarket) en la misma base de $20. Historial completo de
+        # equity_history (los 4 módulos) rescalado x0.2 en la misma migración.
         pnl_dollars = None
         position_size = trade.get("position_size")
         if position_size:
@@ -305,7 +316,7 @@ class SupabaseDatabase:
             pnl_dollars = (exit_price - entry) * position_size * sign
             base_equity = self.last_equity("crypto")
             if base_equity is None:
-                base_equity = 100.0
+                base_equity = 20.0
             self.record_equity(base_equity + pnl_dollars, module="crypto")
 
         return r_multiple, pnl_dollars
