@@ -587,6 +587,8 @@ export async function GET() {
       // apply_r_multiple_pnl en supabase_db.py) -- cada una arranca en $100
       // y solo tiene puntos a partir de la primera señal resuelta de ese
       // módulo, así que pueden llegar vacías por un rato.
+      // AUDITORÍA (13/09/2026): base unificada bajada de $100 a $20 (ver
+      // mismo comentario en page.js y en supabase_db.py/db.py).
       equity_weather: equityWeatherRes.error ? [] : (equityWeatherRes.data || []).slice().reverse(),
       equity_polymarket: equityPolymarketRes.error ? [] : (equityPolymarketRes.data || []).slice().reverse(),
       equity_mlb: equityMlbRes.error ? [] : (equityMlbRes.data || []).slice().reverse(),
