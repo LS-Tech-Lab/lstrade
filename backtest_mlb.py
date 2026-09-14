@@ -30,12 +30,26 @@ una edge falsa que no existió en tiempo real. Por eso:
     con el mismo MIN_INNINGS_FOR_ERA importado de mlb_signal_engine (no
     duplicado) para exigir la misma muestra mínima que en producción.
 Todas las constantes del modelo (HOME_FIELD_EDGE, PITCHER_ERA_SCALE,
-PITCHER_EDGE_CAP, SEASON_FORM_WEIGHT, MIN_INNINGS_FOR_ERA) y las funciones
-puras (log5, pitcher_edge, blended_win_pct) se IMPORTAN de
+PITCHER_EDGE_CAP, SEASON_FORM_WEIGHT, MIN_INNINGS_FOR_ERA, MIN_GAMES_FOR_FORM)
+y las funciones puras (blended_win_pct, combine_components -- que a su vez
+usa log5/pitcher_edge/to_log_odds/from_log_odds internamente) se IMPORTAN de
 mlb_signal_engine.py en vez de reimplementarse -- mismo motivo que
 model_version (13/09/2026, ese mismo archivo): un solo lugar de verdad para
-la matemática del modelo, así que tocar una constante ahí se refleja acá
-sin tener que mantener una copia sincronizada a mano.
+la matemática del modelo, así que tocar una constante (o la fórmula misma)
+ahí se refleja acá sin tener que mantener una copia sincronizada a mano.
+AUDITORÍA (13/09/2026, mismo día -- primer backtest real corrido y
+analizado): la primera versión de este script SÍ duplicaba la secuencia
+log5 -> +home_field_edge -> +pitcher_edge -> cap a mano en
+compute_prob_home(). Con los resultados de esa corrida (7303 partidos,
+Brier ~0.26, sobreconfianza fuerte en ambos extremos de la calibración) se
+identificaron dos causas y se corrigieron en mlb_signal_engine.py: (1)
+HOME_FIELD_EDGE pasó a espacio de log-odds (antes se sumaba directo a una
+probabilidad, empujando desproporcionadamente cerca de 0.05/0.95), (2) se
+agregó MIN_GAMES_FOR_FORM=15 (el bucket de probabilidad más baja estaba
+dominado por partidos de arranque de temporada con win% de 0-3 partidos
+jugados). Se aprovechó el cambio para extraer la secuencia completa a
+combine_components() en mlb_signal_engine.py, así este script ya no puede
+volver a desincronizarse de la matemática real.
 
 CAVEAT sin poder validar contra la API real (ver TODO en el header de
 mlb_signal_engine.py -- statsapi.mlb.com no es alcanzable desde este entorno
@@ -87,10 +101,10 @@ from mlb_signal_engine import (
     PITCHER_EDGE_CAP,
     SEASON_FORM_WEIGHT,
     MIN_INNINGS_FOR_ERA,
+    MIN_GAMES_FOR_FORM,
     TEAMS,
-    log5,
-    pitcher_edge,
     blended_win_pct,
+    combine_components,
 )
 from config import Config
 
@@ -215,16 +229,19 @@ def fetch_season_games(season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SECONDS):
 # --------------------------------------------------------------------------
 
 def build_team_form_asof(games):
-    """Agrega a cada partido (in-place, agrega 4 claves nuevas) el win% de
-    temporada y de últimos-10 de cada equipo ANTES de ese partido -- mismo
+    """Agrega a cada partido (in-place) el win% de temporada, de últimos-10
+    y los partidos jugados de cada equipo ANTES de ese partido -- mismo
     shape que el dict `form` que arma fetch_team_form() en
     mlb_signal_engine.py (None si el equipo no jugó ningún partido previo
-    en la temporada todavía)."""
+    en la temporada todavía), incluyendo games_played para que
+    blended_win_pct() pueda aplicar el filtro MIN_GAMES_FOR_FORM exactamente
+    igual que en producción (ver AUDITORÍA en mlb_signal_engine.py)."""
     history = {}  # team_id -> lista cronológica de bool (ganó ese partido)
 
     for g in games:
         for side, team_id in (("home", g["home_id"]), ("away", g["away_id"])):
             past = history.get(team_id, [])
+            g[f"{side}_games_played"] = len(past)
             if not past:
                 g[f"{side}_win_pct_season"] = None
                 g[f"{side}_last10_pct"] = None
@@ -337,31 +354,35 @@ def attach_pitcher_era(games, season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SEC
 
 
 # --------------------------------------------------------------------------
-# Modelo: reutiliza log5/pitcher_edge/blended_win_pct de mlb_signal_engine.py
+# Modelo: reutiliza blended_win_pct/combine_components de mlb_signal_engine.py
 # tal cual, para no duplicar la matemática -- ver AUDITORÍA del header.
 # --------------------------------------------------------------------------
 
 def compute_prob_home(game, home_field_edge=HOME_FIELD_EDGE, pitcher_era_scale=PITCHER_ERA_SCALE,
-                       pitcher_edge_cap=PITCHER_EDGE_CAP, season_weight=SEASON_FORM_WEIGHT):
-    """Misma secuencia que estimate_win_probability() en mlb_signal_engine.py
-    (log5 de win% blended -> + localía -> + pitcher_edge -> cap 0.05-0.95),
-    pero a partir de los componentes ya reconstruidos sin lookahead en vez
-    de pegarle a la API en vivo. Devuelve (raw_prob antes del cap 0.05-0.95,
-    prob ya con ese cap aplicado) -- mismos dos valores que
-    generate_mlb_signal() guarda como raw_my_prob/my_prob."""
+                       pitcher_edge_cap=PITCHER_EDGE_CAP, season_weight=SEASON_FORM_WEIGHT,
+                       min_games=MIN_GAMES_FOR_FORM):
+    """Llama a combine_components() (mlb_signal_engine.py) con los
+    componentes ya reconstruidos sin lookahead, en vez de pegarle a la API
+    en vivo -- ver AUDITORÍA del header sobre por qué ya no se duplica esta
+    matemática acá. Devuelve (raw_prob antes del cap 0.05-0.95, prob ya con
+    ese cap aplicado) -- mismos dos valores que generate_mlb_signal() guarda
+    como raw_my_prob/my_prob."""
     home_form = None if game["home_win_pct_season"] is None else {
         "win_pct": game["home_win_pct_season"], "last_ten_pct": game["home_last10_pct"],
+        "games_played": game.get("home_games_played"),
     }
     away_form = None if game["away_win_pct_season"] is None else {
         "win_pct": game["away_win_pct_season"], "last_ten_pct": game["away_last10_pct"],
+        "games_played": game.get("away_games_played"),
     }
-    home_pct, _ = blended_win_pct(home_form, season_weight)
-    away_pct, _ = blended_win_pct(away_form, season_weight)
+    home_pct, _ = blended_win_pct(home_form, season_weight, min_games)
+    away_pct, _ = blended_win_pct(away_form, season_weight, min_games)
 
-    raw_prob = log5(home_pct, away_pct) + home_field_edge
-    raw_prob += pitcher_edge(game["era_home_asof"], game["era_away_asof"],
-                              scale=pitcher_era_scale, cap=pitcher_edge_cap)
-    prob = max(0.05, min(0.95, raw_prob))
+    raw_prob, prob, _edge = combine_components(
+        home_pct, away_pct, game["era_home_asof"], game["era_away_asof"],
+        home_field_edge_logodds=home_field_edge,
+        pitcher_era_scale=pitcher_era_scale, pitcher_edge_cap=pitcher_edge_cap,
+    )
     return raw_prob, prob
 
 
@@ -411,11 +432,17 @@ def log_calibration(label, games, prob_key):
 
 def sweep(games):
     """Grid search chico sobre las 3 constantes con más impacto directo en
-    my_prob (deja MIN_INNINGS_FOR_ERA fijo -- afecta qué partidos tienen
-    era_home_asof/era_away_asof no-None, no algo que tenga sentido barrer
-    junto con el resto en la misma pasada). Barato: no pega a la API, solo
-    recalcula log5/pitcher_edge sobre el dataset ya en memoria."""
-    home_field_options = [0.0, 0.02, 0.04, 0.06, 0.08]
+    my_prob (deja MIN_INNINGS_FOR_ERA y MIN_GAMES_FOR_FORM fijos -- afectan
+    qué partidos tienen datos no-None, no algo que tenga sentido barrer
+    junto con el resto en la misma pasada, mismo criterio que antes con
+    MIN_INNINGS_FOR_ERA). Barato: no pega a la API, solo recalcula
+    combine_components() sobre el dataset ya en memoria.
+
+    home_field_options en espacio de LOG-ODDS (ver AUDITORÍA 13/09/2026 en
+    HOME_FIELD_EDGE, mlb_signal_engine.py) -- 0.16 (el default actual)
+    equivale a ~54% en un partido 50-50; el rango barre desde sin ventaja de
+    local (0.0) hasta el doble del default (0.32, ~58%)."""
+    home_field_options = [0.0, 0.08, 0.16, 0.24, 0.32]
     pitcher_scale_options = [0.0, 0.025, 0.05, 0.075, 0.10]
     season_weight_options = [0.5, 0.6, 0.7, 0.8, 0.9]
 
@@ -501,7 +528,8 @@ def main():
     if args.output:
         fieldnames = [
             "date", "game_pk", "home_id", "away_id",
-            "home_win_pct_season", "home_last10_pct", "away_win_pct_season", "away_last10_pct",
+            "home_win_pct_season", "home_last10_pct", "home_games_played",
+            "away_win_pct_season", "away_last10_pct", "away_games_played",
             "era_home_asof", "era_away_asof",
             "raw_prob_home", "prob_home", "prob_home_clipped", "home_won",
         ]
