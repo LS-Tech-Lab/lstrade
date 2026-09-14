@@ -1245,55 +1245,104 @@ function formatVersionRangeEs(firstSeen, lastSeen) {
   return start === end ? start : `${start} – ${end}`;
 }
 
-// NUEVO (13/09/2026): reemplaza el bloque hardcodeado de "antes/después
-// del fix" -- ver AUDITORÍA junto a groupMlbByVersion en route.js. Cada
-// vez que se ajusta una constante del modelo (HOME_FIELD_EDGE,
-// PITCHER_ERA_SCALE, el clip, etc.) aparece automáticamente un bloque
-// nuevo acá, con las mismas tarjetas de siempre (PerformanceCard/
-// CalibrationCard, sin cambios) -- ya no hace falta tocar page.js ni
-// route.js para que el panel refleje una versión nueva del modelo.
+// Una versión del modelo se considera "activa" si tiene al menos una señal
+// resuelta en los últimos ACTIVE_VERSION_DAYS días -- se usa para no listar
+// para siempre, en el selector, versiones viejas que ya nadie va a mirar
+// (ver AUDITORÍA 14/09/2026 más abajo).
+const ACTIVE_VERSION_DAYS = 30;
+function isVersionActive(v) {
+  if (!v || !v.last_seen) return false;
+  return (Date.now() - new Date(v.last_seen).getTime()) < ACTIVE_VERSION_DAYS * 86400000;
+}
+
+// AUDITORÍA (14/09/2026): antes, cada versión del modelo agregaba un par
+// fijo de tarjetas Performance/Calibración al tab de MLB (además del par
+// "todas, histórico") -- con 3+ versiones acumuladas el módulo se volvía
+// carrusel de scroll larguísimo, la mayoría repitiendo casi la misma
+// info. Reemplazado por un selector: se ve un solo par de tarjetas a la
+// vez (histórico o una versión puntual), y las versiones sin señales
+// resueltas en los últimos ACTIVE_VERSION_DAYS días quedan ocultas del
+// selector por defecto (con un toggle para traerlas de vuelta) en vez de
+// desaparecer -- no se pierde nada, solo no ocupa espacio hasta que se pide.
 function MlbTab({ data }) {
   const byVersion = data.mlb_by_version || [];
+  const activeVersions = byVersion.filter(isVersionActive);
+  // Si ninguna versión califica como "activa" (ej. históricos muy viejos
+  // sin actividad reciente), no tiene sentido ocultar todo -- se arranca
+  // mostrando el desglose completo para no dejar el selector vacío.
+  const [showAllVersions, setShowAllVersions] = useState(activeVersions.length === 0);
+  const visibleVersions = showAllVersions ? byVersion : activeVersions;
+  const hiddenCount = byVersion.length - visibleVersions.length;
+
+  const [selectedVersion, setSelectedVersion] = useState("all");
+  useEffect(() => {
+    if (selectedVersion !== "all" && !visibleVersions.some((v) => v.model_version === selectedVersion)) {
+      setSelectedVersion("all");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAllVersions]);
+
+  const versionLabel = (v) => (v.is_legacy ? "legacy (antes de guardar versión)" : `versión ${v.model_version}`);
+  const selected = selectedVersion === "all" ? null : byVersion.find((v) => v.model_version === selectedVersion);
+  const totalN = byVersion.reduce((sum, v) => sum + v.n, 0) || data.mlb_stats?.n || 0;
+
   return (
     <>
       <PlainSummary halted={false} stats={data.mlb_stats} label="MLB" />
 
-      <PerformanceCard title="Performance — MLB (todas las señales resueltas, histórico)"
-        subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal. Incluye todas las versiones del modelo — ver desglose por versión abajo."
-        emptyMessage="Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real."
-        statCards={buildMlbStatCards(data.mlb_stats)} />
-      <CalibrationCard title="Calibración — MLB (todas las señales, histórico)"
-        subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces ganó de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
-        emptyMessage="Todavía no hay suficientes señales de MLB con resultado real (ganó/perdió) para calibrar — los stop-loss y partidos cancelados no cuentan acá porque no sabemos si el lado elegido hubiera ganado."
-        calibration={data.mlb_calibration} />
-
       {byVersion.length > 0 && (
-        <p className="card-subtitle" style={{ margin: "0 0 12px" }}>
-          Desglose por versión del modelo (cada fila de mlb_signals guarda con qué
-          configuración de constantes se generó — ver model_version). {byVersion.length}{" "}
-          {byVersion.length === 1 ? "versión encontrada" : "versiones encontradas"} en el histórico resuelto.
-        </p>
+        <div className="version-select-row">
+          <label className="version-select-label">
+            Versión del modelo
+            <select
+              className="version-select"
+              value={selectedVersion}
+              onChange={(e) => setSelectedVersion(e.target.value)}
+            >
+              <option value="all">Todas (histórico) — {totalN} señal{totalN === 1 ? "" : "es"}</option>
+              {visibleVersions.map((v) => (
+                <option key={v.model_version} value={v.model_version}>
+                  {versionLabel(v)} — {v.n} señal{v.n === 1 ? "" : "es"}
+                </option>
+              ))}
+            </select>
+          </label>
+          {hiddenCount > 0 && !showAllVersions && (
+            <button className="link-toggle" onClick={() => setShowAllVersions(true)}>
+              + mostrar {hiddenCount} versión{hiddenCount === 1 ? "" : "es"} sin señales en los últimos {ACTIVE_VERSION_DAYS} días
+            </button>
+          )}
+          {showAllVersions && activeVersions.length > 0 && activeVersions.length < byVersion.length && (
+            <button className="link-toggle" onClick={() => setShowAllVersions(false)}>
+              − ocultar versiones inactivas
+            </button>
+          )}
+        </div>
       )}
 
-      {byVersion.map((v) => {
-        const range = formatVersionRangeEs(v.first_seen, v.last_seen);
-        const label = v.is_legacy
-          ? "legacy (señales de antes de guardar model_version)"
-          : `versión ${v.model_version}`;
-        const subtitleSuffix = range ? ` — ${range}` : "";
-        return (
-          <Fragment key={v.model_version}>
-            <PerformanceCard title={`Performance — MLB (${label})`}
-              subtitle={`${v.n} señal${v.n === 1 ? "" : "es"} resuelta${v.n === 1 ? "" : "s"}${subtitleSuffix}.`}
-              emptyMessage="Sin señales de MLB resueltas en esta versión."
-              statCards={buildMlbStatCards(v.stats)} />
-            <CalibrationCard title={`Calibración — MLB (${label})`}
-              subtitle="Mismo cálculo que arriba, solo con señales generadas con esta configuración del modelo."
-              emptyMessage="Sin señales suficientes en esta versión para calibrar."
-              calibration={v.calibration} />
-          </Fragment>
-        );
-      })}
+      {selected ? (
+        <>
+          <PerformanceCard title={`Performance — MLB (${versionLabel(selected)})`}
+            subtitle={`${selected.n} señal${selected.n === 1 ? "" : "es"} resuelta${selected.n === 1 ? "" : "s"}${formatVersionRangeEs(selected.first_seen, selected.last_seen) ? ` — ${formatVersionRangeEs(selected.first_seen, selected.last_seen)}` : ""}.`}
+            emptyMessage="Sin señales de MLB resueltas en esta versión."
+            statCards={buildMlbStatCards(selected.stats)} />
+          <CalibrationCard title={`Calibración — MLB (${versionLabel(selected)})`}
+            subtitle="Mismo cálculo que el histórico general, solo con señales generadas con esta configuración del modelo."
+            emptyMessage="Sin señales suficientes en esta versión para calibrar."
+            calibration={selected.calibration} />
+        </>
+      ) : (
+        <>
+          <PerformanceCard title="Performance — MLB (todas las señales resueltas, histórico)"
+            subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal. Incluye todas las versiones del modelo — elegí una versión puntual arriba para desglosar."
+            emptyMessage="Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real."
+            statCards={buildMlbStatCards(data.mlb_stats)} />
+          <CalibrationCard title="Calibración — MLB (todas las señales, histórico)"
+            subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces ganó de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
+            emptyMessage="Todavía no hay suficientes señales de MLB con resultado real (ganó/perdió) para calibrar — los stop-loss y partidos cancelados no cuentan acá porque no sabemos si el lado elegido hubiera ganado."
+            calibration={data.mlb_calibration} />
+        </>
+      )}
 
       <EquityCard title="Equity — MLB"
         subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
