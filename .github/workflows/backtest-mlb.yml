@@ -57,6 +57,14 @@ jobs:
             $([ "${{ inputs.sweep }}" = "true" ] && echo --sweep) \
             --output resultados_mlb.csv
 
+      # AUDITORÍA (13/09/2026): corre la calibración logit-space sobre el
+      # CSV recién generado en el mismo run -- así el veredicto (shift-only
+      # vs. Platt vs. "no calibra mejor que el crudo") queda en el log de
+      # esta misma corrida, con los datos frescos, en vez de tener que bajar
+      # el CSV y correrlo aparte a mano cada vez.
+      - name: Ajustar curva de calibración sobre los resultados frescos
+        run: python mlb_calibration.py --input resultados_mlb.csv
+
       - name: Subir resultados como artifact
         uses: actions/upload-artifact@v4
         with:
