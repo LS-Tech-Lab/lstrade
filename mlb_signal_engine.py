@@ -237,21 +237,23 @@ MOMENTUM_DISAGREEMENT_THRESHOLD = 0.08  # ver price_disagrees_with_model() -- si
 # partidos. 15 es conservador a propósito (roughly 2-3 semanas a razón de
 # ~6 partidos/semana, en línea con lo que confirmó el backtest) -- revisar
 # si hace falta afinarlo con el próximo backtest.
-# AUDITORÍA (13/09/2026, segunda corrida del backtest -- reemplaza al clip
-# duro Config.MLB_PROB_CLIP_MIN/MAX=[0.40,0.60] del 09/09/2026): Platt
-# scaling en espacio logit, fiteado con mlb_calibration.py sobre 7303
-# partidos (2023-2025), evaluado en un holdout cronológico de los últimos
-# ~20% (1461 partidos desde 2025-06-08, nunca visto al fitear): Brier bajó
-# de 0.2550 (crudo) a 0.2460 (calibrado) en ESE holdout -- mejora real
-# fuera de muestra. La pendiente (a=0.36, menor a 1) confirma que el
-# modelo SÍ tiene señal real más allá de un simple shift de nivel (la
-# primera corrida, pre-fix de HOME_FIELD_EDGE/MIN_GAMES_FOR_FORM, había
-# dado a=0.08 -- casi sin poder de diferenciación real). Ver calibrate_prob()
-# más abajo. Reemplazar estos dos valores la próxima vez que se corra
-# mlb_calibration.py con datos más nuevos (el workflow backtest-mlb.yml ya
-# corre esa calibración automáticamente al final de cada backtest).
-CALIBRATION_A = 0.3567  # pendiente (logit-space) -- ver AUDITORÍA arriba
-CALIBRATION_B = 0.0589  # shift (logit-space) -- ver AUDITORÍA arriba
+# AUDITORÍA (14/09/2026, tercera corrida del backtest -- primera con FIP y
+# Pythagorean ya activos): reemplaza al clip duro
+# Config.MLB_PROB_CLIP_MIN/MAX=[0.40,0.60] del 09/09/2026. Platt scaling en
+# espacio logit, fiteado con mlb_calibration.py sobre 7303 partidos
+# (2023-2025), evaluado en un holdout cronológico de los últimos ~20%
+# (1461 partidos desde 2025-06-08, nunca visto al fitear): Brier bajó de
+# 0.2531 (crudo) a 0.2458 (calibrado) en ESE holdout. La pendiente sigue
+# subiendo corrida a corrida (a=0.08 pre-fix de HOME_FIELD_EDGE/
+# MIN_GAMES_FOR_FORM -> a=0.36 post-fix -> a=0.40 post-FIP/Pythagorean) --
+# cada mejora estructural recupera más señal real, en la misma dirección
+# las tres veces. Ver calibrate_prob() más abajo. Reemplazar estos dos
+# valores la próxima vez que se corra mlb_calibration.py con datos más
+# nuevos (el workflow backtest-mlb.yml ya corre esa calibración
+# automáticamente al final de cada backtest).
+CALIBRATION_A = 0.4018  # pendiente (logit-space) -- ver AUDITORÍA arriba
+CALIBRATION_B = 0.0525  # shift (logit-space) -- ver AUDITORÍA arriba
+
 
 MIN_GAMES_FOR_FORM = 15
 
@@ -702,25 +704,14 @@ def from_log_odds(x):
     return 1.0 / (1.0 + math.exp(-x))
 
 
-# AUDITORÍA (13/09/2026): valores CALIBRATION_A/CALIBRATION_B definidos
+# AUDITORÍA (14/09/2026): valores CALIBRATION_A/CALIBRATION_B definidos
 # más arriba (junto a MIN_GAMES_FOR_FORM, antes de MODEL_VERSION -- el
-# fingerprint los necesita ya calculados). Reemplazan al clip duro
-# Config.MLB_PROB_CLIP_MIN/MAX=[0.40,0.60] del 09/09/2026 por una curva de
-# calibración real -- Platt scaling en espacio logit, fiteado con
-# mlb_calibration.py sobre 7303 partidos (2023-2025), evaluado en un
-# holdout cronológico de los últimos ~20% (1461 partidos desde 2025-06-08,
-# nunca visto al fitear): Brier bajó de 0.2550 (crudo, sin calibrar) a
-# 0.2460 (calibrado) en ESE holdout -- mejora real fuera de muestra, no
-# ajuste in-sample. La pendiente (a=0.36, menor a 1) es la parte
-# importante: confirma que el modelo SÍ tiene señal real más allá de un
-# simple shift de nivel (si a fuera ~0, calibrate_prob aplanaría todo cerca
-# de un valor fijo -- eso fue lo que dio la primera corrida, pre-fix, con
-# a=0.08: casi sin poder de diferenciación real). A diferencia del clip
+# fingerprint los necesita ya calculados) -- ver AUDITORÍA completa ahí
+# (tercera corrida del backtest, primera con FIP/Pythagorean, a=0.40).
+# Reemplazan al clip duro Config.MLB_PROB_CLIP_MIN/MAX=[0.40,0.60] del
+# 09/09/2026 por Platt scaling en espacio logit. A diferencia del clip
 # viejo, esto SÍ deja que un 55% y un 58% de log5+pitcher_edge sigan
 # siendo distintos después de calibrar, solo que con niveles honestos.
-# Reemplazar CALIBRATION_A/B la próxima vez que se corra mlb_calibration.py
-# con datos más nuevos (el workflow backtest-mlb.yml ya corre esa
-# calibración automáticamente al final de cada backtest).
 def calibrate_prob(raw_prob, a=CALIBRATION_A, b=CALIBRATION_B):
     """Platt scaling en espacio logit -- calibrated = sigmoid(a*logit(raw)+b).
     Reemplaza al clip fijo Config.MLB_PROB_CLIP_MIN/MAX. Ver AUDITORÍA
