@@ -37,6 +37,7 @@ que se asume acá -- están tomados de documentación de terceros
 (pseudo-r/Public-MLB-API), no de una respuesta real inspeccionada.
 """
 import logging
+import math
 import re
 import time
 from datetime import datetime
@@ -160,7 +161,26 @@ def fetch_game_result(game_pk, timeout=DEFAULT_TIMEOUT):
         "voided": False,
     }
 
-HOME_FIELD_EDGE = 0.04       # ver AUDITORÍA arriba -- sin calibrar
+# AUDITORÍA (13/09/2026, backtest histórico -- 7303 partidos 2023-2025, ver
+# backtest_mlb.py): HOME_FIELD_EDGE se sumaba directo a una probabilidad
+# (prob += home_field_edge), lo cual no es matemáticamente prolijo -- empujar
+# +0.04 a una probabilidad que ya viene alta por log5 la acerca
+# desproporcionadamente al techo (0.05-0.95), mientras que a una probabilidad
+# ya baja la empuja desproporcionadamente al piso. Confirmado en el backtest:
+# la calibración por decil muestra sobreconfianza en AMBOS extremos, no solo
+# arriba (0-10% predicho -> ~37-45% real; 90-100% predicho -> ~62-71% real),
+# justo el patrón que produce un ajuste aditivo simple sobre una probabilidad
+# ya extrema. Se mueve a espacio de log-odds (logit) -- ver
+# to_log_odds/from_log_odds y combine_components() más abajo -- para que el
+# mismo ajuste de localía empuje MENOS en términos de probabilidad cuando el
+# partido ya está lejos de 50-50, en vez de empujar lo mismo en cualquier
+# punto de la curva.
+# Valor: 0.16 en log-odds equivale a mover un partido 50-50 a ~54% de local
+# -- la ventaja de localía históricamente aceptada en MLB (ln(0.54/0.46) =
+# 0.1604) -- mismo punto de referencia que ya se había usado para elegir
+# 0.04 en espacio de probabilidad (0.5+0.04=0.54), solo que ahora expresado
+# en las unidades correctas para que no se deforme lejos del 50-50.
+HOME_FIELD_EDGE = 0.16       # en espacio de log-odds -- ver AUDITORÍA arriba (antes 0.04 en espacio de probabilidad)
 
 # AUDITORÍA (12/09/2026, sesión con Claude a partir del panel de MLB
 # mostrando 26.1% de acierto / calibración invertida en 60-90%): se aisló
@@ -199,6 +219,26 @@ SEASON_FORM_WEIGHT = 0.7     # peso de win% de temporada vs. últimos-10 en blen
 MIN_INNINGS_FOR_ERA = 30.0   # AUDITORÍA 12/09/2026 arriba -- subido de 15.0 (ERA de pocas salidas es ruido)
 MOMENTUM_DISAGREEMENT_THRESHOLD = 0.08  # ver price_disagrees_with_model() -- sin calibrar
 
+# AUDITORÍA (13/09/2026, backtest histórico -- ver backtest_mlb.py): el
+# bucket de probabilidad predicha MÁS bajo (0-10%) resultó ganando el
+# partido 45.1% de las veces en el dataset completo -- muy lejos de lo que
+# dice el modelo. Se aisló la causa: 82/82 de esos partidos tenían al menos
+# un equipo con win% de temporada en 0.0 o 1.0 exacto, es decir, muy pocos
+# partidos jugados todavía (arranque de temporada) -- un equipo 0-3 no es
+# "el peor equipo de la liga", es ruido de muestra chica que log5 toma como
+# señal fuerte. Excluyendo las primeras 3 semanas de cada temporada, ese
+# bucket bajó de 82 a 19 partidos y la calibración en los extremos mejoró
+# (90-100% predicho pasó de 62.6% a 71.4% real). Mismo patrón, mismo tipo de
+# fix, que MIN_INNINGS_FOR_ERA ya aplica del lado del pitcher -- acá el
+# equivalente para el win% de EQUIPO: si un equipo todavía no jugó
+# MIN_GAMES_FOR_FORM partidos en la temporada, blended_win_pct() lo trata
+# como "sin forma" (50% neutral, mismo tratamiento que ya existía para
+# start-of-season sin datos), en vez de confiar en una fracción de 1-14
+# partidos. 15 es conservador a propósito (roughly 2-3 semanas a razón de
+# ~6 partidos/semana, en línea con lo que confirmó el backtest) -- revisar
+# si hace falta afinarlo con el próximo backtest.
+MIN_GAMES_FOR_FORM = 15
+
 # AUDITORÍA (13/09/2026): ya van dos veces (el clip de probabilidad del
 # 09/09 y este mismo ajuste de pitcher_edge del 12/09) que un cambio de
 # constante se mezcla en el dashboard con señales generadas ANTES del
@@ -219,7 +259,7 @@ def _compute_model_version():
     import hashlib
     fingerprint = "|".join(str(v) for v in [
         HOME_FIELD_EDGE, PITCHER_ERA_SCALE, PITCHER_EDGE_CAP, SEASON_FORM_WEIGHT,
-        MIN_INNINGS_FOR_ERA, MOMENTUM_DISAGREEMENT_THRESHOLD,
+        MIN_INNINGS_FOR_ERA, MIN_GAMES_FOR_FORM, MOMENTUM_DISAGREEMENT_THRESHOLD,
         Config.MLB_PROB_CLIP_MIN, Config.MLB_PROB_CLIP_MAX, Config.MLB_EXTREME_PRICE_FLOOR,
     ])
     return hashlib.sha256(fingerprint.encode()).hexdigest()[:8]
@@ -422,9 +462,23 @@ def fetch_team_form(team_id, season):
                     w, l = int(m.group(1)), int(m.group(2))
                     if w + l > 0:
                         last_ten_pct = w / (w + l)
+                # AUDITORÍA (13/09/2026): games_played -- ver MIN_GAMES_FOR_FORM
+                # arriba. Se intenta "gamesPlayed" directo primero (si la API lo
+                # trae en teamRecord); si no, se lo deriva de wins+losses.
+                # Ninguno de los dos nombres de campo está confirmado contra una
+                # respuesta real (ver TODO en el header del módulo) -- si
+                # ninguno existe, games_played queda None y blended_win_pct()
+                # simplemente no aplica el filtro (se degrada al comportamiento
+                # de antes, no rompe nada).
+                games_played = team_record.get("gamesPlayed")
+                if games_played is None:
+                    w_total, l_total = team_record.get("wins"), team_record.get("losses")
+                    if w_total is not None and l_total is not None:
+                        games_played = w_total + l_total
                 return {
                     "win_pct": float(team_record.get("winningPercentage", 0.5) or 0.5),
                     "last_ten_pct": last_ten_pct,
+                    "games_played": games_played,
                 }
     return None
 
@@ -452,11 +506,19 @@ def fetch_pitcher_era(person_id, season):
     return None
 
 
-def blended_win_pct(form, season_weight=SEASON_FORM_WEIGHT):
+def blended_win_pct(form, season_weight=SEASON_FORM_WEIGHT, min_games=MIN_GAMES_FOR_FORM):
     """Mezcla win% de temporada con la forma de los últimos 10. Sin datos
     de últimos 10 (arranque de temporada), usa solo el de temporada. Sin
-    ningún dato, devuelve 50% neutral y lo marca como faltante."""
+    ningún dato, o con menos de min_games partidos jugados todavía en la
+    temporada (ver AUDITORÍA en MIN_GAMES_FOR_FORM -- un win% de 1-14
+    partidos es ruido, no forma real), devuelve 50% neutral y lo marca como
+    faltante -- mismo tratamiento en los dos casos, para que
+    generate_mlb_signal() exija más EV cuando el modelo no tiene con qué
+    respaldar la estimación, no solo cuando falta el dato por completo."""
     if form is None:
+        return 0.5, True
+    games_played = form.get("games_played")
+    if games_played is not None and games_played < min_games:
         return 0.5, True
     if form["last_ten_pct"] is None:
         return form["win_pct"], False
@@ -472,6 +534,19 @@ def log5(pct_a, pct_b):
     return (pct_a - pct_a * pct_b) / denom
 
 
+def to_log_odds(p, eps=1e-6):
+    """logit(p), con clamp a (eps, 1-eps) para no romper con p=0 o p=1 --
+    log5() ya nunca devuelve exactamente 0 o 1 con inputs válidos, pero el
+    clamp es barato y evita una excepción rara en un edge case no previsto."""
+    p = min(max(p, eps), 1 - eps)
+    return math.log(p / (1 - p))
+
+
+def from_log_odds(x):
+    """Inversa de to_log_odds -- sigmoide."""
+    return 1.0 / (1.0 + math.exp(-x))
+
+
 def pitcher_edge(era_a, era_b, scale=PITCHER_ERA_SCALE, cap=PITCHER_EDGE_CAP):
     """Diferencia de ERA entre los dos probables -> ajuste de probabilidad
     a favor de A. Positivo si A tiene mejor (más bajo) ERA. Cap a ±cap
@@ -482,6 +557,36 @@ def pitcher_edge(era_a, era_b, scale=PITCHER_ERA_SCALE, cap=PITCHER_EDGE_CAP):
     if era_a is None or era_b is None:
         return 0.0
     return max(-cap, min(cap, (era_b - era_a) * scale))
+
+
+def combine_components(home_pct, away_pct, era_home, era_away,
+                        home_field_edge_logodds=HOME_FIELD_EDGE,
+                        pitcher_era_scale=PITCHER_ERA_SCALE, pitcher_edge_cap=PITCHER_EDGE_CAP):
+    """
+    log5(home_pct, away_pct) -> + localía (en espacio de log-odds, ver
+    AUDITORÍA 13/09/2026 en HOME_FIELD_EDGE) -> + pitcher_edge (en espacio
+    de probabilidad, sin cambios -- el usuario solo pidió mover la localía)
+    -> cap de sanidad 0.05-0.95.
+
+    NUEVO (13/09/2026): extraído de estimate_win_probability() para que
+    backtest_mlb.py pueda llamar exactamente esta misma función en vez de
+    reimplementar la secuencia a mano -- antes el backtest duplicaba esta
+    matemática (log5 -> +home_field_edge -> +pitcher_edge -> cap) por
+    separado, con el riesgo de irse desincronizando de este módulo la
+    próxima vez que alguien toque una constante acá y se olvide del otro
+    archivo. Con esto, un solo lugar de verdad para ambos.
+
+    Devuelve (raw_prob sin el cap 0.05-0.95, prob ya con el cap, edge de
+    pitcher ya aplicado) -- el shape que generate_mlb_signal()/backtest_mlb.py
+    necesitan para guardar raw_my_prob/my_prob y el componente pitcher_edge
+    por separado.
+    """
+    base_prob = log5(home_pct, away_pct)
+    prob_with_home_field = from_log_odds(to_log_odds(base_prob) + home_field_edge_logodds)
+    edge = pitcher_edge(era_home, era_away, scale=pitcher_era_scale, cap=pitcher_edge_cap)
+    raw_prob = prob_with_home_field + edge
+    prob = max(0.05, min(0.95, raw_prob))
+    return raw_prob, prob, edge
 
 
 def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id, season,
@@ -508,19 +613,20 @@ def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id,
     notes = []
     penalty = 0.0
     era_home = era_away = None
-    edge = 0.0
 
-    home_pct, home_missing = blended_win_pct(fetch_team_form(home_id, season))
-    away_pct, away_missing = blended_win_pct(fetch_team_form(away_id, season))
+    form_home = fetch_team_form(home_id, season)
+    form_away = fetch_team_form(away_id, season)
+    home_pct, home_missing = blended_win_pct(form_home)
+    away_pct, away_missing = blended_win_pct(form_away)
     if home_missing or away_missing:
         penalty += 0.3
-        notes.append("Sin forma de equipo para uno de los dos lados -- se usó 50% neutral.")
-
-    prob = log5(home_pct, away_pct)
-    notes.append(f"log5 win%: local {home_pct:.3f} vs. visita {away_pct:.3f} -> {prob:.3f}")
-
-    prob += home_field_edge
-    notes.append(f"+ localía: {home_field_edge:+.3f}")
+        notes.append(
+            "Sin forma de equipo confiable para uno de los dos lados (sin datos, o con menos de "
+            f"{MIN_GAMES_FOR_FORM} partidos jugados en la temporada -- ver AUDITORÍA 13/09/2026) "
+            "-- se usó 50% neutral."
+        )
+    notes.append(f"log5 win%: local {home_pct:.3f} vs. visita {away_pct:.3f}")
+    notes.append(f"+ localía (log-odds): {home_field_edge:+.3f}")
 
     if not home_pitcher_id or not away_pitcher_id:
         penalty += 0.2
@@ -531,15 +637,14 @@ def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id,
         if era_home is None or era_away is None:
             penalty += 0.15
             notes.append("ERA de temporada insuficiente (pocas entradas) para uno de los dos probables.")
-        else:
-            edge = pitcher_edge(era_home, era_away)
-            prob += edge
-            notes.append(f"+ pitchers (ERA {era_home:.2f} vs {era_away:.2f}): {edge:+.3f}")
 
-    # Cap de sanidad -- igual que build_bucket_distribution en el motor de
-    # clima: nunca dejar que la probabilidad final sugiera una certeza que
-    # el modelo no tiene fundamento real para respaldar.
-    prob = max(0.05, min(0.95, prob))
+    # Ver combine_components() -- misma función que usa backtest_mlb.py, para
+    # que la matemática de log5 + localía (log-odds) + pitcher_edge + cap de
+    # sanidad viva en un solo lugar.
+    raw_prob, prob, edge = combine_components(home_pct, away_pct, era_home, era_away,
+                                               home_field_edge_logodds=home_field_edge)
+    if era_home is not None and era_away is not None:
+        notes.append(f"+ pitchers (ERA {era_home:.2f} vs {era_away:.2f}): {edge:+.3f}")
 
     components = {
         "home_win_pct": round(home_pct, 3),
