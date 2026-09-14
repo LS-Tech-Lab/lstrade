@@ -255,6 +255,61 @@ CALIBRATION_B = 0.0589  # shift (logit-space) -- ver AUDITORÍA arriba
 
 MIN_GAMES_FOR_FORM = 15
 
+# AUDITORÍA (13/09/2026, "Mejoras al modelo en sí" -- pedido del usuario):
+# ERA de temporada depende de la defensa del equipo y de la suerte de
+# bateo en juego (BABIP) del pitcher -- dos cosas que no controla. FIP
+# (Fielding Independent Pitching) aísla lo que el pitcher SÍ controla
+# (HR, BB, HBP, K) y es más predictivo partido a partido, que es
+# justamente lo que necesita este modelo (una estimación de "qué tan
+# bien va a tirar HOY", no un resumen retrospectivo de temporada).
+# Fórmula estándar: FIP = (13*HR + 3*(BB+HBP) - 2*K) / IP + constante.
+# La constante normalmente se recalcula por temporada a partir del ERA
+# promedio de las ligas (para que FIP quede en la misma escala que ERA,
+# ~4.00 de promedio) -- eso requeriría un fetch adicional de totales de
+# liga que hoy no se está haciendo. Se usa un valor fijo ~3.10 (rango
+# histórico real ~3.0-3.3 según la temporada) como aproximación razonable
+# -- más simple que consultar totales de liga por temporada, a costa de
+# un pequeño corrimiento de escala año a año. Si hace falta más precisión,
+# el próximo paso es calcular la constante real por temporada desde
+# /api/v1/stats?stats=season&group=pitching&sportId=1&season=YYYY
+# (totales de liga), no está hecho todavía.
+FIP_CONSTANT = 3.10
+
+# AUDITORÍA (13/09/2026): Pythagorean win expectancy (diferencial de
+# carreras) en vez del win% crudo de temporada para el componente de
+# "forma de equipo" -- un récord W-L puede estar inflado/desinflado por
+# partidos ganados/perdidos por una carrera (alta varianza, no repite),
+# mientras que el diferencial de carreras es más estable y predictivo de
+# la fuerza real del equipo. Exponente 1.83 (el refinamiento de Bill James
+# sobre el clásico exponente 2 para MLB específicamente -- ver
+# pythagorean_win_pct() más abajo) en vez del win% de temporada, no en vez
+# del de últimos-10 (una ventana de 10 partidos es chica para que el
+# diferencial de carreras sea más estable que el récord real -- ahí se
+# sigue usando el récord real tal cual).
+PYTHAGOREAN_EXPONENT = 1.83
+
+# AUDITORÍA (13/09/2026): las otras dos mejoras pedidas -- bullpen
+# (ERA/FIP del staff de relevo) y factores de parque -- se evalúan y NO se
+# implementan hoy:
+#   - Factores de parque: se buscaron valores reales antes de hardcodear
+#     nada (ver conversación) -- las fuentes públicas discrepan fuerte
+#     entre sí para el mismo parque/temporada (ej. Coors Field: 107, 110,
+#     128 y 138 según el sitio y la ventana usada). Meter una tabla
+#     estática con números que ni las fuentes externas acuerdan entre sí
+#     sería inyectar un sesgo mal sustentado y silencioso en cada
+#     predicción. El camino correcto es derivarlos de los mismos datos que
+#     ya junta backtest_mlb.py (carreras anotadas en cada parque vs. el
+#     resto de la liga, con suficiente muestra) -- no está hecho todavía.
+#   - Bullpen: la MLB Stats API no tiene (que se haya podido confirmar
+#     desde este entorno, sin acceso a statsapi.mlb.com para probar) un
+#     endpoint simple y confiable para "ERA/FIP solo de relevo" separado
+#     del abridor -- requeriría clasificar cada pitcher del roster por rol
+#     y sumar sus starts/relief appearances a mano, con bastante superficie
+#     para errores silenciosos si se adivina el campo/endpoint equivocado.
+#     Mismo criterio que ya se usó con MLB_EXTREME_PRICE_FLOOR y otros
+#     campos no verificados: no adivinar un endpoint crítico sin poder
+#     confirmarlo contra una respuesta real.
+
 # AUDITORÍA (13/09/2026): ya van dos veces (el clip de probabilidad del
 # 09/09 y este mismo ajuste de pitcher_edge del 12/09) que un cambio de
 # constante se mezcla en el dashboard con señales generadas ANTES del
@@ -276,7 +331,8 @@ def _compute_model_version():
     fingerprint = "|".join(str(v) for v in [
         HOME_FIELD_EDGE, PITCHER_ERA_SCALE, PITCHER_EDGE_CAP, SEASON_FORM_WEIGHT,
         MIN_INNINGS_FOR_ERA, MIN_GAMES_FOR_FORM, MOMENTUM_DISAGREEMENT_THRESHOLD,
-        CALIBRATION_A, CALIBRATION_B, Config.MLB_EXTREME_PRICE_FLOOR,
+        CALIBRATION_A, CALIBRATION_B, FIP_CONSTANT, PYTHAGOREAN_EXPONENT,
+        Config.MLB_EXTREME_PRICE_FLOOR,
     ])
     return hashlib.sha256(fingerprint.encode()).hexdigest()[:8]
 
@@ -459,6 +515,39 @@ def fetch_probable_pitchers_for_date(date_str):
     return games
 
 
+def _parse_innings_pitched(ip_str):
+    """"X.Y" de la MLB Stats API -- Y son TERCIOS de entrada (0, 1 o 2), no
+    decimales: "6.2" es 6 y 2/3 = 6.667 entradas reales, no 6.2.
+
+    NUEVO (13/09/2026): movido acá desde backtest_mlb.py -- fetch_pitcher_fip()
+    (más abajo) necesita sumar IP a mano para el cálculo de FIP (a
+    diferencia del viejo fetch_pitcher_era(), que usaba el campo "era" ya
+    calculado por la propia API), así que ahora el motor en vivo también
+    necesita esta conversión, no solo el backtest. Único lugar de verdad
+    para los dos, mismo motivo que combine_components()."""
+    if ip_str is None:
+        return 0.0
+    try:
+        whole_str, _, frac_str = str(ip_str).partition(".")
+        whole = float(whole_str) if whole_str else 0.0
+        thirds = int(frac_str) if frac_str else 0
+    except (ValueError, TypeError):
+        return 0.0
+    return whole + thirds / 3.0
+
+
+def pythagorean_win_pct(runs_scored, runs_allowed, exponent=PYTHAGOREAN_EXPONENT):
+    """Win% esperado a partir del diferencial de carreras -- ver
+    AUDITORÍA junto a PYTHAGOREAN_EXPONENT. None si faltan datos o si
+    alguno de los dos es 0 (imposible en un caso real con partidos
+    jugados, pero defensivo por si la API devuelve algo raro)."""
+    if runs_scored is None or runs_allowed is None or runs_scored <= 0 or runs_allowed <= 0:
+        return None
+    rs_exp = runs_scored ** exponent
+    ra_exp = runs_allowed ** exponent
+    return rs_exp / (rs_exp + ra_exp)
+
+
 def fetch_team_form(team_id, season):
     """Win% de temporada y récord de los últimos 10 para un equipo, desde
     /standings (trae las dos ligas juntas, se filtra al id pedido)."""
@@ -491,16 +580,29 @@ def fetch_team_form(team_id, season):
                     w_total, l_total = team_record.get("wins"), team_record.get("losses")
                     if w_total is not None and l_total is not None:
                         games_played = w_total + l_total
+                # AUDITORÍA (13/09/2026): runsScored/runsAllowed -- ver
+                # pythagorean_win_pct()/PYTHAGOREAN_EXPONENT arriba. Mismos
+                # nombres de campo sin confirmar contra una respuesta real
+                # (ver TODO en el header del módulo); si no existen,
+                # pyth_win_pct queda None y blended_win_pct() se degrada al
+                # win% crudo de siempre, no rompe nada.
+                runs_scored = team_record.get("runsScored")
+                runs_allowed = team_record.get("runsAllowed")
+                pyth_win_pct = pythagorean_win_pct(runs_scored, runs_allowed)
                 return {
                     "win_pct": float(team_record.get("winningPercentage", 0.5) or 0.5),
                     "last_ten_pct": last_ten_pct,
                     "games_played": games_played,
+                    "pyth_win_pct": pyth_win_pct,
                 }
     return None
 
 
 def fetch_pitcher_era(person_id, season):
-    """ERA de temporada de un pitcher. None si no encuentra el stat o si
+    """ERA de temporada de un pitcher. LEGACY (13/09/2026) -- ya no se usa
+    en el path en vivo (ver fetch_pitcher_fip() abajo, que la reemplaza en
+    estimate_win_probability()); se deja definida por si hace falta
+    comparar FIP vs. ERA más adelante. None si no encuentra el stat o si
     todavía no acumuló MIN_INNINGS_FOR_ERA (muestra chica -- una mala
     salida de debut no debería dominar el ajuste)."""
     if not person_id:
@@ -522,23 +624,60 @@ def fetch_pitcher_era(person_id, season):
     return None
 
 
+def fetch_pitcher_fip(person_id, season):
+    """FIP de temporada de un pitcher (ver AUDITORÍA junto a FIP_CONSTANT)
+    -- reemplaza a fetch_pitcher_era() en estimate_win_probability().
+    A diferencia de ERA (que la API ya trae calculada), FIP hay que
+    armarlo acá a partir de HR/BB/HBP/K/IP -- por eso necesita
+    _parse_innings_pitched() para el formato "X.Y" en tercios de entrada.
+    Mismo umbral MIN_INNINGS_FOR_ERA y mismo motivo que antes (una mala
+    salida de muestra chica no debería dominar el ajuste). None si falta
+    algún campo o no llegó a la muestra mínima."""
+    if not person_id:
+        return None
+    data = _get(f"/people/{person_id}/stats", {"stats": "season", "group": "pitching", "season": season})
+    if not data:
+        return None
+    for entry in data.get("stats", []):
+        for split in entry.get("splits", []):
+            stat = split.get("stat", {})
+            try:
+                innings = _parse_innings_pitched(stat.get("inningsPitched"))
+                hr = float(stat.get("homeRuns", 0) or 0)
+                bb = float(stat.get("baseOnBalls", 0) or 0)
+                hbp = float(stat.get("hitByPitch", 0) or 0)
+                so = float(stat.get("strikeOuts", 0) or 0)
+            except (TypeError, ValueError):
+                return None
+            if innings < MIN_INNINGS_FOR_ERA or innings <= 0:
+                return None
+            fip = (13 * hr + 3 * (bb + hbp) - 2 * so) / innings + FIP_CONSTANT
+            return round(fip, 2)
+    return None
+
+
 def blended_win_pct(form, season_weight=SEASON_FORM_WEIGHT, min_games=MIN_GAMES_FOR_FORM):
-    """Mezcla win% de temporada con la forma de los últimos 10. Sin datos
-    de últimos 10 (arranque de temporada), usa solo el de temporada. Sin
-    ningún dato, o con menos de min_games partidos jugados todavía en la
-    temporada (ver AUDITORÍA en MIN_GAMES_FOR_FORM -- un win% de 1-14
-    partidos es ruido, no forma real), devuelve 50% neutral y lo marca como
-    faltante -- mismo tratamiento en los dos casos, para que
-    generate_mlb_signal() exija más EV cuando el modelo no tiene con qué
-    respaldar la estimación, no solo cuando falta el dato por completo."""
+    """Mezcla la forma de temporada (Pythagorean si está disponible --
+    ver AUDITORÍA junto a PYTHAGOREAN_EXPONENT, si no win% crudo como
+    antes) con la forma de los últimos 10 (siempre récord real -- una
+    ventana de 10 partidos es chica para que el diferencial de carreras
+    sea más estable que el récord real ahí). Sin datos de últimos 10
+    (arranque de temporada), usa solo el de temporada. Sin ningún dato, o
+    con menos de min_games partidos jugados todavía en la temporada (ver
+    AUDITORÍA en MIN_GAMES_FOR_FORM -- un win% de 1-14 partidos es ruido,
+    no forma real), devuelve 50% neutral y lo marca como faltante -- mismo
+    tratamiento en los dos casos, para que generate_mlb_signal() exija más
+    EV cuando el modelo no tiene con qué respaldar la estimación, no solo
+    cuando falta el dato por completo."""
     if form is None:
         return 0.5, True
     games_played = form.get("games_played")
     if games_played is not None and games_played < min_games:
         return 0.5, True
+    season_pct = form.get("pyth_win_pct") if form.get("pyth_win_pct") is not None else form["win_pct"]
     if form["last_ten_pct"] is None:
-        return form["win_pct"], False
-    return season_weight * form["win_pct"] + (1 - season_weight) * form["last_ten_pct"], False
+        return season_pct, False
+    return season_weight * season_pct + (1 - season_weight) * form["last_ten_pct"], False
 
 
 def log5(pct_a, pct_b):
@@ -674,11 +813,15 @@ def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id,
         penalty += 0.2
         notes.append("Falta pitcher probable confirmado de al menos un lado.")
     else:
-        era_home = fetch_pitcher_era(home_pitcher_id, season)
-        era_away = fetch_pitcher_era(away_pitcher_id, season)
+        # AUDITORÍA (13/09/2026): FIP en vez de ERA -- ver FIP_CONSTANT
+        # arriba. era_home/era_away se mantienen como nombres de variable
+        # (y como nombres de columna en Supabase/mlb_signals, para no
+        # requerir una migración) pero desde ahora contienen FIP, no ERA.
+        era_home = fetch_pitcher_fip(home_pitcher_id, season)
+        era_away = fetch_pitcher_fip(away_pitcher_id, season)
         if era_home is None or era_away is None:
             penalty += 0.15
-            notes.append("ERA de temporada insuficiente (pocas entradas) para uno de los dos probables.")
+            notes.append("FIP de temporada insuficiente (pocas entradas) para uno de los dos probables.")
 
     # Ver combine_components() -- misma función que usa backtest_mlb.py, para
     # que la matemática de log5 + localía (log-odds) + pitcher_edge + cap de
@@ -686,7 +829,7 @@ def estimate_win_probability(home_id, away_id, home_pitcher_id, away_pitcher_id,
     raw_prob, prob, edge = combine_components(home_pct, away_pct, era_home, era_away,
                                                home_field_edge_logodds=home_field_edge)
     if era_home is not None and era_away is not None:
-        notes.append(f"+ pitchers (ERA {era_home:.2f} vs {era_away:.2f}): {edge:+.3f}")
+        notes.append(f"+ pitchers (FIP {era_home:.2f} vs {era_away:.2f}): {edge:+.3f}")
 
     components = {
         "home_win_pct": round(home_pct, 3),
