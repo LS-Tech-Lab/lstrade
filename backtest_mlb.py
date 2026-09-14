@@ -136,6 +136,19 @@ log = logging.getLogger("backtest_mlb")
 DEFAULT_SLEEP_SECONDS = 0.15  # cortesía con la API pública -- ver AUDITORÍA de arriba
 DEFAULT_CACHE_DIR = ".backtest_cache/mlb"
 
+# AUDITORÍA (14/09/2026, primer crash real en producción -- KeyError:
+# 'home_score' en build_team_form_asof): el caché en disco se guardaba con
+# una key que NO incluía versión de schema (solo f"schedule_{season}" /
+# f"pitcher_{pid}_{season}"). Cuando se agregaron home_score/away_score al
+# schedule (para Pythagorean) y hr/bb/hbp/so al gameLog (para FIP), una
+# corrida que reusaba caché de ANTES de esos cambios cargaba JSON sin esos
+# campos y el código nuevo explotaba al primer acceso. Se sube
+# CACHE_SCHEMA_VERSION cada vez que cambie la FORMA de lo que se cachea
+# (qué claves tiene cada dict) -- no hace falta que nadie se acuerde de
+# limpiar .backtest_cache/mlb a mano la próxima vez, un caché de schema
+# viejo simplemente no matchea la key nueva y se vuelve a descargar solo.
+CACHE_SCHEMA_VERSION = 2
+
 
 # --------------------------------------------------------------------------
 # Caché en disco -- JSON plano, una llave por (tipo, temporada[, pitcher_id])
@@ -191,7 +204,7 @@ def fetch_season_games(season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SECONDS):
     (partidos sin ganador real -- suspendidos/cancelados sin reanudar, ver
     mismo criterio que fetch_game_result en mlb_signal_engine.py -- se
     descartan, no aportan nada a la calibración)."""
-    cache_key = f"schedule_{season}"
+    cache_key = f"schedule_{season}_v{CACHE_SCHEMA_VERSION}"
     cached = _cache_load(cache_dir, cache_key)
     if cached is not None:
         log.info(f"{season}: schedule desde caché ({len(cached)} partidos).")
@@ -290,11 +303,17 @@ def build_team_form_asof(games):
 
         history.setdefault(g["home_id"], []).append(g["home_won"])
         history.setdefault(g["away_id"], []).append(not g["home_won"])
-        if g["home_score"] is not None and g["away_score"] is not None:
-            runs_for.setdefault(g["home_id"], []).append(g["home_score"])
-            runs_against.setdefault(g["home_id"], []).append(g["away_score"])
-            runs_for.setdefault(g["away_id"], []).append(g["away_score"])
-            runs_against.setdefault(g["away_id"], []).append(g["home_score"])
+        # .get() en vez de indexado directo -- defensa extra además del
+        # versionado de caché de arriba (CACHE_SCHEMA_VERSION): si por lo
+        # que sea este dict no tiene home_score/away_score (caché de un
+        # schema viejo, u otra fuente), se degrada a "sin datos de
+        # carreras para Pythagorean" en vez de tirar el proceso entero.
+        home_score, away_score = g.get("home_score"), g.get("away_score")
+        if home_score is not None and away_score is not None:
+            runs_for.setdefault(g["home_id"], []).append(home_score)
+            runs_against.setdefault(g["home_id"], []).append(away_score)
+            runs_for.setdefault(g["away_id"], []).append(away_score)
+            runs_against.setdefault(g["away_id"], []).append(home_score)
     return games
 
 
@@ -307,7 +326,7 @@ def fetch_pitcher_gamelog(pitcher_id, season, cache_dir, sleep_seconds=DEFAULT_S
     (en entradas reales, ya convertidas) y HR/BB/HBP/K de ESE partido
     puntual -- la base para acumular "FIP antes de la fecha D" partido a
     partido (ver AUDITORÍA del header y FIP_CONSTANT en mlb_signal_engine.py)."""
-    cache_key = f"pitcher_{pitcher_id}_{season}"
+    cache_key = f"pitcher_{pitcher_id}_{season}_v{CACHE_SCHEMA_VERSION}"
     cached = _cache_load(cache_dir, cache_key)
     if cached is not None:
         return cached
