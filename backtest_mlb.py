@@ -15,6 +15,24 @@ La MLB Stats API tiene resultados y stats de temporadas completas gratis --
 esto arma un dataset de miles de partidos (2023-2025 por defecto) para
 correr el mismo modelo contra órdenes de magnitud más de datos.
 
+AUDITORÍA (13/09/2026, tercera pasada -- "Mejoras al modelo en sí" del
+pedido original): se agregan FIP (reemplaza a ERA en el pitcher_edge, ver
+FIP_CONSTANT en mlb_signal_engine.py) y Pythagorean win expectancy
+(reemplaza al win% crudo de TEMPORADA en blended_win_pct, no al de
+últimos-10) al mismo backtest, reconstruidos igual de cronológicos y sin
+lookahead que todo lo demás acá: FIP necesita HR/BB/HBP/K acumulados por
+pitcher antes de la fecha (mismo gameLog que ya se pedía para ERA, solo se
+piden más campos), y Pythagorean necesita carreras anotadas/permitidas
+acumuladas por equipo antes de la fecha (se sacan del propio /schedule,
+que ya trae el resultado final de cada partido vía linescore -- no hace
+falta un fetch nuevo). Bullpen y factores de parque, los otros dos puntos
+del pedido, se evalúan y quedan deliberadamente sin implementar -- ver
+AUDITORÍA junto a PYTHAGOREAN_EXPONENT en mlb_signal_engine.py para el
+motivo de cada uno (factores de parque: las fuentes públicas discrepan
+demasiado entre sí para hardcodear una tabla con confianza; bullpen: no
+hay forma de confirmar el endpoint/campo correcto de la MLB Stats API sin
+acceso real para probarlo).
+
 DECISIÓN DE DISEÑO CRÍTICA -- sin lookahead bias: estimate_win_probability()
 en producción usa win%/ERA de temporada consultados EN VIVO, que en el
 momento de cada señal real solo reflejan partidos ya jugados. Si este
@@ -96,15 +114,19 @@ from datetime import date, timedelta
 
 from mlb_signal_engine import (
     _get,
+    _parse_innings_pitched,
     HOME_FIELD_EDGE,
     PITCHER_ERA_SCALE,
     PITCHER_EDGE_CAP,
     SEASON_FORM_WEIGHT,
     MIN_INNINGS_FOR_ERA,
     MIN_GAMES_FOR_FORM,
+    FIP_CONSTANT,
+    PYTHAGOREAN_EXPONENT,
     TEAMS,
     blended_win_pct,
     combine_components,
+    pythagorean_win_pct,
 )
 from config import Config
 
@@ -215,6 +237,12 @@ def fetch_season_games(season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SECONDS):
                     "home_pitcher_id": (home.get("probablePitcher") or {}).get("id"),
                     "away_pitcher_id": (away.get("probablePitcher") or {}).get("id"),
                     "home_won": home_won,
+                    # AUDITORÍA (13/09/2026): carreras finales de cada lado --
+                    # para reconstruir Pythagorean win expectancy
+                    # cronológicamente en build_team_form_asof(), sin pedir
+                    # un endpoint nuevo (ya viene en este mismo /schedule).
+                    "home_score": home.get("score"),
+                    "away_score": away.get("score"),
                 })
 
     games.sort(key=lambda g: (g["date"] or "", g["game_pk"]))
@@ -229,59 +257,56 @@ def fetch_season_games(season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SECONDS):
 # --------------------------------------------------------------------------
 
 def build_team_form_asof(games):
-    """Agrega a cada partido (in-place) el win% de temporada, de últimos-10
-    y los partidos jugados de cada equipo ANTES de ese partido -- mismo
-    shape que el dict `form` que arma fetch_team_form() en
-    mlb_signal_engine.py (None si el equipo no jugó ningún partido previo
-    en la temporada todavía), incluyendo games_played para que
-    blended_win_pct() pueda aplicar el filtro MIN_GAMES_FOR_FORM exactamente
-    igual que en producción (ver AUDITORÍA en mlb_signal_engine.py)."""
-    history = {}  # team_id -> lista cronológica de bool (ganó ese partido)
+    """Agrega a cada partido (in-place) el win% de temporada, de últimos-10,
+    los partidos jugados y el Pythagorean win expectancy de cada equipo
+    ANTES de ese partido -- mismo shape que el dict `form` que arma
+    fetch_team_form() en mlb_signal_engine.py (None si el equipo no jugó
+    ningún partido previo en la temporada todavía), incluyendo games_played
+    para MIN_GAMES_FOR_FORM y pyth_win_pct (carreras anotadas/permitidas
+    acumuladas, ver AUDITORÍA del header) para que blended_win_pct() lo
+    prefiera sobre el win% crudo exactamente igual que en producción."""
+    history = {}       # team_id -> lista cronológica de bool (ganó ese partido)
+    runs_for = {}       # team_id -> lista cronológica de carreras anotadas
+    runs_against = {}   # team_id -> lista cronológica de carreras permitidas
 
     for g in games:
-        for side, team_id in (("home", g["home_id"]), ("away", g["away_id"])):
+        for side, team_id, rf_key, ra_key in (
+            ("home", g["home_id"], "home_score", "away_score"),
+            ("away", g["away_id"], "away_score", "home_score"),
+        ):
             past = history.get(team_id, [])
             g[f"{side}_games_played"] = len(past)
             if not past:
                 g[f"{side}_win_pct_season"] = None
                 g[f"{side}_last10_pct"] = None
+                g[f"{side}_pyth_win_pct"] = None
             else:
                 g[f"{side}_win_pct_season"] = sum(past) / len(past)
                 last10 = past[-10:]
                 g[f"{side}_last10_pct"] = sum(last10) / len(last10)
+                rf_total = sum(runs_for.get(team_id, []))
+                ra_total = sum(runs_against.get(team_id, []))
+                g[f"{side}_pyth_win_pct"] = pythagorean_win_pct(rf_total, ra_total)
 
         history.setdefault(g["home_id"], []).append(g["home_won"])
         history.setdefault(g["away_id"], []).append(not g["home_won"])
+        if g["home_score"] is not None and g["away_score"] is not None:
+            runs_for.setdefault(g["home_id"], []).append(g["home_score"])
+            runs_against.setdefault(g["home_id"], []).append(g["away_score"])
+            runs_for.setdefault(g["away_id"], []).append(g["away_score"])
+            runs_against.setdefault(g["away_id"], []).append(g["home_score"])
     return games
 
 
 # --------------------------------------------------------------------------
-# ERA del pitcher probable, reconstruida desde su gameLog (sin lookahead)
+# FIP del pitcher probable, reconstruido desde su gameLog (sin lookahead)
 # --------------------------------------------------------------------------
-
-def _parse_innings_pitched(ip_str):
-    """"X.Y" de la MLB Stats API -- Y son TERCIOS de entrada (0, 1 o 2), no
-    decimales: "6.2" es 6 y 2/3 = 6.667 entradas reales, no 6.2. Necesario acá
-    porque este script SÍ tiene que sumar IP de start en start para
-    reconstruir el ERA acumulado a una fecha (fetch_pitcher_era en
-    mlb_signal_engine.py no lo necesita: usa el campo "era" ya calculado por
-    la propia API para el total de temporada, no arma la cuenta a mano)."""
-    if ip_str is None:
-        return 0.0
-    try:
-        whole_str, _, frac_str = str(ip_str).partition(".")
-        whole = float(whole_str) if whole_str else 0.0
-        thirds = int(frac_str) if frac_str else 0
-    except (ValueError, TypeError):
-        return 0.0
-    return whole + thirds / 3.0
-
 
 def fetch_pitcher_gamelog(pitcher_id, season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SECONDS):
     """Cada start de un pitcher en la temporada, ordenado por fecha, con IP
-    (en entradas reales, ya convertidas) y carreras limpias de ESE partido
-    puntual -- la base para acumular "ERA antes de la fecha D" partido a
-    partido."""
+    (en entradas reales, ya convertidas) y HR/BB/HBP/K de ESE partido
+    puntual -- la base para acumular "FIP antes de la fecha D" partido a
+    partido (ver AUDITORÍA del header y FIP_CONSTANT en mlb_signal_engine.py)."""
     cache_key = f"pitcher_{pitcher_id}_{season}"
     cached = _cache_load(cache_dir, cache_key)
     if cached is not None:
@@ -300,32 +325,37 @@ def fetch_pitcher_gamelog(pitcher_id, season, cache_dir, sleep_seconds=DEFAULT_S
                 starts.append({
                     "date": game_date,
                     "ip": _parse_innings_pitched(stat.get("inningsPitched")),
-                    "er": float(stat.get("earnedRuns", 0) or 0),
+                    "hr": float(stat.get("homeRuns", 0) or 0),
+                    "bb": float(stat.get("baseOnBalls", 0) or 0),
+                    "hbp": float(stat.get("hitByPitch", 0) or 0),
+                    "so": float(stat.get("strikeOuts", 0) or 0),
                 })
     starts.sort(key=lambda s: s["date"])
     _cache_save(cache_dir, cache_key, starts)
     return starts
 
 
-def era_asof(gamelog, game_date, min_innings=MIN_INNINGS_FOR_ERA):
-    """ERA acumulado del pitcher estrictamente ANTES de game_date (no
+def fip_asof(gamelog, game_date, min_innings=MIN_INNINGS_FOR_ERA, fip_constant=FIP_CONSTANT):
+    """FIP acumulado del pitcher estrictamente ANTES de game_date (no
     incluye el propio start que se está evaluando), o None si no llegó a
-    min_innings todavía -- mismo umbral y mismo motivo que
-    fetch_pitcher_era() en mlb_signal_engine.py (una salida atípica temprana
-    no debería dominar el ajuste)."""
-    cum_ip, cum_er = 0.0, 0.0
+    min_innings todavía -- mismo umbral y mismo motivo que antes con ERA
+    (una salida atípica temprana no debería dominar el ajuste)."""
+    cum_ip = cum_hr = cum_bb = cum_hbp = cum_so = 0.0
     for start in gamelog:
         if start["date"] >= game_date:
             break
         cum_ip += start["ip"]
-        cum_er += start["er"]
+        cum_hr += start["hr"]
+        cum_bb += start["bb"]
+        cum_hbp += start["hbp"]
+        cum_so += start["so"]
     if cum_ip < min_innings:
         return None
-    return round(9.0 * cum_er / cum_ip, 2)
+    return round((13 * cum_hr + 3 * (cum_bb + cum_hbp) - 2 * cum_so) / cum_ip + fip_constant, 2)
 
 
-def attach_pitcher_era(games, season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SECONDS):
-    """Agrega era_home_asof/era_away_asof a cada partido. Descarga el
+def attach_pitcher_fip(games, season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SECONDS):
+    """Agrega fip_home_asof/fip_away_asof a cada partido. Descarga el
     gameLog de cada pitcher único UNA vez (no una vez por partido en el que
     aparece) -- un titular hace ~30 starts/temporada, así que esto evita
     30x llamadas redundantes."""
@@ -344,11 +374,11 @@ def attach_pitcher_era(games, season, cache_dir, sleep_seconds=DEFAULT_SLEEP_SEC
             log.info(f"{season}: {i + 1}/{len(pitcher_ids)} gameLogs descargados.")
 
     for g in games:
-        g["era_home_asof"] = (
-            era_asof(gamelogs[g["home_pitcher_id"]], g["date"]) if g["home_pitcher_id"] in gamelogs else None
+        g["fip_home_asof"] = (
+            fip_asof(gamelogs[g["home_pitcher_id"]], g["date"]) if g["home_pitcher_id"] in gamelogs else None
         )
-        g["era_away_asof"] = (
-            era_asof(gamelogs[g["away_pitcher_id"]], g["date"]) if g["away_pitcher_id"] in gamelogs else None
+        g["fip_away_asof"] = (
+            fip_asof(gamelogs[g["away_pitcher_id"]], g["date"]) if g["away_pitcher_id"] in gamelogs else None
         )
     return games
 
@@ -369,17 +399,17 @@ def compute_prob_home(game, home_field_edge=HOME_FIELD_EDGE, pitcher_era_scale=P
     como raw_my_prob/my_prob."""
     home_form = None if game["home_win_pct_season"] is None else {
         "win_pct": game["home_win_pct_season"], "last_ten_pct": game["home_last10_pct"],
-        "games_played": game.get("home_games_played"),
+        "games_played": game.get("home_games_played"), "pyth_win_pct": game.get("home_pyth_win_pct"),
     }
     away_form = None if game["away_win_pct_season"] is None else {
         "win_pct": game["away_win_pct_season"], "last_ten_pct": game["away_last10_pct"],
-        "games_played": game.get("away_games_played"),
+        "games_played": game.get("away_games_played"), "pyth_win_pct": game.get("away_pyth_win_pct"),
     }
     home_pct, _ = blended_win_pct(home_form, season_weight, min_games)
     away_pct, _ = blended_win_pct(away_form, season_weight, min_games)
 
     raw_prob, prob, _edge = combine_components(
-        home_pct, away_pct, game["era_home_asof"], game["era_away_asof"],
+        home_pct, away_pct, game["fip_home_asof"], game["fip_away_asof"],
         home_field_edge_logodds=home_field_edge,
         pitcher_era_scale=pitcher_era_scale, pitcher_edge_cap=pitcher_edge_cap,
     )
@@ -494,7 +524,7 @@ def main():
             log.warning(f"{season}: sin partidos -- se salta.")
             continue
         build_team_form_asof(games)
-        attach_pitcher_era(games, season, args.cache_dir)
+        attach_pitcher_fip(games, season, args.cache_dir)
         all_games.extend(games)
 
     if not all_games:
@@ -504,15 +534,15 @@ def main():
     for g in all_games:
         g["raw_prob_home"], g["prob_home"] = compute_prob_home(g)
         g["prob_home_clipped"] = min(max(g["prob_home"], Config.MLB_PROB_CLIP_MIN), Config.MLB_PROB_CLIP_MAX)
-        g["has_pitcher_data"] = g["era_home_asof"] is not None and g["era_away_asof"] is not None
+        g["has_pitcher_data"] = g["fip_home_asof"] is not None and g["fip_away_asof"] is not None
 
     with_pitcher = [g for g in all_games if g["has_pitcher_data"]]
-    log.info(f"=== TOTAL: {len(all_games)} partidos ({len(with_pitcher)} con ERA de ambos probables ya con muestra suficiente) ===")
+    log.info(f"=== TOTAL: {len(all_games)} partidos ({len(with_pitcher)} con FIP de ambos probables ya con muestra suficiente) ===")
 
     log_calibration("prob_home (cap 0.05-0.95, sin el clip de Config)", all_games, "prob_home")
     log_calibration("prob_home_clipped (con el clip 40-60% actual de producción)", all_games, "prob_home_clipped")
     if with_pitcher:
-        log_calibration("prob_home -- solo partidos con ERA de ambos probables", with_pitcher, "prob_home")
+        log_calibration("prob_home -- solo partidos con FIP de ambos probables", with_pitcher, "prob_home")
 
     if args.oos_frac and 0 < args.oos_frac < 1:
         all_games.sort(key=lambda g: g["date"] or "")
@@ -528,9 +558,9 @@ def main():
     if args.output:
         fieldnames = [
             "date", "game_pk", "home_id", "away_id",
-            "home_win_pct_season", "home_last10_pct", "home_games_played",
-            "away_win_pct_season", "away_last10_pct", "away_games_played",
-            "era_home_asof", "era_away_asof",
+            "home_win_pct_season", "home_last10_pct", "home_games_played", "home_pyth_win_pct",
+            "away_win_pct_season", "away_last10_pct", "away_games_played", "away_pyth_win_pct",
+            "fip_home_asof", "fip_away_asof",
             "raw_prob_home", "prob_home", "prob_home_clipped", "home_won",
         ]
         with open(args.output, "w", newline="", encoding="utf-8") as f:
