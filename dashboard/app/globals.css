@@ -103,7 +103,8 @@ h1,h2{font-family:'Archivo Black', sans-serif; letter-spacing:-0.01em; margin:0;
 .version-select{
   background:var(--paper-soft); color:var(--ink); border:1px solid var(--line);
   border-radius:8px; padding:6px 10px; font-family:inherit; font-size:12px;
-  cursor:pointer;
+  cursor:pointer; max-width:calc(100vw - 48px); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap;
 }
 .version-select:hover{border-color:var(--accent);}
 .version-select:focus{outline:none; border-color:var(--accent);}
