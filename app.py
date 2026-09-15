@@ -596,15 +596,29 @@ def run_weather_cycle():
 
     top_n = int(os.environ.get("WEATHER_TOP_N", "5"))
 
+    # DIAGNÓSTICO (14/09/2026): se conserva el lote COMPLETO traído por
+    # fetch_weather_events antes de recortarlo a top_n. Motivo: el
+    # `events_found` que devolvía este handler se calculaba DESPUÉS del
+    # recorte (`events = sorted_events[:top_n]`), así que siempre reportaba
+    # como mucho top_n (=5 por default) sin importar cuántos eventos
+    # hubiera traído Polymarket realmente -- un `events_found: 5` NO
+    # probaba que solo hubiera 5 eventos de clima activos. Con esto se
+    # puede distinguir "Polymarket no trajo Miami/Chicago/LA/Seattle" de
+    # "sí los trajo pero quedaron fuera del top_n".
+    all_events = list(events)
+
     def _station_icao(e):
         st = resolve_station(e.get("title") or "", override_icao=getattr(config, "WEATHER_STATION_OVERRIDE", None))
         return st.get("icao") if st else None
+
+    def _liquidity(e):
+        return sum(m.get("liquidity", 0) for m in (e.get("markets") or []))
 
     sorted_events = sorted(
         events,
         key=lambda e: (
             0 if _station_icao(e) else 1,
-            -sum(m.get("liquidity", 0) for m in e["markets"]),
+            -_liquidity(e),
         ),
     )
 
@@ -620,6 +634,38 @@ def run_weather_cycle():
         events = (pinned[:1] + rest)[:top_n]
     else:
         events = sorted_events[:top_n]
+
+    # DIAGNÓSTICO (14/09/2026): inventario de TODO el lote, no solo del
+    # top_n que se escanea. Para cada evento traído: título, ICAO resuelto
+    # (None = ciudad sin estación en STATION_MAP), liquidez sumada de sus
+    # buckets, y si entró o no al lote de este ciclo. Sale tanto en la
+    # respuesta JSON (visible desde cron-job.org / el navegador) como en
+    # stdout, que Vercel captura en los runtime logs.
+    _selected_ids = {id(e) for e in events}
+    candidates = [
+        {
+            "title": e.get("title"),
+            "station": _station_icao(e),
+            "liquidity": round(_liquidity(e), 2),
+            "selected": id(e) in _selected_ids,
+        }
+        for e in sorted_events
+    ]
+    print(
+        "weather_cycle diagnostico: fetched=%d con_estacion=%d top_n=%d pinned=%s | %s"
+        % (
+            len(all_events),
+            sum(1 for c in candidates if c["station"]),
+            top_n,
+            pinned_icao,
+            "; ".join(
+                "%s [%s] liq=%s %s"
+                % (c["title"], c["station"] or "SIN_ESTACION", c["liquidity"],
+                   "SELECCIONADO" if c["selected"] else "descartado")
+                for c in candidates
+            ),
+        )
+    )
 
     # AUDITORÍA (03/09/2026): tope de señales enviadas por corrida -- ver
     # MAX_WEATHER_SIGNALS_PER_CYCLE en config.py para el porqué. Antes no
@@ -736,9 +782,15 @@ def run_weather_cycle():
 
     return {
         "status": "ok",
+        # CORREGIDO (14/09/2026): antes era len(events) DESPUÉS del recorte
+        # a top_n, así que nunca podía superar top_n (=5) y daba la falsa
+        # impresión de que Polymarket solo había devuelto 5 eventos.
+        "events_fetched": len(all_events),
+        "events_with_station": sum(1 for c in candidates if c["station"]),
         "events_found": len(events),
         "events_scanned": scanned,
         "signals_sent": sent,
+        "candidates": candidates,
         "detail": detail,
     }
 
