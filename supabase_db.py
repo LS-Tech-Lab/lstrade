@@ -82,6 +82,18 @@ class SupabaseDatabase:
         res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).order("ts", desc=True).limit(1).execute())
         return res.data[0]["equity"] if res.data else None
 
+    def recent_equity_returns(self, module="crypto", limit=100):
+        """Ver recent_equity_returns en db.py (misma lógica, esta es la
+        variante Supabase)."""
+        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).order("ts", desc=True).limit(limit + 1).execute())
+        equities = [r["equity"] for r in reversed(res.data or [])]
+        returns = []
+        for i in range(1, len(equities)):
+            prev = equities[i - 1]
+            if prev and prev > 0:
+                returns.append((equities[i] - prev) / prev)
+        return returns
+
     def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None,
                                  signal_id=None, signal_table=None):
         """
