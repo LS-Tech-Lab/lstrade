@@ -104,7 +104,19 @@ class Database:
             exit_price REAL,
             ts_resolved REAL,
             score REAL,
-            confidence INTEGER)""")
+            confidence INTEGER,
+            opportunity_score REAL)""")
+
+        # NUEVO (15/09/2026): opportunity_score -- score compuesto 0-100
+        # (Edge/Liquidez/Confianza/Ejecución, ver compute_opportunity_score()
+        # en polymarket_signal_engine.py) con el que se rankeó la señal
+        # contra las demás candidatas del ciclo. Mismo patrón de ALTER TABLE
+        # que setup_type/confidence/score arriba, para bases SQLite ya
+        # existentes creadas antes de este cambio.
+        try:
+            c.execute("ALTER TABLE polymarket_signals ADD COLUMN opportunity_score REAL")
+        except sqlite3.OperationalError:
+            pass
 
         # NUEVO: snapshot de indicadores por símbolo en cada ciclo — ver
         # schema.sql (modo Supabase) para el razonamiento completo.
@@ -451,12 +463,12 @@ class Database:
         return [dict(r) for r in rows]
 
     # NUEVO: Tracking de resultados de señales de Polymarket
-    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None):
+    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None, opportunity_score=None):
         self.conn.execute(
             """INSERT INTO polymarket_signals
-            (condition_id, question, direction, token_id, entry, target, stop, ts_signaled, score, confidence)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (condition_id, question, direction, token_id, entry, target, stop, time.time(), score, confidence)
+            (condition_id, question, direction, token_id, entry, target, stop, ts_signaled, score, confidence, opportunity_score)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (condition_id, question, direction, token_id, entry, target, stop, time.time(), score, confidence, opportunity_score)
         )
         self.conn.commit()
 
