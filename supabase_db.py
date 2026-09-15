@@ -57,6 +57,24 @@ class SupabaseDatabase:
         res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).order("equity", desc=True).limit(1).execute())
         return res.data[0]["equity"] if res.data else None
 
+    def peak_equity_window(self, module="crypto", days=7.0):
+        """
+        NUEVO (15/09/2026, pedido del usuario): equivalente de peak_equity()
+        pero limitado a los últimos `days` días -- ver AUDITORÍA larga en
+        MAX_DRAWDOWN_WINDOW_DAYS (config.py) sobre por qué el gate de
+        drawdown de risk_manager.check() necesita esto en vez del máximo
+        histórico (se quedaba trabado para siempre una vez cruzado el 8%).
+        Fallback a peak_equity() (sin ventana) si por lo que sea la
+        consulta con filtro de fecha no devuelve filas -- mismo criterio
+        de "nunca romper el chequeo de riesgo por un dato faltante" que ya
+        usa el resto de esta clase.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).gte("ts", cutoff).order("equity", desc=True).limit(1).execute())
+        if res.data:
+            return res.data[0]["equity"]
+        return self.peak_equity(module)
+
     def last_equity(self, module="crypto"):
         """Último equity registrado (no el pico histórico) PARA ESE MÓDULO.
         Es el que hay que usar como base para aplicar el P&L de un trade
