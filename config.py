@@ -62,6 +62,23 @@ class Config:
     RISK_PCT_PER_TRADE = _float("RISK_PCT_PER_TRADE", 1.0)
     MAX_EXPOSURE_PCT = _float("MAX_EXPOSURE_PCT", 20.0)
     MAX_DRAWDOWN_PCT = _float("MAX_DRAWDOWN_PCT", 8.0)
+    # NUEVO (15/09/2026, pedido del usuario): antes MAX_DRAWDOWN_PCT
+    # comparaba contra el equity MÁXIMO HISTÓRICO (peak_equity(), sin
+    # ventana de tiempo) -- una vez que el drawdown cruzaba el 8%, el bot
+    # quedaba trabado para siempre: la única forma de bajar el drawdown es
+    # que el equity suba, y la única forma de que el equity suba es
+    # cerrando un trade ganador, pero abrir un trade nuevo estaba
+    # bloqueado por este mismo check (confirmado en vivo: 41.5h sin
+    # abrir ni cerrar nada, drawdown congelado en 8.53%). Con esta
+    # ventana, el "peak" contra el que se mide el drawdown es el máximo
+    # de los últimos N días -- si no hay trades ganadores que lo superen,
+    # el peak antiguo eventualmente queda fuera de la ventana y el
+    # drawdown se diluye solo con el paso del tiempo, sin necesitar un
+    # trade ganador para destrabar el check. No afecta al circuit breaker
+    # real (MAX_DRAWDOWN_KILL_PCT) -- ese sigue midiendo contra el
+    # máximo histórico a propósito (ver update_equity_and_check_kill_switch
+    # en risk_manager.py).
+    MAX_DRAWDOWN_WINDOW_DAYS = _float("MAX_DRAWDOWN_WINDOW_DAYS", 7.0)
     MAX_DRAWDOWN_KILL_PCT = _float("MAX_DRAWDOWN_KILL_PCT", 15.0)
     MAX_VOLATILITY_PCT = _float("MAX_VOLATILITY_PCT", 4.0)
     ATR_STOP_MULT = _float("ATR_STOP_MULT", 1.5)
