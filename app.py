@@ -590,7 +590,15 @@ def run_weather_cycle():
     # open_condition_ids/open_events de arriba.
     stopped_condition_ids = db.get_stopped_weather_condition_ids()
 
-    events = client.fetch_weather_events(limit=20, time_budget_seconds=time_budget * 0.5)
+    # FIX C (15/09/2026): limit=20 fijo dejaba afuera ciudades con estación
+    # confirmada pero menor liquidez -- confirmado en producción: Seattle
+    # (KSEA, en STATION_MAP desde el 06/09) no apareció en el lote de 20
+    # eventos ordenados por volume24hr porque 12+ ciudades sin estación
+    # (Paris, Hong Kong, London, Tokyo...) tenían más liquidez y llenaron
+    # el cupo antes de llegar a ella. Configurable por si hace falta bajarlo
+    # de nuevo (una sola llamada a /events, no debería pesar mucho más).
+    fetch_limit = int(os.environ.get("WEATHER_FETCH_LIMIT", "50"))
+    events = client.fetch_weather_events(limit=fetch_limit, time_budget_seconds=time_budget * 0.5)
     if not events:
         return {"status": "no_events"}
 
@@ -622,18 +630,30 @@ def run_weather_cycle():
         ),
     )
 
+    # FIX B (15/09/2026): antes, si sobraban slots del top_n tras meter las
+    # ciudades con estación, se rellenaban con eventos SIN estación
+    # (sorted_events los deja al final pero siguen entrando si top_n no se
+    # llenó antes) -- confirmado en producción: el 5º slot se lo llevó
+    # "Hantavirus pandemic in 2026?" (el tag 84 "Weather" de Polymarket
+    # incluye mercados de salud, no solo temperatura), que garantizado iba
+    # a salir "no_station" y no aportaba nada. Un evento sin estación NUNCA
+    # puede generar señal (resolve_station devuelve None => no_station en
+    # generate_weather_signal), así que escanearlo es tiempo de presupuesto
+    # tirado -- se restringe la selección a solo eventos CON estación.
+    with_station = [e for e in sorted_events if _station_icao(e)]
+
     # WEATHER_PINNED_ICAO (default KMIA, pedido de LS 01/09/2026): esa
     # estación siempre entra al lote de este ciclo, aunque su liquidez no
     # alcance para colarse en el top_n por ranking normal. El resto de los
-    # slots se llena con el orden de siempre (estación resuelta primero,
-    # después por liquidez).
+    # slots se llena con el orden de siempre (por liquidez, ya filtrado a
+    # solo estaciones conocidas por el fix B de arriba).
     pinned_icao = getattr(config, "WEATHER_PINNED_ICAO", None)
     if pinned_icao:
-        pinned = [e for e in sorted_events if _station_icao(e) == pinned_icao]
-        rest = [e for e in sorted_events if _station_icao(e) != pinned_icao]
+        pinned = [e for e in with_station if _station_icao(e) == pinned_icao]
+        rest = [e for e in with_station if _station_icao(e) != pinned_icao]
         events = (pinned[:1] + rest)[:top_n]
     else:
-        events = sorted_events[:top_n]
+        events = with_station[:top_n]
 
     # DIAGNÓSTICO (14/09/2026): inventario de TODO el lote, no solo del
     # top_n que se escanea. Para cada evento traído: título, ICAO resuelto
@@ -652,9 +672,10 @@ def run_weather_cycle():
         for e in sorted_events
     ]
     print(
-        "weather_cycle diagnostico: fetched=%d con_estacion=%d top_n=%d pinned=%s | %s"
+        "weather_cycle diagnostico: fetched=%d (limit=%d) con_estacion=%d top_n=%d pinned=%s | %s"
         % (
             len(all_events),
+            fetch_limit,
             sum(1 for c in candidates if c["station"]),
             top_n,
             pinned_icao,
@@ -699,6 +720,17 @@ def run_weather_cycle():
         detail_entry = {"title": event["title"], "status": signal.get("status")}
         if signal.get("reason"):
             detail_entry["reason"] = signal["reason"]
+        # FIX A (15/09/2026): antes, un evento con status "ok" pero
+        # best_trade=None (ninguno de sus buckets pasó los filtros) no
+        # dejaba ningún rastro de POR QUÉ -- confirmado en producción:
+        # Miami/NYC/LA/Chicago evaluaron "ok" los 4 pero signals_sent=0,
+        # sin forma de saber si fue liquidez real bajo el piso, EV real
+        # bajo el umbral (contra el ask real del book, no el de Gamma), o
+        # EV por encima del techo de sanidad -- las 3 ramas que arma
+        # discard_notes en generate_weather_signal ya existían pero nunca
+        # salían de la función.
+        if signal.get("status") == "ok" and not signal.get("best_trade") and signal.get("discard_notes"):
+            detail_entry["discard_notes"] = signal["discard_notes"]
         detail.append(detail_entry)
         if signal.get("status") == "sin_tiempo":
             break
@@ -786,6 +818,7 @@ def run_weather_cycle():
         # a top_n, así que nunca podía superar top_n (=5) y daba la falsa
         # impresión de que Polymarket solo había devuelto 5 eventos.
         "events_fetched": len(all_events),
+        "fetch_limit": fetch_limit,
         "events_with_station": sum(1 for c in candidates if c["station"]),
         "events_found": len(events),
         "events_scanned": scanned,
