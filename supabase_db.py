@@ -135,7 +135,7 @@ class SupabaseDatabase:
 
         return new_equity
 
-    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0):
+    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0, signal_id=None, signal_table=None):
         """
         NUEVO (07/09/2026, pedido del usuario): equivalente de
         apply_binary_signal_pnl() para Polymarket genérico, que no arma
@@ -149,6 +149,15 @@ class SupabaseDatabase:
         polymarket_recent_history) determina la ganancia o pérdida real.
         Arranca en $20 si el módulo no tiene historial todavía (AUDITORÍA
         13/09/2026: bajado de $100, ver mismo cambio en apply_binary_signal_pnl).
+
+        FIX (15/09/2026, pedido del usuario): a diferencia de
+        apply_binary_signal_pnl (clima/MLB), esta función nunca guardaba
+        stake_dollars/pnl_dollars en la fila resuelta -- el historial de
+        Polymarket en el dashboard solo mostraba R-múltiplo/% de retorno,
+        nunca el monto apostado ni lo ganado/perdido en $, a diferencia
+        del historial de MLB. Se agrega el mismo guardado opcional por
+        signal_id/signal_table (mismo criterio: informativo, si falla no
+        debe tumbar el tracking real de equity).
         """
         base = self.last_equity(module)
         if base is None:
@@ -157,6 +166,16 @@ class SupabaseDatabase:
         pnl = risk_amount * r_multiple
         new_equity = base + pnl
         self.record_equity(new_equity, module=module)
+
+        if signal_id is not None and signal_table is not None:
+            try:
+                self.client.table(signal_table).update({
+                    "stake_dollars": round(risk_amount, 2),
+                    "pnl_dollars": round(pnl, 2),
+                }).eq("id", signal_id).execute()
+            except Exception:
+                pass  # tracking secundario (ver docstring) -- nunca debe romper la resolución real
+
         return new_equity
 
     def current_exposure_pct(self, equity):
