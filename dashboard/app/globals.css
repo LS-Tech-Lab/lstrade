@@ -234,6 +234,13 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   display:flex; gap:12px; overflow-x:auto; -webkit-overflow-scrolling:touch;
   scroll-snap-type:x mandatory; scroll-padding-left:2px;
   padding:2px 2px 4px; margin:0 -2px;
+  /* FIX (15/09/2026 v2): sin esto, al llegar al principio/final del
+     carrusel un swipe que sigue de largo "se escapa" hacia el scroll
+     vertical de la página (rubber-band del documento completo), que se
+     siente como que la página entera se corre/descuadra a mitad del
+     gesto. touch-action:pan-x además evita que el navegador dude entre
+     scrollear el carrusel o la página en el eje equivocado. */
+  overscroll-behavior-x:contain; touch-action:pan-x;
 }
 .indicator-carousel-track::-webkit-scrollbar{display:none;}
 .indicator-carousel-track{scrollbar-width:none;}
@@ -272,6 +279,9 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   display:flex; gap:12px; overflow-x:auto; -webkit-overflow-scrolling:touch;
   scroll-snap-type:x mandatory; scroll-padding-left:2px;
   padding:2px 2px 4px; margin:0 -2px;
+  /* FIX (15/09/2026 v2): ver .indicator-carousel-track -- este es el
+     carrusel que usan Historial e Posiciones Abiertas de MLB. */
+  overscroll-behavior-x:contain; touch-action:pan-x;
 }
 .row-carousel-track::-webkit-scrollbar{display:none;}
 .row-carousel-track{scrollbar-width:none;}
@@ -486,4 +496,17 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   .info-badge::before{
     content:""; position:absolute; inset:-10px; /* hitbox invisible más grande */
   }
+
+  /* FIX (15/09/2026 v2): la 1ra vuelta (white-space:nowrap del badge de
+     MLB) no era la causa real -- el usuario confirmó que el problema
+     seguía igual. Causa real: body tiene background-attachment:fixed, y
+     eso es tristemente célebre por "descuadrar" toda la página (glitch de
+     repintado/desplazamiento del fondo, a veces del layout completo) en
+     Safari/Chrome de iOS en cuanto hay un gesto táctil sobre CUALQUIER
+     hijo con -webkit-overflow-scrolling:touch dentro de la página -- que
+     es justo lo que son .row-carousel-track e .indicator-carousel-track.
+     No es un bug de MLB: pasa en cualquier tab, pero el usuario lo notó
+     ahí primero. En pantallas táctiles no hay "parallax" que perder, así
+     que se desactiva el fixed y se cae a scroll normal. */
+  body{background-attachment:scroll;}
 }
