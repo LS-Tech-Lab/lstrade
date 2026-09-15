@@ -250,9 +250,18 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
      carrusel un swipe que sigue de largo "se escapa" hacia el scroll
      vertical de la página (rubber-band del documento completo), que se
      siente como que la página entera se corre/descuadra a mitad del
-     gesto. touch-action:pan-x además evita que el navegador dude entre
-     scrollear el carrusel o la página en el eje equivocado. */
-  overscroll-behavior-x:contain; touch-action:pan-x;
+     gesto. */
+  /* FIX (15/09/2026 v4, pedido del usuario): se sacó touch-action:pan-x
+     -- restringía TODO el gesto táctil a horizontal, así que un swipe
+     vertical que arrancaba sobre una tarjeta quedaba bloqueado (no se
+     podía scrollear la página hacia arriba/abajo tocando adentro del
+     carrusel). overscroll-behavior-x:contain de arriba ya resuelve el
+     problema real (el rubber-band que se escapa a la página en los
+     bordes del carrusel) sin necesidad de bloquear el eje vertical --
+     con touch-action en su valor por defecto (auto), el navegador
+     desambigua solo: swipe horizontal mueve el carrusel, swipe vertical
+     mueve la página. */
+  overscroll-behavior-x:contain;
 }
 .indicator-carousel-track::-webkit-scrollbar{display:none;}
 .indicator-carousel-track{scrollbar-width:none;}
@@ -292,8 +301,10 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   scroll-snap-type:x mandatory; scroll-padding-left:2px;
   padding:2px 2px 4px; margin:0 -2px;
   /* FIX (15/09/2026 v2): ver .indicator-carousel-track -- este es el
-     carrusel que usan Historial e Posiciones Abiertas de MLB. */
-  overscroll-behavior-x:contain; touch-action:pan-x;
+     carrusel que usan Historial e Posiciones Abiertas de MLB.
+     FIX (15/09/2026 v4, pedido del usuario): touch-action:pan-x sacado
+     acá también -- ver el comentario largo en .indicator-carousel-track. */
+  overscroll-behavior-x:contain;
 }
 .row-carousel-track::-webkit-scrollbar{display:none;}
 .row-carousel-track{scrollbar-width:none;}
