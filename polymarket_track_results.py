@@ -32,14 +32,18 @@ def _safe_pnl_dollars(db, module, r_multiple, risk_pct):
     plata real -- igual que se corrigió para cripto/clima/MLB con
     pnl_dollars. Se recalcula acá (mismo criterio que
     apply_r_multiple_pnl en supabase_db.py: base = último equity del
-    módulo, o $100 si todavía no tiene historial) en vez de modificar
+    módulo, o $20 si todavía no tiene historial) en vez de modificar
     esa función para que devuelva el monto, así un fallo al leer el
     equity no aborta el resto del loop -- devuelve None y el mensaje
-    cae de nuevo a mostrar solo el %."""
+    cae de nuevo a mostrar solo el %.
+    FIX (15/09/2026): base bajada de $100 a $20 -- estaba desactualizada
+    desde el cambio de default del 13/09 en apply_r_multiple_pnl, así que
+    el $ mostrado en Telegram no coincidía con el que de verdad se
+    guardaba en stake_dollars/pnl_dollars ni con el que movía el equity."""
     try:
         base = db.last_equity(module)
         if base is None:
-            base = 100.0
+            base = 20.0
         risk_amount = base * (risk_pct / 100.0)
         return risk_amount * r_multiple
     except Exception as e:
@@ -184,7 +188,8 @@ def check_open_signals(db, client, notifier, config, open_signals=None, time_bud
                     r_multiple = (final_price - sig["entry"]) / stop_distance
                     risk_pct = getattr(config, "RISK_PCT_PER_TRADE", 1.0)
                     pnl_dollars = _safe_pnl_dollars(db, "polymarket", r_multiple, risk_pct)
-                    _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, risk_pct)
+                    _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, risk_pct,
+                                     signal_id=sig["id"], signal_table="polymarket_signals")
                 log.warning(
                     f"[CERRADO SIN STOP DETECTADO A TIEMPO] {sig['question'][:60]} "
                     f"({sig['direction']}) — el mercado ya resolvió, precio final {final_price:.3f}, "
@@ -240,7 +245,8 @@ def check_open_signals(db, client, notifier, config, open_signals=None, time_bud
             r_multiple = (exit_price - sig["entry"]) / stop_distance
             risk_pct = getattr(config, "RISK_PCT_PER_TRADE", 1.0)
             pnl_dollars = _safe_pnl_dollars(db, "polymarket", r_multiple, risk_pct)
-            _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, risk_pct)
+            _safe_apply_pnl(db.apply_r_multiple_pnl, "polymarket", r_multiple, risk_pct,
+                             signal_id=sig["id"], signal_table="polymarket_signals")
 
         # FIX (07/09/2026, pedido explícito del usuario): el mensaje mostraba
         # "Liquidez al cierre" siempre, pero no el beneficio real -- lo único
