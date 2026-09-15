@@ -1096,6 +1096,28 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
             r for r in rows
             if r["ev"] is not None and r["ev"] >= effective_min_ev and r["market_price"] >= min_price
         ][:3]
+        # FIX (15/09/2026, hallazgo LS: discard_notes venía vacío en
+        # corridas reales con 5/5 ciudades "ok" pero sin best_trade y sin
+        # ninguna nota): si NINGÚN bucket supera el filtro inicial de EV
+        # contra el precio de Gamma, el loop de verificación contra el
+        # book real de abajo ni siquiera se ejecuta -- hasta ahora eso
+        # dejaba discard_notes en [] sin ninguna explicación, pese a ser
+        # el caso más común (más restrictivo que el book real, que recién
+        # se llega a evaluar DESPUÉS de este filtro). Se deja el bucket
+        # más cercano (mayor EV de todos, ya venían ordenados desc) como
+        # referencia de cuánto faltó.
+        if not candidates and rows:
+            top = rows[0]
+            top_ev_txt = f"{top['ev']*100:.0f}%" if top["ev"] is not None else "N/A"
+            discard_notes.append(
+                f"Ningún bucket superó el filtro inicial (EV>={effective_min_ev*100:.0f}%"
+                f"{' [x2 por estación sin verificar]' if not station.get('verified', False) else ''}"
+                f" y precio>={min_price*100:.0f}¢, contra el precio de Gamma -- ni siquiera "
+                f"llegó a verificarse contra el book real). Más cercano: "
+                f"\"{top['question'][:40]}\" con EV {top_ev_txt} a {top['market_price']*100:.1f}¢."
+            )
+        elif not candidates:
+            discard_notes.append("El evento no trajo ningún bucket con EV calculable (rows vacío).")
 
     if client is None and candidates:
         discard_notes.append(
