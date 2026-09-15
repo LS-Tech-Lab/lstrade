@@ -12,7 +12,12 @@ from db import Database
 from format_utils import format_days
 from polymarket_categories import categorize
 from polymarket_client import PolymarketClient
-from polymarket_signal_engine import detect_inefficiency, generate_polymarket_signal, verify_entry_against_book
+from polymarket_signal_engine import (
+    compute_opportunity_score,
+    detect_inefficiency,
+    generate_polymarket_signal,
+    verify_entry_against_book,
+)
 from polymarket_state import PolymarketStateStore
 from telegram_notifier import TelegramNotifier
 
@@ -85,6 +90,17 @@ def build_polymarket_memo(signal, markdown=False):
     lines.append(f"📌 Comprar: \"{pick_label}\" @ ${pick_price:.3f}")
     lines.append(f"   (la otra opción, \"{other_label}\", está a ${other_price:.3f})")
     lines.append(f"⭐ Confianza: {stars} ({signal['confidence']}/5)")
+
+    opp = signal.get("opportunity")
+    if opp:
+        b = opp["breakdown"]
+        lines.append(
+            f"📊 Score de oportunidad: {opp['opportunity_score']:.0f}/100 "
+            f"(Edge {b['edge']:.0f} · Liquidez {b['liquidity']:.0f} · "
+            f"Confianza {b['confidence']:.0f} · Ejecución {b['execution']:.0f}"
+            + (f" · -{b['penalty']:.0f} penal." if b["penalty"] else "")
+            + ")"
+        )
 
     if signal.get("trade_plan"):
         tp = signal["trade_plan"]
@@ -176,6 +192,7 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
         # antes cualquier señal por encima del piso de score (config.POLYMARKET_MIN_SCORE) se avisaba igual,
         # incluyendo confianza 1-2/5 que es la zona más floja que genera el motor.
         if signal and signal["confidence"] >= config.POLYMARKET_MIN_CONFIDENCE:
+            signal["opportunity"] = compute_opportunity_score(signal, config)
             signals.append(signal)
     
     if parsed_markets:
@@ -189,7 +206,11 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
             notifier.send_message(mw_telegram)
             time.sleep(0.5)
     
-    signals.sort(key=lambda s: s["score"], reverse=True)
+    # AUDITORÍA (15/09/2026): antes se ordenaba por el score crudo de
+    # generate_polymarket_signal() -- mide fuerza de ineficiencia/momentum
+    # pero no cuánta liquidez hay detrás ni si el timing es razonable.
+    # Ver compute_opportunity_score() en polymarket_signal_engine.py.
+    signals.sort(key=lambda s: s["opportunity"]["opportunity_score"], reverse=True)
     
     if not signals:
         log.info("Sin señales de alta probabilidad en Polymarket este ciclo.")
@@ -411,9 +432,13 @@ def run_polymarket_cycle_serverless(config, client, notifier, db, state_store,
         # este es un codepath separado (modo serverless), no una llamada
         # compartida.
         if signal and signal["confidence"] >= config.POLYMARKET_MIN_CONFIDENCE:
+            signal["opportunity"] = compute_opportunity_score(signal, config)
             signals.append(signal)
 
-    signals.sort(key=lambda s: s["score"], reverse=True)
+    # AUDITORÍA (15/09/2026): mismo criterio de ranking que run_polymarket_cycle
+    # -- ver compute_opportunity_score() en polymarket_signal_engine.py.
+    # Debe replicarse acá porque este es un codepath separado (modo serverless).
+    signals.sort(key=lambda s: s["opportunity"]["opportunity_score"], reverse=True)
     if not signals:
         return {
             "status": "no_signal",
