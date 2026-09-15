@@ -8,6 +8,36 @@ from format_utils import format_money, direction_label
 log = logging.getLogger("risk_manager")
 
 
+def drawdown_risk_multiplier(config, dd_pct):
+    """
+    NUEVO (15/09/2026, pedido del usuario): reemplaza el bloqueo binario de
+    drawdown por un throttle continuo -- ver AUDITORÍA larga en
+    DRAWDOWN_THROTTLE_START_PCT (config.py) sobre por qué: el equity de
+    cripto está aislado de Polymarket/MLB/clima, así que "esperar a que
+    suba el equity" para destrabar dependía solo del paso del tiempo
+    (peak_equity_window saliendo de la ventana), que podía tardar más de
+    un día sin que el bot operara nada mientras tanto.
+
+    Por debajo de DRAWDOWN_THROTTLE_START_PCT: riesgo normal (mult=1.0).
+    Entre ese punto y MAX_DRAWDOWN_PCT: decae linealmente hasta el piso
+    DRAWDOWN_MIN_RISK_MULT. Por encima de MAX_DRAWDOWN_PCT (el límite que
+    antes bloqueaba del todo): se mantiene en ese piso -- nunca llega a
+    cero, así que position_size nunca da cero por esto solo y el trade
+    sigue pudiendo abrirse, con tamaño reducido. El circuit breaker real
+    (MAX_DRAWDOWN_KILL_PCT, contra el máximo histórico) es el que sigue
+    parando todo de verdad, sin cambios acá.
+    """
+    start = config.DRAWDOWN_THROTTLE_START_PCT
+    cap = config.MAX_DRAWDOWN_PCT
+    min_mult = config.DRAWDOWN_MIN_RISK_MULT
+    if dd_pct <= start:
+        return 1.0
+    if dd_pct >= cap or cap <= start:
+        return min_mult
+    progress = (dd_pct - start) / (cap - start)
+    return 1.0 - progress * (1.0 - min_mult)
+
+
 def adaptive_atr_stop_mult(config, volatility_pct):
     """
     Múltiplo de ATR para el stop, escalado por régimen de volatilidad si
@@ -100,24 +130,32 @@ class RiskManager:
         price = signal["price"]
         stop_mult = adaptive_atr_stop_mult(self.config, signal["volatility"] * 100)
         stop_distance = atr_val * stop_mult
-        risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100)
-        position_size = risk_amount / stop_distance if stop_distance > 0 else 0
-        
+
         # FIX (15/09/2026, pedido del usuario): peak_equity() (máximo
         # histórico, sin ventana) atrapaba el bot para siempre una vez
         # cruzado MAX_DRAWDOWN_PCT -- ver AUDITORÍA larga en
-        # MAX_DRAWDOWN_WINDOW_DAYS (config.py). Este gate (el soft-block
-        # de nuevas entradas) ahora mide contra el peak de los últimos
-        # MAX_DRAWDOWN_WINDOW_DAYS días en vez del histórico completo, así
-        # que un peak viejo que ya no se puede alcanzar sin un trade
-        # ganador eventualmente sale de la ventana y el drawdown se
-        # diluye solo. El circuit breaker real (15%,
+        # MAX_DRAWDOWN_WINDOW_DAYS (config.py). Este gate ahora mide contra
+        # el peak de los últimos MAX_DRAWDOWN_WINDOW_DAYS días en vez del
+        # histórico completo, así que un peak viejo que ya no se puede
+        # alcanzar sin un trade ganador eventualmente sale de la ventana y
+        # el drawdown se diluye solo. El circuit breaker real (15%,
         # update_equity_and_check_kill_switch más arriba) sigue midiendo
         # contra el máximo histórico a propósito -- ese es intencionalmente
         # permanente hasta reset manual.
         window_days = getattr(self.config, "MAX_DRAWDOWN_WINDOW_DAYS", 7.0)
         peak = self.db.peak_equity_window(module="crypto", days=window_days) or equity
         dd_pct = ((peak - equity) / peak * 100) if peak > 0 else 0.0
+
+        # NUEVO (15/09/2026, pedido del usuario): el drawdown ya no bloquea
+        # la señal entera -- ver drawdown_risk_multiplier() más arriba en
+        # este archivo. En vez de eso reduce el tamaño de la posición, así
+        # que se aplica ACÁ, antes de calcular risk_amount/position_size,
+        # para que el tamaño reducido llegue solo a trade_planner.py sin
+        # tocar ese archivo.
+        drawdown_risk_mult = drawdown_risk_multiplier(self.config, dd_pct)
+        risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100) * drawdown_risk_mult
+        position_size = risk_amount / stop_distance if stop_distance > 0 else 0
+
         exposure_pct = self.db.current_exposure_pct(equity)
         vol_pct = signal["volatility"] * 100
         
@@ -126,10 +164,17 @@ class RiskManager:
         # pasaba como si fallaba, así que un check bloqueado no decía por
         # cuánto se pasó (¿19.9% o 45%?). Eso obligaba a ir a mirar los
         # campos sueltos de risk_report en vez de leer el motivo solo.
+        #
+        # NUEVO (15/09/2026): el check de Drawdown pasó de bloqueante
+        # ("ok": dd_pct < MAX_DRAWDOWN_PCT) a informativo ("ok" siempre
+        # True) -- ya no puede tumbar la señal, solo informa el % de
+        # drawdown y qué % de riesgo quedó aplicado por el throttle. Sigue
+        # apareciendo en la bitácora para que quede visible cuándo el bot
+        # está operando con tamaño reducido por esto.
         checks = [
             {"label": "Tamaño de posición calculable", "ok": stop_distance > 0 and position_size > 0},
             {"label": f"Exposición: {exposure_pct:.1f}% < {self.config.MAX_EXPOSURE_PCT}%", "ok": exposure_pct < self.config.MAX_EXPOSURE_PCT},
-            {"label": f"Drawdown: {dd_pct:.1f}% < {self.config.MAX_DRAWDOWN_PCT}%", "ok": dd_pct < self.config.MAX_DRAWDOWN_PCT},
+            {"label": f"Drawdown: {dd_pct:.1f}% (riesgo ajustado a {drawdown_risk_mult * 100:.0f}%)", "ok": True},
             {"label": f"Volatilidad: {vol_pct:.2f}% < {self.config.MAX_VOLATILITY_PCT}%", "ok": vol_pct < self.config.MAX_VOLATILITY_PCT},
             {"label": "Sistema no detenido por circuit breaker", "ok": not self.is_halted(),
              "fail_reason": "El sistema está detenido por el circuit breaker"},
@@ -190,5 +235,6 @@ class RiskManager:
             "atr_stop_mult": stop_mult,
             "exposure_pct": exposure_pct,
             "drawdown_pct": dd_pct,
+            "drawdown_risk_mult": drawdown_risk_mult,
             "volatility_pct": vol_pct,
         }
