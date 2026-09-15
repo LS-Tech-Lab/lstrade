@@ -27,7 +27,18 @@
   --shadow:0 8px 28px rgba(0,0,0,0.35);
 }
 *{box-sizing:border-box;}
-html,body{margin:0;padding:0;}
+/* FIX (15/09/2026 v3): el overflow-x:hidden que ya existía SOLO estaba en
+   .wrap -- eso clippea contenido que se desborda DENTRO de .wrap, pero no
+   evita que html/body (el documento completo) se vuelva scrolleable
+   horizontalmente. En MLB, el badge de Resultado con el nombre del equipo
+   (fix anterior) desbordaba lo suficiente como para agrandar el
+   scrollWidth de .row-carousel-track más allá de lo que .wrap podía
+   contener, y ese excedente sí quedaba disponible como scroll del body --
+   al deslizar, el swipe termina corriendo la página entera (se ve la
+   grilla de fondo asomando a la derecha y el padding izquierdo
+   desaparece). overflow-x:hidden acá, en el contenedor de scroll real del
+   documento, lo bloquea de raíz sin importar qué elemento se desborde. */
+html,body{margin:0;padding:0; overflow-x:hidden; max-width:100vw;}
 body{
   background:
     radial-gradient(circle at 12% -10%, rgba(61,220,151,0.07), transparent 42%),
