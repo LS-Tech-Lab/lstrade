@@ -409,8 +409,8 @@ class SupabaseDatabase:
             }
         return result
 
-    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None):
-        _with_retry(lambda: self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "score": score, "confidence": confidence, "ts_signaled": _now_iso()}).execute())
+    def record_polymarket_signal(self, condition_id, question, direction, token_id, entry, target, stop, score=None, confidence=None, opportunity_score=None):
+        _with_retry(lambda: self.client.table("polymarket_signals").insert({"condition_id": condition_id, "question": question, "direction": direction, "token_id": token_id, "entry": entry, "target": target, "stop": stop, "score": score, "confidence": confidence, "opportunity_score": opportunity_score, "ts_signaled": _now_iso()}).execute())
 
     def get_open_polymarket_signals(self):
         res = _with_retry(lambda: self.client.table("polymarket_signals").select("*").is_("outcome", "null").execute())
