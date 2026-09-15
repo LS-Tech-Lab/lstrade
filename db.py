@@ -155,6 +155,21 @@ class Database:
         row = self.conn.execute("SELECT MAX(equity) as peak FROM equity_history WHERE module = ?", (module,)).fetchone()
         return row["peak"] if row and row["peak"] is not None else None
 
+    def peak_equity_window(self, module="crypto", days=7.0):
+        """Ver peak_equity_window en supabase_db.py (misma lógica, esta es
+        la variante SQLite para el modo VPS/local y para el CI de GitHub
+        Actions, que instancia Database directamente -- ver ci.yml). `ts`
+        en esta tabla es epoch en segundos (time.time()), a diferencia del
+        timestamptz de Supabase, así que el corte de la ventana se calcula
+        restando `days` en segundos en vez de un ISO string."""
+        cutoff = time.time() - (days * 86400)
+        row = self.conn.execute(
+            "SELECT MAX(equity) as peak FROM equity_history WHERE module = ? AND ts >= ?", (module, cutoff)
+        ).fetchone()
+        if row and row["peak"] is not None:
+            return row["peak"]
+        return self.peak_equity(module)
+
     def last_equity(self, module="crypto"):
         """Último equity registrado (no el pico histórico) PARA ESE MÓDULO.
         Es el que hay que usar como base para aplicar el P&L de un trade
