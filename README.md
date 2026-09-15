@@ -19,6 +19,11 @@ te lo manda por Telegram (o consola) para tu aprobación, y ejecuta la orden rea
 - El circuit breaker (`MAX_DRAWDOWN_KILL_PCT`) detiene el sistema completo si tu cuenta cae ese % desde
   su máximo histórico. Cuando se activa, hay que revisar manualmente y reiniciarlo con `--reset-halt`.
   No lo desactives ni lo subas a un número irrazonable "para que no moleste".
+- Por debajo de ese circuit breaker hay un segundo control, más suave: cuando el drawdown (medido
+  contra el pico de los últimos `MAX_DRAWDOWN_WINDOW_DAYS` días) supera `DRAWDOWN_THROTTLE_START_PCT`,
+  el tamaño de cada posición nueva se reduce gradualmente hasta un piso de `DRAWDOWN_MIN_RISK_MULT`
+  (20% por defecto) al llegar a `MAX_DRAWDOWN_PCT` — nunca bloquea del todo, solo achica el riesgo por
+  trade mientras el equity está por debajo de su máximo reciente.
 
 ## Instalación
 
