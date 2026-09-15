@@ -131,7 +131,17 @@ create table if not exists polymarket_signals (
     -- add_score_confidence_to_polymarket_signals; este bloque documenta el
     -- estado real de la tabla en Supabase.
     score double precision,
-    confidence smallint
+    confidence smallint,
+    -- NUEVO (15/09/2026): score compuesto 0-100 (Edge/Liquidez/Confianza/
+    -- Ejecución, ver compute_opportunity_score() en
+    -- polymarket_signal_engine.py) con el que se rankeó esta señal contra
+    -- las demás candidatas del mismo ciclo -- antes solo se guardaba
+    -- `score` (la fuerza cruda de ineficiencia/momentum, sin liquidez ni
+    -- timing), así que no había forma de comparar con datos reales si el
+    -- ranking nuevo elige mejores señales que el viejo. Aplicado vía
+    -- migración add_opportunity_score_to_polymarket_signals; este bloque
+    -- documenta el estado real de la tabla en Supabase.
+    opportunity_score double precision
 );
 
 -- Señales de clima con la probabilidad estimada por el modelo (my_prob) —
