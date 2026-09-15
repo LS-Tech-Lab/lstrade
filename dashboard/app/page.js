@@ -961,6 +961,12 @@ function PolymarketResolvedTable({ rows, excludedCategories = [] }) {
               value={r.rMultiple !== null ? `${r.rMultiple >= 0 ? "+" : ""}${r.rMultiple.toFixed(2)}R` : "—"} />
             <RowField label="Retorno" tone={retTone}
               value={r.returnPct !== null ? `${r.returnPct >= 0 ? "+" : ""}${r.returnPct.toFixed(1)}%` : "—"} />
+            <RowField label="P&L real" tone={r.pnl_dollars > 0 ? "ok" : r.pnl_dollars < 0 ? "fail" : ""}
+              value={
+                r.pnl_dollars !== null && r.pnl_dollars !== undefined
+                  ? `${formatPnlDollars(r.pnl_dollars)}${r.stake_dollars ? ` (apostado ${formatMoney(r.stake_dollars)})` : ""}`
+                  : "—"
+              } />
             <RowField label="Tiempo"
               value={r.timeToResolve !== null
                 ? (r.timeToResolve < 24 ? `${r.timeToResolve.toFixed(1)}h` : `${(r.timeToResolve / 24).toFixed(1)}d`)
