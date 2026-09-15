@@ -246,6 +246,88 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.06,
     }
 
 
+def compute_opportunity_score(signal, config):
+    """
+    Score compuesto 0-100 para RANKEAR señales de Polymarket dentro de un
+    mismo ciclo, en vez de ordenar solo por el `score` crudo de
+    generate_polymarket_signal() (que mide fuerza de ineficiencia/momentum,
+    pero no dice nada de cuánta plata hay detrás para ejecutar esa entrada,
+    ni de si el timing es razonable). No reemplaza a POLYMARKET_MIN_SCORE/
+    POLYMARKET_MIN_CONFIDENCE -- esos siguen siendo el piso que decide si
+    una señal existe. Esto decide CUÁL de las que ya pasaron el piso se
+    manda cuando hay más de una candidata en el ciclo (ver
+    MAX_SIGNALS_PER_CYCLE=1 en polymarket_main.py).
+
+    Inspirado en el scoring del Opportunity Finder de CloddsBot
+    (docs/OPPORTUNITY_FINDER.md): Edge 35% + Liquidez 25% + Confianza 25%
+    + Ejecución 15%, con las mismas penalizaciones de liquidez/confianza
+    floja. Adaptado a los datos que ya produce este motor -- no agrega
+    ningún fetch de red nuevo.
+
+    AUDITORÍA (15/09/2026): igual que combine_components() en
+    mlb_signal_engine.py, se centraliza acá como única fuente para que
+    run_polymarket_cycle() y run_polymarket_cycle_serverless() (dos
+    codepaths separados en polymarket_main.py) no dupliquen la matemática.
+    """
+    m = signal["market"]
+
+    # 1. Edge (0-35): normaliza el score crudo del motor contra un techo de
+    # referencia configurable (POLYMARKET_EDGE_SCORE_REF) en vez de un
+    # rango fijo -- el score no tiene un máximo natural, así que "35/35"
+    # significa "score al nivel de una señal sólida", no "score máximo
+    # posible".
+    edge_ref = getattr(config, "POLYMARKET_EDGE_SCORE_REF", 0.15)
+    edge_score = min(signal["score"] / edge_ref, 1.0) * 35 if edge_ref > 0 else 0.0
+
+    # 2. Liquidez (0-25): agregada del mercado (yes+no del book de Gamma),
+    # contra un techo de referencia (POLYMARKET_LIQUIDITY_SCORE_REF) -- a
+    # partir de cierto punto más liquidez no cambia la ejecución real de
+    # un trade de este tamaño.
+    liq_ref = getattr(config, "POLYMARKET_LIQUIDITY_SCORE_REF", 20000.0)
+    liquidity_score = min(m["liquidity"] / liq_ref, 1.0) * 25 if liq_ref > 0 else 0.0
+
+    # 3. Confianza (0-25): la confianza 1-5 que ya calcula el motor
+    # (round(score*20), clamp 1-5) normalizada a 0-1.
+    confidence_score = (signal["confidence"] / 5.0) * 25
+
+    # 4. Ejecución (0-15): penaliza poca rotación de capital real detrás
+    # del precio (vol_24h/liquidez bajo) y resolución demasiado inminente
+    # (menos de 6 horas -- riesgo de no alcanzar a verificar el book real
+    # ni a salir a tiempo si hace falta, ver verify_entry_against_book()).
+    execution_score = 15.0
+    vol_liq_ratio = (m["volume_24h"] / m["liquidity"]) if m["liquidity"] > 0 else 0.0
+    if vol_liq_ratio < 0.1:
+        execution_score -= 5.0
+    days = m.get("days_to_resolution")
+    if days is not None and days < 0.25:
+        execution_score -= 5.0
+    execution_score = max(0.0, execution_score)
+
+    # Penalizaciones: liquidez apenas por encima del piso configurado
+    # (POLYMARKET_MIN_LIQUIDITY ya la dejó pasar, pero sigue siendo un book
+    # fino) o confianza en el extremo bajo del rango que ya pasó el filtro.
+    penalty = 0.0
+    min_liq = getattr(config, "POLYMARKET_MIN_LIQUIDITY", 5000.0)
+    if m["liquidity"] < min_liq * 1.5:
+        penalty += 3.0
+    if signal["confidence"] < 3:
+        penalty += 3.0
+
+    total = edge_score + liquidity_score + confidence_score + execution_score - penalty
+    total = max(0.0, min(100.0, total))
+
+    return {
+        "opportunity_score": round(total, 1),
+        "breakdown": {
+            "edge": round(edge_score, 1),
+            "liquidity": round(liquidity_score, 1),
+            "confidence": round(confidence_score, 1),
+            "execution": round(execution_score, 1),
+            "penalty": round(penalty, 1),
+        },
+    }
+
+
 def verify_entry_against_book(signal, snapshot, config):
     """Recalcula el trade_plan de una señal ya generada contra el book real
     (bids/asks reales de ESE token) en vez de dejarlo anclado al
