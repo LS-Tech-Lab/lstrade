@@ -191,6 +191,29 @@ class Database:
         ).fetchone()
         return row["equity"] if row and row["equity"] is not None else None
 
+    def recent_equity_returns(self, module="crypto", limit=100):
+        """
+        NUEVO (15/09/2026, investigación sobre CloddsBot -- src/risk/var.ts):
+        devuelve los retornos % entre snapshots CONSECUTIVOS de
+        equity_history para ese módulo -- cada snapshot corresponde a un
+        trade cerrado/resuelto (ver apply_r_multiple_pnl/
+        apply_binary_signal_pnl), así que cada retorno es el P&L % de UN
+        trade, en el mismo orden en que se cerraron. Es la serie de insumo
+        de compute_var_cvar() (risk_manager.py). Se traen limit+1 puntos de
+        equity para poder armar `limit` retornos.
+        """
+        rows = self.conn.execute(
+            "SELECT equity FROM equity_history WHERE module = ? ORDER BY ts DESC LIMIT ?",
+            (module, limit + 1)
+        ).fetchall()
+        equities = [r["equity"] for r in reversed(rows)]
+        returns = []
+        for i in range(1, len(equities)):
+            prev = equities[i - 1]
+            if prev and prev > 0:
+                returns.append((equities[i] - prev) / prev)
+        return returns
+
     def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None):
         """Ver apply_binary_signal_pnl en supabase_db.py (misma lógica, esta
         es la variante SQLite para el modo VPS/local).
