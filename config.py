@@ -80,6 +80,22 @@ class Config:
     # en risk_manager.py).
     MAX_DRAWDOWN_WINDOW_DAYS = _float("MAX_DRAWDOWN_WINDOW_DAYS", 7.0)
     MAX_DRAWDOWN_KILL_PCT = _float("MAX_DRAWDOWN_KILL_PCT", 15.0)
+    # NUEVO (15/09/2026, pedido del usuario): el gate de drawdown en
+    # risk_manager.check() era binario -- por debajo de MAX_DRAWDOWN_PCT
+    # operaba a tamaño normal, por encima bloqueaba TODO hasta que el peak
+    # de la ventana (MAX_DRAWDOWN_WINDOW_DAYS) decayera solo con el paso
+    # del tiempo. Como el equity de cripto está aislado de los otros
+    # módulos (Polymarket/MLB/clima no lo alimentan), esa espera podía ser
+    # de más de un día sin que el bot operara nada en cripto mientras
+    # tanto. Reemplazado por un throttle continuo: entre
+    # DRAWDOWN_THROTTLE_START_PCT y MAX_DRAWDOWN_PCT el tamaño de posición
+    # se reduce linealmente hasta un piso de DRAWDOWN_MIN_RISK_MULT (nunca
+    # llega a cero, así que el trade sigue pudiendo abrirse, solo que más
+    # chico) en vez de bloquear del todo. El circuit breaker real
+    # (MAX_DRAWDOWN_KILL_PCT, contra el máximo histórico) sigue siendo el
+    # freno duro, sin cambios.
+    DRAWDOWN_THROTTLE_START_PCT = _float("DRAWDOWN_THROTTLE_START_PCT", 4.0)
+    DRAWDOWN_MIN_RISK_MULT = _float("DRAWDOWN_MIN_RISK_MULT", 0.20)
     MAX_VOLATILITY_PCT = _float("MAX_VOLATILITY_PCT", 4.0)
     ATR_STOP_MULT = _float("ATR_STOP_MULT", 1.5)
     MIN_RR = _float("MIN_RR", 1.8)
