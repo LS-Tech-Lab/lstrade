@@ -154,7 +154,15 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
    PolymarketResolvedTable rendereaban como texto plano) -- se agrega acá
    junto con el estado result-stop (salida anticipada por stop-loss,
    distinto de un win/loss de resolución completa). */
-.result-badge{display:inline-block; padding:3px 10px; border-radius:999px; font-size:11.5px; font-weight:700; white-space:nowrap;}
+/* FIX (15/09/2026): el white-space:nowrap se copió del badge de
+   Clima/Polymarket ("✅ SI OCURRIÓ", texto fijo y corto) pero MlbResolvedTable
+   le mete el nombre completo del equipo dentro del badge (ej. "❌ PERDIÓ
+   (San Francisco Giants)") -- con nowrap ese texto no podía envolver y
+   se salía del ancho de la tarjeta del carrusel en mobile, descuadrando la
+   fila (y arrastrando el resto de la tarjeta) al deslizar. Se cambia a
+   white-space:normal + overflow-wrap y un radio de borde más chico (999px
+   se ve raro en 2 líneas) para que envuelva en vez de desbordar. */
+.result-badge{display:inline-block; padding:3px 10px; border-radius:14px; font-size:11.5px; font-weight:700; white-space:normal; overflow-wrap:break-word; max-width:100%;}
 .result-badge.result-win{background:var(--good-dim); color:var(--good); box-shadow:inset 0 0 0 1px rgba(61,220,151,0.35);}
 .result-badge.result-loss{background:var(--bad-dim); color:var(--bad); box-shadow:inset 0 0 0 1px rgba(255,93,108,0.35);}
 .result-badge.result-stop{background:var(--accent-2-dim); color:var(--accent-2); box-shadow:inset 0 0 0 1px rgba(255,122,69,0.4);}
@@ -281,7 +289,11 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
   font-size:9.5px; text-transform:uppercase; letter-spacing:0.05em;
   color:var(--ink-soft); font-weight:700;
 }
-.row-field-value{font-size:12.5px;}
+/* FIX (15/09/2026): red de seguridad general -- sin esto, cualquier valor
+   largo sin espacios (o con nowrap heredado, ver .result-badge arriba)
+   podía desbordar el ancho fijo de .row-card (100% del carrusel) en vez de
+   envolver, descuadrando la tarjeta en mobile. */
+.row-field-value{font-size:12.5px; overflow-wrap:anywhere;}
 
 /* NUEVO: acordeón "Ver detalle del riesgo" dentro de cada tarjeta de la
    bitácora — lista cada chequeo individual (spread, exposición, drawdown,
