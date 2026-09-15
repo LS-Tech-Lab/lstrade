@@ -264,6 +264,28 @@ class Config:
     # momentum genuinamente más fuertes que el ruido típico del book.
     POLYMARKET_MIN_CONFIDENCE = _int("POLYMARKET_MIN_CONFIDENCE", 4)
 
+    # NUEVO (15/09/2026): score compuesto de oportunidad (0-100) para
+    # RANKEAR señales de Polymarket dentro de un mismo ciclo -- no
+    # reemplaza a POLYMARKET_MIN_SCORE/MIN_CONFIDENCE (siguen siendo el
+    # piso), solo decide cuál de las señales que ya pasaron el piso se
+    # manda cuando hay más de una candidata (MAX_SIGNALS_PER_CYCLE=1 en
+    # polymarket_main.py). Inspirado en el Opportunity Finder de CloddsBot
+    # (Edge 35% + Liquidez 25% + Confianza 25% + Ejecución 15%) -- ver
+    # compute_opportunity_score() en polymarket_signal_engine.py.
+    #
+    # POLYMARKET_EDGE_SCORE_REF: score crudo (generate_polymarket_signal)
+    # que ya satura el componente Edge a 35/35. Referencia: un momentum
+    # apenas por encima del umbral (~0.05*1.5=0.075) sumado a una
+    # ineficiencia también apenas por encima del umbral (~0.035*2=0.07) ya
+    # da ~0.15 -- una señal bien por encima de eso es notablemente más
+    # fuerte que el piso mínimo.
+    POLYMARKET_EDGE_SCORE_REF = _float("POLYMARKET_EDGE_SCORE_REF", 0.15)
+
+    # POLYMARKET_LIQUIDITY_SCORE_REF: liquidez agregada del mercado que ya
+    # satura el componente Liquidez a 25/25 -- por encima de este monto
+    # más liquidez no cambia la ejecución real de un trade de este tamaño.
+    POLYMARKET_LIQUIDITY_SCORE_REF = _float("POLYMARKET_LIQUIDITY_SCORE_REF", 20000.0)
+
     # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
     # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
     # estimar la distribución de probabilidad de la máxima del día y
