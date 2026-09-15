@@ -119,6 +119,37 @@ class Config:
     ATR_STOP_MULT_MIN = _float("ATR_STOP_MULT_MIN", 1.0)
     ATR_STOP_MULT_MAX = _float("ATR_STOP_MULT_MAX", 2.5)
 
+    # NUEVO (15/09/2026, investigación sobre CloddsBot -- src/risk/volatility.ts):
+    # régimen de volatilidad que escala el TAMAÑO de la posición, distinto
+    # de ADAPTIVE_ATR_STOP de arriba (que solo cambia el ANCHO del stop).
+    # Usa la misma métrica vol_pct que ya compara MAX_VOLATILITY_PCT (no un
+    # stddev normalizado aparte) -- los umbrales quedan deliberadamente por
+    # debajo de MAX_VOLATILITY_PCT (4.0% default) para dar un degradado de
+    # tamaño antes del bloqueo duro, en vez de pasar de tamaño completo a
+    # bloqueo total de un salto (mismo principio que ya llevó a reemplazar
+    # el bloqueo binario de drawdown por un throttle continuo, ver
+    # DRAWDOWN_THROTTLE_START_PCT). Se aplica multiplicado con
+    # drawdown_risk_mult en risk_manager.check() -- ver volatility_regime()
+    # ahí. Punto de partida sin validar todavía contra resultados reales.
+    VOL_REGIME_LOW_PCT = _float("VOL_REGIME_LOW_PCT", 0.5)
+    VOL_REGIME_HIGH_PCT = _float("VOL_REGIME_HIGH_PCT", 1.5)
+    VOL_REGIME_EXTREME_PCT = _float("VOL_REGIME_EXTREME_PCT", 3.0)
+    VOL_REGIME_MULT_LOW = _float("VOL_REGIME_MULT_LOW", 1.2)
+    VOL_REGIME_MULT_NORMAL = _float("VOL_REGIME_MULT_NORMAL", 1.0)
+    VOL_REGIME_MULT_HIGH = _float("VOL_REGIME_MULT_HIGH", 0.5)
+    VOL_REGIME_MULT_EXTREME = _float("VOL_REGIME_MULT_EXTREME", 0.25)
+
+    # NUEVO (15/09/2026, misma investigación -- src/risk/var.ts): VaR/CVaR
+    # históricos de cripto sobre los últimos VAR_LOOKBACK_TRADES retornos %
+    # entre snapshots consecutivos de equity_history (module="crypto", uno
+    # por trade cerrado -- ver Database.recent_equity_returns()).
+    # Puramente INFORMATIVO por ahora (aparece en risk_report y en la
+    # bitácora, no bloquea ningún trade) -- no hay todavía evidencia de qué
+    # techo tendría sentido real, mismo criterio de "punto de partida" que
+    # el resto de los umbrales de este archivo.
+    VAR_CONFIDENCE = _float("VAR_CONFIDENCE", 0.95)
+    VAR_LOOKBACK_TRADES = _int("VAR_LOOKBACK_TRADES", 100)
+
     # AUDITORÍA (08/09/2026): antes generate_signal() se llamaba desde
     # app.py/main.py sin pasar min_score, así que cripto corría siempre con
     # el default hardcodeado de la función (0.03, signal_engine.py) sin
