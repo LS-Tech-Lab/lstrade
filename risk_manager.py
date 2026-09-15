@@ -53,6 +53,80 @@ def adaptive_atr_stop_mult(config, volatility_pct):
     return max(config.ATR_STOP_MULT_MIN, min(config.ATR_STOP_MULT_MAX, mult))
 
 
+def volatility_regime(config, vol_pct):
+    """
+    Clasifica el régimen de volatilidad actual (misma métrica vol_pct que
+    ya usa adaptive_atr_stop_mult() para el ancho del stop) en
+    low/normal/high/extreme y devuelve un multiplicador de TAMAÑO de
+    posición -- a diferencia de adaptive_atr_stop_mult(), que solo cambia
+    el ancho del stop, esto reduce cuánto capital se arriesga cuando el
+    mercado está más violento de lo normal (y lo aumenta levemente cuando
+    está calmo).
+
+    NUEVO (15/09/2026, investigación sobre CloddsBot -- src/risk/volatility.ts):
+    mismo concepto de régimen con multiplicadores low=1.2x/normal=1.0x/
+    high=0.5x/extreme=0.25x, adaptado a los umbrales de vol_pct que ya usa
+    este codebase. Los umbrales (VOL_REGIME_*_PCT en config.py) quedan
+    deliberadamente por debajo de MAX_VOLATILITY_PCT (el bloqueo duro) a
+    propósito -- dan un degradado de tamaño antes de la pared dura, en vez
+    de pasar de tamaño completo a bloqueo total de un salto. Mismo
+    principio que ya llevó a reemplazar el bloqueo binario de drawdown por
+    un throttle continuo (ver drawdown_risk_multiplier() arriba). Punto de
+    partida sin validar todavía contra resultados reales.
+    """
+    low = getattr(config, "VOL_REGIME_LOW_PCT", 0.5)
+    high = getattr(config, "VOL_REGIME_HIGH_PCT", 1.5)
+    extreme = getattr(config, "VOL_REGIME_EXTREME_PCT", 3.0)
+    mults = {
+        "low": getattr(config, "VOL_REGIME_MULT_LOW", 1.2),
+        "normal": getattr(config, "VOL_REGIME_MULT_NORMAL", 1.0),
+        "high": getattr(config, "VOL_REGIME_MULT_HIGH", 0.5),
+        "extreme": getattr(config, "VOL_REGIME_MULT_EXTREME", 0.25),
+    }
+    if vol_pct <= low:
+        regime = "low"
+    elif vol_pct <= high:
+        regime = "normal"
+    elif vol_pct <= extreme:
+        regime = "high"
+    else:
+        regime = "extreme"
+    return regime, mults[regime]
+
+
+def compute_var_cvar(pnl_pct_series, confidence=0.95):
+    """
+    VaR/CVaR históricos sobre una serie de retornos % (uno por trade
+    cerrado/resuelto del módulo, ver Database.recent_equity_returns()).
+
+    NUEVO (15/09/2026, investigación sobre CloddsBot -- src/risk/var.ts):
+    VaR = la pérdida en el percentil (1-confidence) de la distribución
+    observada; CVaR (Expected Shortfall) = pérdida PROMEDIO en la cola más
+    allá de ese percentil -- más informativo que VaR solo porque VaR no
+    dice nada de qué tan mala es la cola, solo dónde empieza.
+
+    Puramente informativo por ahora (no bloquea ningún trade, se muestra
+    en risk_report y en la bitácora) -- mismo criterio de "punto de
+    partida sin validar todavía contra resultados reales" que ya se aplicó
+    a otros umbrales de este archivo. Devuelve None con muestra chica (< 5
+    retornos) en vez de un número que no significa nada todavía.
+    """
+    if not pnl_pct_series or len(pnl_pct_series) < 5:
+        return None
+    sorted_pnls = sorted(pnl_pct_series)
+    n = len(sorted_pnls)
+    idx = max(0, min(n - 1, int((1 - confidence) * n)))
+    tail = sorted_pnls[:idx + 1]
+    var_pct = -sorted_pnls[idx]
+    cvar_pct = -(sum(tail) / len(tail))
+    return {
+        "var_pct": max(0.0, var_pct),
+        "cvar_pct": max(0.0, cvar_pct),
+        "confidence": confidence,
+        "sample_size": n,
+    }
+
+
 def format_blocked_message(symbol, signal, failed_checks):
     """
     Arma el mensaje de Telegram para una señal bloqueada por riesgo.
@@ -128,7 +202,8 @@ class RiskManager:
     def check(self, symbol, signal, equity, ticker=None):
         atr_val = signal["atr"]
         price = signal["price"]
-        stop_mult = adaptive_atr_stop_mult(self.config, signal["volatility"] * 100)
+        vol_pct = signal["volatility"] * 100
+        stop_mult = adaptive_atr_stop_mult(self.config, vol_pct)
         stop_distance = atr_val * stop_mult
 
         # FIX (15/09/2026, pedido del usuario): peak_equity() (máximo
@@ -153,11 +228,38 @@ class RiskManager:
         # para que el tamaño reducido llegue solo a trade_planner.py sin
         # tocar ese archivo.
         drawdown_risk_mult = drawdown_risk_multiplier(self.config, dd_pct)
-        risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100) * drawdown_risk_mult
+
+        # NUEVO (15/09/2026, investigación sobre CloddsBot): igual que el
+        # throttle de drawdown de arriba, el régimen de volatilidad también
+        # se aplica ACÁ como un multiplicador más sobre risk_amount, antes
+        # de exposure_pct/checks -- ver volatility_regime() arriba en este
+        # archivo. Se multiplica junto con drawdown_risk_mult (ambos son
+        # reductores independientes del mismo tamaño base).
+        vol_regime, regime_size_mult = volatility_regime(self.config, vol_pct)
+
+        risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100) * drawdown_risk_mult * regime_size_mult
         position_size = risk_amount / stop_distance if stop_distance > 0 else 0
 
         exposure_pct = self.db.current_exposure_pct(equity)
-        vol_pct = signal["volatility"] * 100
+
+        # NUEVO (15/09/2026, investigación sobre CloddsBot -- src/risk/var.ts):
+        # VaR/CVaR históricos de cripto, puramente informativos (ver
+        # compute_var_cvar() arriba) -- nunca bloquean el trade ni cambian
+        # el tamaño, solo quedan visibles en risk_report y en la bitácora
+        # para poder mirarlos junto al resto de los checks. Envuelto en
+        # try/except: un fallo acá (ej. DB momentáneamente no disponible)
+        # no debe tumbar el check de riesgo completo, mismo criterio que ya
+        # se aplica al resto de este método.
+        try:
+            recent_returns = self.db.recent_equity_returns(
+                module="crypto", limit=getattr(self.config, "VAR_LOOKBACK_TRADES", 100)
+            )
+            var_result = compute_var_cvar(
+                recent_returns, confidence=getattr(self.config, "VAR_CONFIDENCE", 0.95)
+            )
+        except Exception as e:
+            log.warning(f"No se pudo calcular VaR/CVaR: {e}")
+            var_result = None
         
         # NUEVO: las etiquetas ahora incluyen el valor actual, no solo el
         # umbral — antes decían por ejemplo "Exposición < 20%" tanto si
@@ -175,10 +277,30 @@ class RiskManager:
             {"label": "Tamaño de posición calculable", "ok": stop_distance > 0 and position_size > 0},
             {"label": f"Exposición: {exposure_pct:.1f}% < {self.config.MAX_EXPOSURE_PCT}%", "ok": exposure_pct < self.config.MAX_EXPOSURE_PCT},
             {"label": f"Drawdown: {dd_pct:.1f}% (riesgo ajustado a {drawdown_risk_mult * 100:.0f}%)", "ok": True},
-            {"label": f"Volatilidad: {vol_pct:.2f}% < {self.config.MAX_VOLATILITY_PCT}%", "ok": vol_pct < self.config.MAX_VOLATILITY_PCT},
+            # NUEVO (15/09/2026): la etiqueta ahora incluye el régimen de
+            # volatilidad y el multiplicador de tamaño que le aplicó (ver
+            # volatility_regime() arriba) -- el bloqueo real sigue siendo
+            # el mismo de siempre (vol_pct < MAX_VOLATILITY_PCT), esto solo
+            # hace visible el degradado de tamaño que ya venía antes del
+            # bloqueo duro.
+            {"label": f"Volatilidad: {vol_pct:.2f}% < {self.config.MAX_VOLATILITY_PCT}% (régimen {vol_regime}, tamaño ×{regime_size_mult:.2f})", "ok": vol_pct < self.config.MAX_VOLATILITY_PCT},
             {"label": "Sistema no detenido por circuit breaker", "ok": not self.is_halted(),
              "fail_reason": "El sistema está detenido por el circuit breaker"},
         ]
+
+        # NUEVO (15/09/2026, investigación sobre CloddsBot): informativo
+        # puro -- no tiene "fail_reason" porque ok siempre es True, nunca
+        # bloquea nada. Solo aparece si ya hay muestra suficiente (ver
+        # compute_var_cvar(), mínimo 5 retornos) para no mostrar un número
+        # que todavía no significa nada con 1-2 trades cerrados.
+        if var_result:
+            checks.append({
+                "label": (
+                    f"VaR {var_result['confidence']*100:.0f}% (últimos {var_result['sample_size']} trades): "
+                    f"-{var_result['var_pct']*100:.1f}% · CVaR: -{var_result['cvar_pct']*100:.1f}%"
+                ),
+                "ok": True,
+            })
         
         # NUEVO: antes esto era "ok": True con el comentario "fallo seguro"
         # — pero aprobar automáticamente cuando FALTAN los datos es fail-OPEN,
@@ -237,4 +359,7 @@ class RiskManager:
             "drawdown_pct": dd_pct,
             "drawdown_risk_mult": drawdown_risk_mult,
             "volatility_pct": vol_pct,
+            "volatility_regime": vol_regime,
+            "regime_size_mult": regime_size_mult,
+            "var": var_result,
         }
