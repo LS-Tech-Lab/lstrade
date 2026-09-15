@@ -569,7 +569,21 @@ function useCarouselNav() {
     const el = containerRef.current;
     if (!el || !el.children.length) return;
     const idx = Math.max(0, Math.min(el.children.length - 1, i));
-    el.children[idx].scrollIntoView({ behavior: "smooth", inline: "start", block: "nearest" });
+    const target = el.children[idx];
+    // FIX (15/09/2026, pedido del usuario): scrollIntoView() deja que el
+    // navegador elija qué ancestros scrollear para traer el elemento a
+    // la vista -- en mobile esto puede terminar moviendo la PÁGINA
+    // entera en vez de (o además de) el carrusel, específicamente al
+    // tocar las flechas ‹ › (que llaman a goTo -- scroll programático).
+    // Los fixes anteriores de touch-action/overscroll-behavior-x NO
+    // cubrían este caso porque esos solo rigen gestos táctiles de
+    // deslizar, no scrollIntoView(). Se reemplaza por scrollTo()
+    // directamente sobre containerRef (el propio track del carrusel),
+    // calculado con getBoundingClientRect() para no depender de la
+    // cadena de offsetParent -- así el scroll nunca puede salirse del
+    // contenedor del carrusel hacia un ancestro.
+    const delta = target.getBoundingClientRect().left - el.getBoundingClientRect().left;
+    el.scrollTo({ left: el.scrollLeft + delta, behavior: "smooth" });
   }
   useEffect(() => () => {
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
