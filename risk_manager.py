@@ -103,7 +103,20 @@ class RiskManager:
         risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100)
         position_size = risk_amount / stop_distance if stop_distance > 0 else 0
         
-        peak = self.db.peak_equity() or equity
+        # FIX (15/09/2026, pedido del usuario): peak_equity() (máximo
+        # histórico, sin ventana) atrapaba el bot para siempre una vez
+        # cruzado MAX_DRAWDOWN_PCT -- ver AUDITORÍA larga en
+        # MAX_DRAWDOWN_WINDOW_DAYS (config.py). Este gate (el soft-block
+        # de nuevas entradas) ahora mide contra el peak de los últimos
+        # MAX_DRAWDOWN_WINDOW_DAYS días en vez del histórico completo, así
+        # que un peak viejo que ya no se puede alcanzar sin un trade
+        # ganador eventualmente sale de la ventana y el drawdown se
+        # diluye solo. El circuit breaker real (15%,
+        # update_equity_and_check_kill_switch más arriba) sigue midiendo
+        # contra el máximo histórico a propósito -- ese es intencionalmente
+        # permanente hasta reset manual.
+        window_days = getattr(self.config, "MAX_DRAWDOWN_WINDOW_DAYS", 7.0)
+        peak = self.db.peak_equity_window(module="crypto", days=window_days) or equity
         dd_pct = ((peak - equity) / peak * 100) if peak > 0 else 0.0
         exposure_pct = self.db.current_exposure_pct(equity)
         vol_pct = signal["volatility"] * 100
