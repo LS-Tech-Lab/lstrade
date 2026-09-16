@@ -624,7 +624,13 @@ export async function GET() {
       // computeStatsByConfidence() más abajo. setup_type no se pide porque
       // todavía no tiene ningún trade cerrado con ese dato (columna
       // agregada el mismo día que esto).
-      supabase.from("closed_trades").select("outcome,r_multiple,confidence").order("ts_closed", { ascending: false }).limit(500),
+      // FIX (16/09/2026, pedido del usuario): antes solo traía
+      // outcome/r_multiple/confidence (alcanzaba para las stats agregadas,
+      // pero no para listar los trades uno por uno) -- se pide la fila
+      // completa para poder armar un "Historial reciente" de Cripto igual
+      // al de los demás módulos (ver crypto_resolved más abajo), sin perder
+      // las stats que ya se calculaban con esta misma query.
+      supabase.from("closed_trades").select("*").order("ts_closed", { ascending: false }).limit(500),
       // Señales de Polymarket todavía sin resolver — "posiciones abiertas" de ese módulo.
       supabase.from("polymarket_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
       // Últimas resueltas: para el historial reciente y las stats por categoría.
@@ -758,6 +764,10 @@ export async function GET() {
       // Si las tablas todavía no existen (schema.sql viejo sin correr de
       // nuevo), no rompemos el dashboard — se muestran vacías.
       crypto_open: openTradesRes.error ? [] : (openTradesRes.data || []),
+      // NUEVO (16/09/2026, pedido del usuario): "Historial reciente" de
+      // Cripto -- mismo patrón que weather_resolved/mlb_resolved
+      // (últimos 20 de la misma query que ya se usa para las stats).
+      crypto_resolved: closedTradesRes.error ? [] : (closedTradesRes.data || []).slice(0, 20),
       stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null, breakdown: null }
         : computeStats(closedTradesRes.data),
       polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, expectancy_r: null, profit_factor: null }
