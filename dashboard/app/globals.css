@@ -456,6 +456,24 @@ tbody tr:hover{background:rgba(255,255,255,0.02);}
 .equity-crosshair{stroke:var(--ink-soft); stroke-width:1; stroke-dasharray:3 3; vector-effect:non-scaling-stroke;}
 .equity-hover-dot{fill:var(--accent); stroke:var(--paper); stroke-width:2;}
 .equity-hover-dot-static{opacity:0.9;}
+/* NUEVO (15/09/2026, pedido del usuario -- "mejorar los gráficos de
+   equity"): valores de $ pasivos junto a cada línea de grilla, para no
+   depender del hover para tener una referencia aproximada de escala. */
+.equity-grid-label{font-size:9px; fill:var(--ink-soft); opacity:0.75; font-family:inherit;}
+/* Línea del peak móvil (máximo visto hasta cada punto) y la zona
+   "underwater" entre ese peak y el valor real -- mismo concepto que usa
+   risk_manager.py para el throttle de drawdown de cripto, aplicado acá de
+   forma genérica a las 4 series. stroke-dasharray la distingue de la
+   línea de equity real (sólida); el fill de la zona usa --bad-dim, bien
+   sutil, para no competir con la línea principal ni con el área de
+   degradé existente. */
+.equity-peak-line{stroke:var(--ink-soft); stroke-width:1; stroke-dasharray:4 3; opacity:0.55; vector-effect:non-scaling-stroke;}
+.equity-underwater{fill:var(--bad-dim); stroke:none;}
+.equity-risk-context{
+  font-size:11px; padding:5px 9px; border-radius:6px; margin-bottom:8px;
+  background:var(--good-dim); color:var(--good); font-weight:600; display:inline-block;
+}
+.equity-risk-context.fail{background:var(--bad-dim); color:var(--bad);}
 .equity-tooltip{
   position:absolute; top:8px; transform:translateX(-50%);
   background:var(--ink); color:var(--paper); padding:6px 10px; border-radius:6px;
