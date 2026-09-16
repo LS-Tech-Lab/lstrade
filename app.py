@@ -342,11 +342,12 @@ def run_cycle():
             )
         )
         _touch_notification(db)
-        db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
+        decision_id = db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
             plan["target"], plan["position_size"],
             setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
+            decision_id=decision_id, stake_dollars=plan.get("risk_amount"),
         )
         return {"status": "paper_logged", "symbol": best_symbol}
 
@@ -354,7 +355,7 @@ def run_cycle():
         from executor import Executor
         executor = Executor(exchange_client, config)
         order_detail = executor.execute(best_symbol, plan)
-        db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
+        decision_id = db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
         stop_order = order_detail.get("stop_order") if isinstance(order_detail, dict) else None
         order_id = (
             stop_order.get("id") if isinstance(stop_order, dict)
@@ -364,6 +365,7 @@ def run_cycle():
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"], plan["target"],
             plan["position_size"], order_id,
             setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
+            decision_id=decision_id, stake_dollars=plan.get("risk_amount"),
         )
         notifier.send_message(
             f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}\n"
@@ -388,11 +390,12 @@ def run_cycle():
     )
     message_id = notifier.send_approval_request(memo_md)
     if message_id is None:
-        db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged_no_telegram")
+        decision_id = db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged_no_telegram")
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
             plan["target"], plan["position_size"],
             setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
+            decision_id=decision_id, stake_dollars=plan.get("risk_amount"),
         )
         return {"status": "no_telegram_configured_defaulted_to_paper", "symbol": best_symbol}
 
@@ -1615,6 +1618,12 @@ def handle_update(update):
             f"Objetivo {format_money(plan['target'])}"
         )
 
+        # NUEVO (16/09/2026): log_decision() se mueve antes de add_open_trade
+        # (antes iba al final de la función) para poder usar el decision_id
+        # que devuelve y vincular la posición con la fila de la bitácora que
+        # la originó -- ver mismo patrón en run_cycle() más arriba.
+        decision_id = db.log_decision(symbol, signal, risk_report, plan, decision, order_detail)
+
         if order_detail.get("status") in ("filled", "simulated"):
             stop_order = order_detail.get("stop_order")
             order_id = (
@@ -1625,6 +1634,7 @@ def handle_update(update):
                 symbol, signal["direction"], plan["entry"], plan["stop"],
                 plan["target"], plan["position_size"], order_id,
                 setup_type=signal.get("type"), confidence=signal.get("confidence"), score=signal.get("score"),
+                decision_id=decision_id, stake_dollars=plan.get("risk_amount") if plan else None,
             )
             if order_detail.get("stop_order_error"):
                 notifier.send_message(
@@ -1632,7 +1642,9 @@ def handle_update(update):
                     f"NO se pudo colocar en el exchange ({order_detail['stop_order_error']}) — "
                     f"posición desprotegida, revisar a mano."
                 )
-    elif decision == "watchlist":
+        return {"status": "resolved", "decision": decision, "symbol": symbol}
+
+    if decision == "watchlist":
         notifier.answer_callback(cq["id"], "Agregado a watchlist")
     else:
         notifier.answer_callback(cq["id"], "Rechazado")
