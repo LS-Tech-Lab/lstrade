@@ -446,6 +446,26 @@ class Config:
     # Ver run_weather_track_results / run_mlb_track_results en app.py.
     WEATHER_MLB_STOP_LOSS_PCT = _float("WEATHER_MLB_STOP_LOSS_PCT", 0.20)
 
+    # AUDITORÍA (16/09/2026, pedido del usuario -- "confirmar que el stop no
+    # corte señales ganadoras"): analyze_mlb_stop_losses.py corrió contra las
+    # 92 señales de mlb_signals con outcome='stop' hasta esa fecha, resolviendo
+    # cada una contra el resultado REAL del partido (fetch_game_result()).
+    # Resultado: 76/92 (83%, 80% incluso deduplicando por game_pk+direction)
+    # HABRÍAN GANADO si no se cortaban -- muy por encima del 38% de win rate
+    # real de las señales que sí llegaron a resolución. El stop del 20% no
+    # está filtrando señales malas: en MLB está cortando ruido normal de
+    # precio pre-partido, que en la enorme mayoría de los casos revierte a
+    # favor del lado comprado para cuando el partido termina. Se desactiva
+    # el stop-loss para MLB por default (queda el toggle por si se quiere
+    # reactivar tras investigar más, ej. acotado a movimientos que sí
+    # correlacionan con noticia real como scratch de abridor). Clima usa el
+    # mismo WEATHER_MLB_STOP_LOSS_PCT de arriba sin cambios -- no se corrió
+    # todavía el mismo análisis para clima (analyze_mlb_stop_losses.py es
+    # específico de MLB por game_pk; para clima faltaría parsear el rango de
+    # temperatura del bucket desde `question`), así que no hay evidencia
+    # todavía de que el mismo problema aplique ahí.
+    MLB_STOP_LOSS_ENABLED = _bool("MLB_STOP_LOSS_ENABLED", False)
+
     # AUDITORÍA (09/09/2026, pedido del usuario -- "saltos" raros en el
     # equity de MLB): _half_kelly_fraction() en weather_signal_engine.py no
     # tenía techo. Kelly = (prob - price) / (1 - price); con price bajo
