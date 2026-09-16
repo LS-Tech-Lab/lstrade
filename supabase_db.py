@@ -252,6 +252,24 @@ class SupabaseDatabase:
             "trend_align": snapshot.get("trend_align"), "trend_bias": snapshot.get("trend_bias"),
         }).execute())
 
+    def record_weather_candidates(self, rows):
+        """AUDITORÍA (16/09/2026): weather_signals solo guarda los buckets
+        que YA pasaron el filtro de EV (los que dispararon señal) -- no hay
+        forma de responder retroactivamente "¿qué hubiera pasado con un
+        WEATHER_MIN_EV distinto?" porque los buckets descartados nunca se
+        guardaron en ningún lado (ver auditoría 14-16/09 sobre discard_notes
+        en weather_signal_engine.py/app.py). Este método loguea TODOS los
+        buckets evaluados en el ciclo (`signal["buckets"]`, ya calculado por
+        generate_weather_signal para cada evento con status "ok"), hayan
+        pasado el filtro o no -- mismo patrón de insert batch (1 sola
+        llamada con N filas) que record_indicator_snapshots, para no sumar
+        round-trips al presupuesto de 25s del ciclo. `rows` ya viene armado
+        por el caller (run_weather_cycle en app.py) con la forma exacta de
+        las columnas de weather_candidates."""
+        if not rows:
+            return
+        _with_retry(lambda: self.client.table("weather_candidates").insert(rows).execute())
+
     def record_indicator_snapshots(self, snapshots):
         """AUDITORÍA (12/09/2026): run_cycle() en app.py llamaba a
         record_indicator_snapshot() una vez POR SYMBOL dentro del loop --
