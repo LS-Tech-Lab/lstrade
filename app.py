@@ -342,12 +342,11 @@ def run_cycle():
             )
         )
         _touch_notification(db)
-        decision_id = db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
+        db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged")
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
             plan["target"], plan["position_size"],
             setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
-            decision_id=decision_id, stake_dollars=plan.get("risk_amount"),
         )
         return {"status": "paper_logged", "symbol": best_symbol}
 
@@ -355,7 +354,7 @@ def run_cycle():
         from executor import Executor
         executor = Executor(exchange_client, config)
         order_detail = executor.execute(best_symbol, plan)
-        decision_id = db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
+        db.log_decision(best_symbol, best_signal, risk_report, plan, "auto_executed", order_detail)
         stop_order = order_detail.get("stop_order") if isinstance(order_detail, dict) else None
         order_id = (
             stop_order.get("id") if isinstance(stop_order, dict)
@@ -365,7 +364,6 @@ def run_cycle():
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"], plan["target"],
             plan["position_size"], order_id,
             setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
-            decision_id=decision_id, stake_dollars=plan.get("risk_amount"),
         )
         notifier.send_message(
             f"\u2705 Orden ejecutada automáticamente en {best_symbol}: {order_detail.get('status')}\n"
@@ -390,12 +388,11 @@ def run_cycle():
     )
     message_id = notifier.send_approval_request(memo_md)
     if message_id is None:
-        decision_id = db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged_no_telegram")
+        db.log_decision(best_symbol, best_signal, risk_report, plan, "paper_logged_no_telegram")
         db.add_open_trade(
             best_symbol, best_signal["direction"], plan["entry"], plan["stop"],
             plan["target"], plan["position_size"],
             setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
-            decision_id=decision_id, stake_dollars=plan.get("risk_amount"),
         )
         return {"status": "no_telegram_configured_defaulted_to_paper", "symbol": best_symbol}
 
@@ -1055,44 +1052,6 @@ async def mlb_cycle_post(request: Request):
 # ────────────────────────────────────────────────────────────────────
 # /api/mlb_track_results
 # ────────────────────────────────────────────────────────────────────
-def _track_mlb_stop_shadows(db, client, time_left):
-    """NUEVO (16/09/2026, pedido del usuario): sigue observando el precio de
-    señales de MLB YA cerradas por stop, un rato más, solo para calibración
-    -- ver record_mlb_price_snapshot en supabase_db.py y la auditoría larga
-    en el bloque de stop más abajo (82.2% de los stops de MLB terminaron
-    ganando el partido real). No reabre ni modifica la señal ni el equity
-    -- la posición real ya está cerrada, esto es puramente instrumentación
-    para responder en unas semanas si el 20% fijo (WEATHER_MLB_STOP_LOSS_PCT)
-    es un ancho razonable para MLB o si conviene ensancharlo/hacerlo
-    adaptativo como en cripto.
-
-    Se corre al final de run_mlb_track_results(), con el mismo presupuesto
-    de tiempo ya agotándose (time_left compartido) -- si no queda margen,
-    simplemente no se llega a loguear nada este ciclo y se reintenta en el
-    próximo, sin arriesgar el 504 que ya se diagnosticó en la auditoría del
-    12/09."""
-    if time_left() < 2.0:
-        return {"checked": 0, "note": "sin tiempo"}
-    candidates = db.get_recent_stopped_mlb_signals_for_shadow(hours=5)
-    checked = 0
-    for sig in candidates:
-        if time_left() < 1.0:
-            break
-        token_id = sig.get("token_id")
-        if not token_id:
-            continue
-        book = client.fetch_order_book_snapshot(token_id)
-        if not book:
-            continue
-        db.record_mlb_price_snapshot(
-            sig["id"], sig.get("game_pk"),
-            best_bid=book.get("best_bid"), best_ask=book.get("best_ask"),
-            phase="post_stop",
-        )
-        checked += 1
-    return {"checked": checked, "candidates": len(candidates)}
-
-
 def run_mlb_track_results():
     """NUEVO (06/09/2026): resolve_mlb_signal() existía en supabase_db.py
     desde que se agregó el motor de MLB, pero nada lo llamaba -- las
@@ -1137,7 +1096,7 @@ def run_mlb_track_results():
 
     open_signals = db.get_open_mlb_signals()
     if not open_signals:
-        return {"status": "no_open_signals", "shadow_watch": _track_mlb_stop_shadows(db, client, time_left)}
+        return {"status": "no_open_signals"}
 
     resolved = []
     checked = 0
@@ -1148,63 +1107,10 @@ def run_mlb_track_results():
         # NUEVO (06/09/2026): mismo mecanismo de stop-loss que
         # run_weather_track_results -- ver comentario ahí. Se chequea
         # antes de gastar la llamada a fetch_game_result.
-        #
-        # FIX (16/09/2026, pedido del usuario -- auditoría con
-        # check_stop_noise_weather_mlb.py sobre datos reales): de 90 señales
-        # de MLB cerradas por stop, 74 (82.2%) el equipo comprado terminó
-        # ganando el partido de verdad -- el stop no estaba protegiendo
-        # nada, le estaba regalando expectancy al bot. Causa: este bloque
-        # nunca recibió el fix de confirmación con ASK que sí se aplicó a
-        # clima el 10/09 (ver el comentario largo en run_weather_track_results
-        # más abajo) -- seguía gatillando con un solo `best_bid` bajo de un
-        # book fino, típico de mercados de MLB (bastante menos líquidos que
-        # los grandes mercados climáticos). Mismo criterio acá: si no hay
-        # bid, se cae a `yes_price` (último operado vía fetch_clob_market)
-        # pero exigiendo que el ASK real confirme el precio bajo antes de
-        # aceptar un print viejo/sin volumen como cruce de stop de verdad.
         stop = sig.get("stop")
-        market = None
-        book = None
-        if stop is not None:
-            triggered_stop = False
-            if sig.get("token_id"):
-                book = client.fetch_order_book_snapshot(sig["token_id"])
-                if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
-                    triggered_stop = True
-            if not triggered_stop:
-                condition_id = sig.get("condition_id")
-                if condition_id:
-                    market = client.fetch_clob_market(condition_id)
-                if market and market.get("yes_price") is not None and market["yes_price"] <= stop:
-                    ask_confirms = (
-                        book is None
-                        or book.get("best_ask") is None
-                        or book["best_ask"] <= stop
-                    )
-                    if ask_confirms:
-                        triggered_stop = True
-                    else:
-                        print(
-                            f"[mlb stop] {sig.get('question', '')[:60]}: último precio {market['yes_price']:.3f} <= "
-                            f"stop {stop:.3f}, pero ask real del book ({book['best_ask']:.3f}) todavía "
-                            f"está por encima -- no se confía en el print viejo, se reintenta el próximo ciclo."
-                        )
-
-            # NUEVO (16/09/2026, pedido del usuario): instrumentación para
-            # calibrar WEATHER_MLB_STOP_LOSS_PCT con datos reales -- ver
-            # record_mlb_price_snapshot en supabase_db.py. Reusa el `book`
-            # ya pedido arriba, sin llamada de red extra. Se loguea SIEMPRE
-            # que hay stop configurado (haya gatillado o no), para tener la
-            # trayectoria completa de la señal, no solo el punto donde tocó
-            # el stop.
-            if book is not None:
-                db.record_mlb_price_snapshot(
-                    sig["id"], sig.get("game_pk"),
-                    best_bid=book.get("best_bid"), best_ask=book.get("best_ask"),
-                    phase="open",
-                )
-
-            if triggered_stop:
+        if stop is not None and sig.get("token_id"):
+            book = client.fetch_order_book_snapshot(sig["token_id"])
+            if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
                 if db.resolve_mlb_signal(sig["id"], "stop", exit_price=stop):
                     # AUDITORÍA (07/09/2026): equity propio del módulo MLB
                     # (½ Kelly sobre my_prob/market_price ya guardados en la
@@ -1259,7 +1165,6 @@ def run_mlb_track_results():
         "status": "ok", "resolved": resolved,
         "still_open": len(open_signals) - len(resolved),
         "skipped_no_time": len(open_signals) - checked,
-        "shadow_watch": _track_mlb_stop_shadows(db, client, time_left),
     }
 
 
@@ -1618,12 +1523,6 @@ def handle_update(update):
             f"Objetivo {format_money(plan['target'])}"
         )
 
-        # NUEVO (16/09/2026): log_decision() se mueve antes de add_open_trade
-        # (antes iba al final de la función) para poder usar el decision_id
-        # que devuelve y vincular la posición con la fila de la bitácora que
-        # la originó -- ver mismo patrón en run_cycle() más arriba.
-        decision_id = db.log_decision(symbol, signal, risk_report, plan, decision, order_detail)
-
         if order_detail.get("status") in ("filled", "simulated"):
             stop_order = order_detail.get("stop_order")
             order_id = (
@@ -1634,7 +1533,6 @@ def handle_update(update):
                 symbol, signal["direction"], plan["entry"], plan["stop"],
                 plan["target"], plan["position_size"], order_id,
                 setup_type=signal.get("type"), confidence=signal.get("confidence"), score=signal.get("score"),
-                decision_id=decision_id, stake_dollars=plan.get("risk_amount") if plan else None,
             )
             if order_detail.get("stop_order_error"):
                 notifier.send_message(
@@ -1642,9 +1540,7 @@ def handle_update(update):
                     f"NO se pudo colocar en el exchange ({order_detail['stop_order_error']}) — "
                     f"posición desprotegida, revisar a mano."
                 )
-        return {"status": "resolved", "decision": decision, "symbol": symbol}
-
-    if decision == "watchlist":
+    elif decision == "watchlist":
         notifier.answer_callback(cq["id"], "Agregado a watchlist")
     else:
         notifier.answer_callback(cq["id"], "Rechazado")
