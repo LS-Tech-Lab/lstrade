@@ -1107,15 +1107,47 @@ def generate_weather_signal(event, config, min_ev=0.15, min_price=0.01, time_lef
         # más cercano (mayor EV de todos, ya venían ordenados desc) como
         # referencia de cuánto faltó.
         if not candidates and rows:
-            top = rows[0]
-            top_ev_txt = f"{top['ev']*100:.0f}%" if top["ev"] is not None else "N/A"
-            discard_notes.append(
-                f"Ningún bucket superó el filtro inicial (EV>={effective_min_ev*100:.0f}%"
-                f"{' [x2 por estación sin verificar]' if not station.get('verified', False) else ''}"
-                f" y precio>={min_price*100:.0f}¢, contra el precio de Gamma -- ni siquiera "
-                f"llegó a verificarse contra el book real). Más cercano: "
-                f"\"{top['question'][:40]}\" con EV {top_ev_txt} a {top['market_price']*100:.1f}¢."
+            # FIX (16/09/2026, hallazgo en corrida real: EV "más cercano"
+            # reportado era 15914%, 11179%, 14503%... a 0.1¢): rows[0] es
+            # el de mayor EV de TODO el lote sin filtrar por precio -- y
+            # compute_ev = prob/price - 1 se dispara a miles de % cuando
+            # price está pegado al tick mínimo de Polymarket (0.1¢), sin
+            # que eso sea una oportunidad real (es exactamente el
+            # winner's-curse de precio-viejo-o-error-de-cola de la
+            # auditoría del 04/09). Reportar ese bucket como "el más
+            # cercano" es engañoso: no está cerca de calificar, está
+            # descartado por el piso de precio, no por el EV. Se separa:
+            # el "más cercano" real es el de mayor EV que SÍ supera
+            # min_price (rows ya viene ordenado desc por ev, el filtro
+            # preserva ese orden); los de precio ínfimo se cuentan aparte
+            # para no perder la información de que existen.
+            price_ok = [r for r in rows if r["market_price"] >= min_price]
+            tail_dropped = len(rows) - len(price_ok)
+            tail_note = (
+                f" ({tail_dropped} bucket(s) con precio < {min_price*100:.0f}¢ excluidos de esta "
+                f"comparación -- su EV se dispara a miles de % por dividir cerca de cero, no es "
+                f"oportunidad real, ver auditoría 04/09.)"
+                if tail_dropped else ""
             )
+            if price_ok:
+                top = price_ok[0]
+                top_ev_txt = f"{top['ev']*100:.0f}%" if top["ev"] is not None else "N/A"
+                discard_notes.append(
+                    f"Ningún bucket con precio realista superó el filtro inicial "
+                    f"(EV>={effective_min_ev*100:.0f}%"
+                    f"{' [x2 por estación sin verificar]' if not station.get('verified', False) else ''}"
+                    f" y precio>={min_price*100:.0f}¢, contra el precio de Gamma -- ni siquiera "
+                    f"llegó a verificarse contra el book real). Más cercano: "
+                    f"\"{top['question'][:40]}\" con EV {top_ev_txt} a {top['market_price']*100:.1f}¢."
+                    f"{tail_note}"
+                )
+            else:
+                discard_notes.append(
+                    f"Los {len(rows)} bucket(s) de este evento tienen precio < "
+                    f"{min_price*100:.0f}¢ (piso mínimo) -- ninguno es comparable por EV, "
+                    f"posible artefacto de precio pegado al tick mínimo de Polymarket, no "
+                    f"hay oportunidad real que evaluar en este evento."
+                )
         elif not candidates:
             discard_notes.append("El evento no trajo ningún bucket con EV calculable (rows vacío).")
 
