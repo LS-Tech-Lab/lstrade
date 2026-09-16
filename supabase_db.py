@@ -222,13 +222,7 @@ class SupabaseDatabase:
         _with_retry(lambda: self.client.table("bot_state").upsert({"key": key, "value": str(value)}).execute())
 
     def log_decision(self, symbol, signal, risk_report, plan, decision, order_detail=None):
-        # NUEVO (16/09/2026, pedido del usuario): devuelve el id de la fila
-        # insertada -- Supabase devuelve la fila completa por default en un
-        # insert (representation), así que no hace falta un SELECT aparte.
-        # El caller usa este id como decision_id al abrir la posición en
-        # open_trades, para poder vincular "por qué" (bitácora) con "qué
-        # pasó" (historial de trades) en el dashboard.
-        res = _with_retry(lambda: self.client.table("decisions").insert({
+        _with_retry(lambda: self.client.table("decisions").insert({
             "ts": _now_iso(), "symbol": symbol,
             "signal_type": signal.get("type") if signal else None,
             "direction": signal.get("direction") if signal else None,
@@ -236,7 +230,6 @@ class SupabaseDatabase:
             "risk_pass": bool(risk_report["pass"]) if risk_report else None,
             "risk_detail": risk_report, "plan_detail": plan, "decision": decision, "order_detail": order_detail,
         }).execute())
-        return res.data[0]["id"] if res.data else None
 
     def recent_decisions(self, limit=20):
         return self.client.table("decisions").select("*").order("ts", desc=True).limit(limit).execute().data
@@ -251,24 +244,6 @@ class SupabaseDatabase:
             "volatility": snapshot.get("volatility"), "momentum": snapshot.get("momentum"),
             "trend_align": snapshot.get("trend_align"), "trend_bias": snapshot.get("trend_bias"),
         }).execute())
-
-    def record_weather_candidates(self, rows):
-        """AUDITORÍA (16/09/2026): weather_signals solo guarda los buckets
-        que YA pasaron el filtro de EV (los que dispararon señal) -- no hay
-        forma de responder retroactivamente "¿qué hubiera pasado con un
-        WEATHER_MIN_EV distinto?" porque los buckets descartados nunca se
-        guardaron en ningún lado (ver auditoría 14-16/09 sobre discard_notes
-        en weather_signal_engine.py/app.py). Este método loguea TODOS los
-        buckets evaluados en el ciclo (`signal["buckets"]`, ya calculado por
-        generate_weather_signal para cada evento con status "ok"), hayan
-        pasado el filtro o no -- mismo patrón de insert batch (1 sola
-        llamada con N filas) que record_indicator_snapshots, para no sumar
-        round-trips al presupuesto de 25s del ciclo. `rows` ya viene armado
-        por el caller (run_weather_cycle en app.py) con la forma exacta de
-        las columnas de weather_candidates."""
-        if not rows:
-            return
-        _with_retry(lambda: self.client.table("weather_candidates").insert(rows).execute())
 
     def record_indicator_snapshots(self, snapshots):
         """AUDITORÍA (12/09/2026): run_cycle() en app.py llamaba a
@@ -314,8 +289,7 @@ class SupabaseDatabase:
     # analyze_crypto_setups.py. Se propagan a closed_trades al cerrar (ver
     # close_trade_with_outcome de acá abajo).
     def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
-                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None,
-                        decision_id=None, stake_dollars=None):
+                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None):
         if stop_distance is None:
             stop_distance = abs(entry_price - stop_price)
         try:
@@ -328,15 +302,6 @@ class SupabaseDatabase:
                 "target_price": target_price, "position_size": position_size, "order_id": order_id,
                 "ts_opened": _now_iso(), "stop_distance": stop_distance,
                 "setup_type": setup_type, "confidence": confidence, "score": score,
-                # NUEVO (16/09/2026, pedido del usuario): decision_id vincula
-                # esta posición con la fila de `decisions` que la originó, y
-                # stake_dollars guarda el monto realmente arriesgado (mismo
-                # risk_amount que ya se calculaba en risk_manager.check() y
-                # vivía solo de paso en plan_detail) -- ambos se copian a
-                # closed_trades al cerrar (ver close_trade_with_outcome) para
-                # poder armar un historial reciente de Cripto igual al de
-                # los demás módulos, con el motivo de la decisión a mano.
-                "decision_id": decision_id, "stake_dollars": stake_dollars,
             }).execute())
             return True
         except Exception as e:
@@ -373,26 +338,12 @@ class SupabaseDatabase:
             return False, None
         entry, direction, stop_distance = trade["entry_price"], trade["direction"], trade.get("stop_distance")
         r_multiple = ((exit_price - entry) / stop_distance) * (1 if direction == "LONG" else -1) if stop_distance else None
-
-        # NUEVO (16/09/2026, pedido del usuario): pnl_dollars se calculaba
-        # acá abajo para el equity pero nunca se guardaba en la fila (mismo
-        # bug que ya se había corregido en Polymarket/MLB/Clima el
-        # 15/09/2026) -- se calcula primero para poder persistirlo junto
-        # con stake_dollars/decision_id, copiados desde open_trades.
-        pnl_dollars = None
-        position_size = trade.get("position_size")
-        if position_size:
-            sign = 1 if direction == "LONG" else -1
-            pnl_dollars = (exit_price - entry) * position_size * sign
-
         _with_retry(lambda: self.client.table("closed_trades").insert({
             "symbol": trade["symbol"], "direction": direction, "entry_price": entry, "exit_price": exit_price,
             "outcome": outcome, "r_multiple": r_multiple, "ts_opened": trade["ts_opened"], "ts_closed": _now_iso(),
             # AUDITORÍA (08/09/2026): copiados desde open_trades (get_open_trades
             # hace SELECT *, así que ya vienen en `trade` si la columna existe).
             "setup_type": trade.get("setup_type"), "confidence": trade.get("confidence"), "score": trade.get("score"),
-            "decision_id": trade.get("decision_id"), "stake_dollars": trade.get("stake_dollars"),
-            "pnl_dollars": round(pnl_dollars, 2) if pnl_dollars is not None else None,
         }).execute())
 
         # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
@@ -407,9 +358,11 @@ class SupabaseDatabase:
         # pedido del usuario de unificar los 4 módulos (cripto, MLB, clima,
         # Polymarket) en la misma base de $20. Historial completo de
         # equity_history (los 4 módulos) rescalado x0.2 en la misma migración.
-        # (pnl_dollars ya se calculó arriba, antes del insert, para poder
-        # persistirlo en la fila -- acá solo se usa para mover el equity.)
-        if pnl_dollars is not None:
+        pnl_dollars = None
+        position_size = trade.get("position_size")
+        if position_size:
+            sign = 1 if direction == "LONG" else -1
+            pnl_dollars = (exit_price - entry) * position_size * sign
             base_equity = self.last_equity("crypto")
             if base_equity is None:
                 base_equity = 20.0
@@ -670,6 +623,30 @@ class SupabaseDatabase:
         res = _with_retry(lambda: self.client.table("mlb_signals").select("*").is_("outcome", "null").execute())
         return res.data or []
 
+    def get_todays_stopped_mlb_keys(self):
+        """AUDITORÍA (16/09/2026, bug encontrado corriendo
+        analyze_mlb_stop_losses.py): el dedupe de run_mlb_cycle (app.py) solo
+        mira open_game_pks (señales todavía abiertas) -- en cuanto una señal
+        se cierra por stop, su game_pk sale de ese set y el próximo ciclo
+        puede volver a generar una señal para el MISMO partido y MISMA
+        dirección, que se corta de nuevo por el mismo motivo. Confirmado en
+        producción: 27 de 60 partidos distintos tuvieron 2-3 señales de stop
+        cada uno sobre la misma dirección. Devuelve (game_pk, direction) de
+        señales resueltas como 'stop' HOY (America/New_York, mismo huso que
+        current_mlb_date() en mlb_signal_engine.py) para que el caller pueda
+        saltear un re-señalamiento inútil sobre la misma apuesta ya cortada,
+        sin bloquear una señal legítima si el modelo cambia de lado
+        (game_pk igual, direction distinta -- eso sí se deja pasar)."""
+        since_iso = _now_iso()[:10] + "T00:00:00Z"  # inicio del día UTC como aproximación razonable
+        res = _with_retry(
+            lambda: self.client.table("mlb_signals")
+            .select("game_pk,direction")
+            .eq("outcome", "stop")
+            .gte("ts_resolved", since_iso)
+            .execute()
+        )
+        return {(r["game_pk"], r["direction"]) for r in (res.data or [])}
+
     def resolve_mlb_signal(self, signal_id, outcome, exit_price=None):
         # NUEVO (06/09/2026): mismo agregado que resolve_weather_signal --
         # outcome="stop" pasa exit_price, "win"/"loss" de resolución
@@ -679,47 +656,7 @@ class SupabaseDatabase:
             update["exit_price"] = exit_price
         res = _with_retry(lambda: self.client.table("mlb_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute())
         return bool(res.data)
-
-    def record_mlb_price_snapshot(self, signal_id, game_pk, best_bid, best_ask, phase):
-        """NUEVO (16/09/2026, pedido del usuario): instrumentación para poder
-        calibrar WEATHER_MLB_STOP_LOSS_PCT (20% fijo) con datos reales en vez
-        de intuición -- ver auditoría larga de check_stop_noise_weather_mlb.py
-        (82.2% de los stops de MLB terminaron ganando el partido real).
-
-        Guarda un snapshot de precio en cada chequeo, tanto de señales
-        todavía abiertas (phase="open", antes de que toque target/stop) como
-        de señales ya cerradas por stop pero que se siguen mirando un rato
-        más solo para calibración (phase="post_stop", ver
-        get_recent_stopped_mlb_signals_for_shadow). No afecta ninguna
-        decisión de trading real -- es puramente para poder responder en
-        unas semanas "¿un dip de -20% suele recuperarse dentro del mismo
-        partido?" con la trayectoria real en vez de un solo punto win/loss
-        final. Falla en silencio (no debe tumbar el ciclo de resolución real
-        por un insert de instrumentación que no es crítico).
-        """
-        try:
-            _with_retry(lambda: self.client.table("mlb_price_snapshots").insert({
-                "signal_id": signal_id, "game_pk": game_pk,
-                "best_bid": best_bid, "best_ask": best_ask,
-                "phase": phase, "ts": _now_iso(),
-            }).execute())
-        except Exception as e:
-            print(f"[mlb price snapshot] No se pudo guardar (signal_id={signal_id}): {e}")
-
-    def get_recent_stopped_mlb_signals_for_shadow(self, hours=5):
-        """Señales de MLB resueltas por stop en las últimas `hours` horas --
-        candidatas a seguir observando (phase="post_stop") para saber si el
-        precio se recupera después del cierre anticipado. Ventana acotada
-        porque un partido de MLB dura ~3h en promedio; 5h da margen sin
-        arrastrar señales de días atrás para siempre."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-        res = _with_retry(lambda: self.client.table("mlb_signals")
-                           .select("id,game_pk,token_id,ts_resolved")
-                           .eq("outcome", "stop")
-                           .gte("ts_resolved", cutoff)
-                           .execute())
-        return res.data or []
-
+       
     def weather_calibration_summary(self, bucket_size=0.1):
         rows = self.client.table("weather_signals").select("my_prob,outcome").not_.is_("outcome", "null").execute().data or []
         n = len(rows)
