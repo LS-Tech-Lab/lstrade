@@ -91,7 +91,10 @@ create table if not exists open_trades (
     -- y se copian a closed_trades al cerrar (ver close_trade_with_outcome).
     setup_type text,
     confidence integer,
-    score double precision
+    score double precision,
+    -- NUEVO (16/09/2026): ver MIGRACIÓN al final de este archivo.
+    decision_id bigint,
+    stake_dollars double precision
 );
 
 create unique index if not exists uq_open_trades_symbol on open_trades (symbol);
@@ -108,7 +111,11 @@ create table if not exists closed_trades (
     confidence integer,
     score double precision,
     ts_opened timestamptz not null,
-    ts_closed timestamptz not null
+    ts_closed timestamptz not null,
+    -- NUEVO (16/09/2026): ver MIGRACIÓN al final de este archivo.
+    decision_id bigint,
+    stake_dollars double precision,
+    pnl_dollars double precision
 );
 
 create table if not exists polymarket_signals (
@@ -311,3 +318,22 @@ alter table closed_trades add column if not exists confidence integer;
 alter table closed_trades add column if not exists score double precision;
 
 create index if not exists idx_closed_trades_setup_type on closed_trades (setup_type);
+
+-- MIGRACIÓN (16/09/2026, pedido del usuario): Cripto tenía dos registros sin
+-- vincular -- la bitácora de decisiones (`decisions`, todo lo que evalúa el
+-- motor, incluidas señales bloqueadas por riesgo) y las operaciones reales
+-- (`open_trades`/`closed_trades`), sin ninguna columna que conectara una
+-- decisión con el trade que originó, y sin "historial reciente" en el
+-- dashboard como sí tienen MLB/Polymarket/Clima. decision_id vincula ambas
+-- tablas; stake_dollars/pnl_dollars en closed_trades es el mismo fix que ya
+-- se había aplicado en Polymarket el 15/09/2026 (pnl_dollars se calculaba
+-- en close_trade_with_outcome() para mover el equity, pero nunca se
+-- guardaba en la fila).
+alter table open_trades add column if not exists decision_id bigint;
+alter table open_trades add column if not exists stake_dollars double precision;
+alter table closed_trades add column if not exists decision_id bigint;
+alter table closed_trades add column if not exists stake_dollars double precision;
+alter table closed_trades add column if not exists pnl_dollars double precision;
+
+create index if not exists idx_open_trades_decision_id on open_trades (decision_id);
+create index if not exists idx_closed_trades_decision_id on closed_trades (decision_id);
