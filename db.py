@@ -64,6 +64,16 @@ class Database:
             except sqlite3.OperationalError:
                 pass
 
+        # NUEVO (16/09/2026): decision_id vincula la posición con la fila de
+        # `decisions` que la originó; stake_dollars guarda el monto
+        # realmente arriesgado (risk_amount). Mismo mecanismo/motivo que
+        # supabase_db.py -- ver migración add_crypto_decision_link_and_dollar_amounts.
+        for col, coltype in (("decision_id", "INTEGER"), ("stake_dollars", "REAL")):
+            try:
+                c.execute(f"ALTER TABLE open_trades ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass
+
         # NUEVO: Trades cerrados con resultado — sin esto no había forma de
         # calcular win rate/expectancy reales sobre lo que pasó en producción,
         # solo sobre el backtest offline.
@@ -82,6 +92,16 @@ class Database:
             score REAL)""")
 
         for col, coltype in (("setup_type", "TEXT"), ("confidence", "INTEGER"), ("score", "REAL")):
+            try:
+                c.execute(f"ALTER TABLE closed_trades ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass
+
+        # NUEVO (16/09/2026): mismo trío que open_trades arriba, más
+        # pnl_dollars -- antes se calculaba en close_trade_with_outcome()
+        # pero nunca se guardaba (mismo bug ya corregido en Polymarket/MLB/
+        # Clima el 15/09/2026).
+        for col, coltype in (("decision_id", "INTEGER"), ("stake_dollars", "REAL"), ("pnl_dollars", "REAL")):
             try:
                 c.execute(f"ALTER TABLE closed_trades ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
@@ -278,7 +298,10 @@ class Database:
         self.conn.commit()
 
     def log_decision(self, symbol, signal, risk_report, plan, decision, order_detail=None):
-        self.conn.execute(
+        # NUEVO (16/09/2026): devuelve el id de la fila insertada (mismo
+        # motivo que supabase_db.py) para que el caller lo pueda usar como
+        # decision_id al abrir la posición en open_trades.
+        cur = self.conn.execute(
             """INSERT INTO decisions (ts, symbol, signal_type, direction, confidence, risk_pass, risk_detail, plan_detail, decision, order_detail)
             VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (time.time(), symbol, signal.get("type") if signal else None, signal.get("direction") if signal else None,
@@ -287,6 +310,7 @@ class Database:
              json.dumps(order_detail) if order_detail else None)
         )
         self.conn.commit()
+        return cur.lastrowid
 
     # NUEVO: Métodos para Trailing Stop
     # AUDITORÍA (08/09/2026): setup_type/confidence/score agregados como
@@ -294,16 +318,17 @@ class Database:
     # desglosar resultados por tipo de setup — ver stats_by_dimension() y
     # analyze_crypto_setups.py.
     def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
-                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None):
+                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None,
+                        decision_id=None, stake_dollars=None):
         if stop_distance is None:
             stop_distance = abs(entry_price - stop_price)
         self.conn.execute(
             """INSERT INTO open_trades
             (symbol, direction, entry_price, current_stop, target_price, position_size, order_id, ts_opened,
-             stop_distance, setup_type, confidence, score)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+             stop_distance, setup_type, confidence, score, decision_id, stake_dollars)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (symbol, direction, entry_price, stop_price, target_price, position_size, order_id, time.time(),
-             stop_distance, setup_type, confidence, score)
+             stop_distance, setup_type, confidence, score, decision_id, stake_dollars)
         )
         self.conn.commit()
 
@@ -387,13 +412,30 @@ class Database:
         except (IndexError, KeyError):
             setup_type, confidence, score = None, None, None
 
+        # NUEVO (16/09/2026): mismo try/except que arriba, para decision_id/
+        # stake_dollars -- columnas nuevas, pueden faltar en filas viejas de
+        # open_trades abiertas antes de esta migración.
+        try:
+            decision_id, stake_dollars = trade["decision_id"], trade["stake_dollars"]
+        except (IndexError, KeyError):
+            decision_id, stake_dollars = None, None
+
+        # NUEVO (16/09/2026): pnl_dollars se calculaba más abajo solo para
+        # mover el equity simulado, sin guardarse nunca en la fila (mismo
+        # bug ya corregido en Polymarket/MLB/Clima el 15/09/2026) -- se
+        # calcula acá arriba para poder persistirlo en el INSERT.
+        pnl_dollars = None
+        if trade["position_size"]:
+            sign = 1 if direction == "LONG" else -1
+            pnl_dollars = (exit_price - entry) * trade["position_size"] * sign
+
         self.conn.execute(
             """INSERT INTO closed_trades
             (symbol, direction, entry_price, exit_price, outcome, r_multiple, ts_opened, ts_closed,
-             setup_type, confidence, score)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+             setup_type, confidence, score, decision_id, stake_dollars, pnl_dollars)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (trade["symbol"], direction, entry, exit_price, outcome, r_multiple, trade["ts_opened"], time.time(),
-             setup_type, confidence, score)
+             setup_type, confidence, score, decision_id, stake_dollars, pnl_dollars)
         )
         self.conn.execute("DELETE FROM open_trades WHERE id = ?", (trade["id"],))
         self.conn.commit()
@@ -405,11 +447,7 @@ class Database:
         # cambio en supabase_db.py.
         # AUDITORÍA (13/09/2026): base bajada otra vez, de 100.0 a 20.0 --
         # ver mismo cambio en supabase_db.py.
-        pnl_dollars = None
-        position_size = trade.get("position_size")
-        if position_size:
-            sign = 1 if direction == "LONG" else -1
-            pnl_dollars = (exit_price - entry) * position_size * sign
+        if pnl_dollars is not None:
             base_equity = self.last_equity("crypto")
             if base_equity is None:
                 base_equity = 20.0
