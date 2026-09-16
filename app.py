@@ -1052,6 +1052,44 @@ async def mlb_cycle_post(request: Request):
 # ────────────────────────────────────────────────────────────────────
 # /api/mlb_track_results
 # ────────────────────────────────────────────────────────────────────
+def _track_mlb_stop_shadows(db, client, time_left):
+    """NUEVO (16/09/2026, pedido del usuario): sigue observando el precio de
+    señales de MLB YA cerradas por stop, un rato más, solo para calibración
+    -- ver record_mlb_price_snapshot en supabase_db.py y la auditoría larga
+    en el bloque de stop más abajo (82.2% de los stops de MLB terminaron
+    ganando el partido real). No reabre ni modifica la señal ni el equity
+    -- la posición real ya está cerrada, esto es puramente instrumentación
+    para responder en unas semanas si el 20% fijo (WEATHER_MLB_STOP_LOSS_PCT)
+    es un ancho razonable para MLB o si conviene ensancharlo/hacerlo
+    adaptativo como en cripto.
+
+    Se corre al final de run_mlb_track_results(), con el mismo presupuesto
+    de tiempo ya agotándose (time_left compartido) -- si no queda margen,
+    simplemente no se llega a loguear nada este ciclo y se reintenta en el
+    próximo, sin arriesgar el 504 que ya se diagnosticó en la auditoría del
+    12/09."""
+    if time_left() < 2.0:
+        return {"checked": 0, "note": "sin tiempo"}
+    candidates = db.get_recent_stopped_mlb_signals_for_shadow(hours=5)
+    checked = 0
+    for sig in candidates:
+        if time_left() < 1.0:
+            break
+        token_id = sig.get("token_id")
+        if not token_id:
+            continue
+        book = client.fetch_order_book_snapshot(token_id)
+        if not book:
+            continue
+        db.record_mlb_price_snapshot(
+            sig["id"], sig.get("game_pk"),
+            best_bid=book.get("best_bid"), best_ask=book.get("best_ask"),
+            phase="post_stop",
+        )
+        checked += 1
+    return {"checked": checked, "candidates": len(candidates)}
+
+
 def run_mlb_track_results():
     """NUEVO (06/09/2026): resolve_mlb_signal() existía en supabase_db.py
     desde que se agregó el motor de MLB, pero nada lo llamaba -- las
@@ -1096,7 +1134,7 @@ def run_mlb_track_results():
 
     open_signals = db.get_open_mlb_signals()
     if not open_signals:
-        return {"status": "no_open_signals"}
+        return {"status": "no_open_signals", "shadow_watch": _track_mlb_stop_shadows(db, client, time_left)}
 
     resolved = []
     checked = 0
@@ -1148,6 +1186,21 @@ def run_mlb_track_results():
                             f"stop {stop:.3f}, pero ask real del book ({book['best_ask']:.3f}) todavía "
                             f"está por encima -- no se confía en el print viejo, se reintenta el próximo ciclo."
                         )
+
+            # NUEVO (16/09/2026, pedido del usuario): instrumentación para
+            # calibrar WEATHER_MLB_STOP_LOSS_PCT con datos reales -- ver
+            # record_mlb_price_snapshot en supabase_db.py. Reusa el `book`
+            # ya pedido arriba, sin llamada de red extra. Se loguea SIEMPRE
+            # que hay stop configurado (haya gatillado o no), para tener la
+            # trayectoria completa de la señal, no solo el punto donde tocó
+            # el stop.
+            if book is not None:
+                db.record_mlb_price_snapshot(
+                    sig["id"], sig.get("game_pk"),
+                    best_bid=book.get("best_bid"), best_ask=book.get("best_ask"),
+                    phase="open",
+                )
+
             if triggered_stop:
                 if db.resolve_mlb_signal(sig["id"], "stop", exit_price=stop):
                     # AUDITORÍA (07/09/2026): equity propio del módulo MLB
@@ -1203,6 +1256,7 @@ def run_mlb_track_results():
         "status": "ok", "resolved": resolved,
         "still_open": len(open_signals) - len(resolved),
         "skipped_no_time": len(open_signals) - checked,
+        "shadow_watch": _track_mlb_stop_shadows(db, client, time_left),
     }
 
 
