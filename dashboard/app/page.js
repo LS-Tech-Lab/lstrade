@@ -765,6 +765,50 @@ function CryptoOpenTable({ rows }) {
   );
 }
 
+// NUEVO (16/09/2026, pedido del usuario): Cripto tenía bitácora de
+// decisiones (por qué) y posiciones abiertas, pero ningún "historial
+// reciente" de trades ya cerrados como sí tienen MLB/Polymarket/Clima —
+// mismo patrón que MlbResolvedTable, adaptado al vocabulario de cripto
+// (outcome es "target"/"stop", no "win"/"loss"/"void") y con el P&L real
+// que ahora sí se guarda (ver close_trade_with_outcome en supabase_db.py/db.py).
+function CryptoResolvedTable({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <p className="empty">Todavía no hay trades de Cripto cerrados.</p>;
+  }
+  return (
+    <RowCarousel
+      items={rows}
+      keyExtractor={(r) => r.id}
+      emptyMessage="Todavía no hay trades de Cripto cerrados."
+      renderFields={(r) => {
+        const isWin = r.outcome === "target";
+        const badgeClass = isWin ? "result-win" : "result-loss";
+        const badgeText = isWin ? "✅ TOCÓ TARGET" : "🛑 TOCÓ STOP";
+        return (
+          <>
+            <RowField label="Símbolo" value={r.symbol} />
+            <RowField label="Dirección" value={directionLabel(r.direction)} />
+            <RowField label="Entrada" value={formatMoney(r.entry_price)} />
+            <RowField label="Salida" value={formatMoney(r.exit_price)} />
+            <RowField label="R-múltiplo" tone={r.r_multiple > 0 ? "ok" : r.r_multiple < 0 ? "fail" : ""}
+              value={r.r_multiple !== null && r.r_multiple !== undefined ? `${r.r_multiple >= 0 ? "+" : ""}${r.r_multiple.toFixed(2)}R` : "—"} />
+            <RowField label="P&L real" tone={r.pnl_dollars > 0 ? "ok" : r.pnl_dollars < 0 ? "fail" : ""}
+              value={
+                r.pnl_dollars !== null && r.pnl_dollars !== undefined
+                  ? `${formatPnlDollars(r.pnl_dollars)}${r.stake_dollars ? ` (arriesgado ${formatMoney(r.stake_dollars)})` : ""}`
+                  : "—"
+              } />
+            <RowField label="Resultado" tone={isWin ? "ok" : "fail"} value={
+              <span className={`result-badge ${badgeClass}`}>{badgeText}</span>
+            } />
+            <RowField label="Cerrada" value={r.ts_closed ? parseTs(r.ts_closed).toLocaleString() : "—"} />
+          </>
+        );
+      }}
+    />
+  );
+}
+
 // CAMBIADO: de tabla con scroll horizontal a carrusel de tarjetas — mismo
 // lenguaje visual que los indicadores en vivo de cripto (una tarjeta por
 // categoría, flechas y puntos para navegar) en vez de una tabla ancha que
@@ -1505,6 +1549,11 @@ function CriptoTab({ data }) {
         <h2>Posiciones abiertas</h2>
         <p className="card-subtitle">Operaciones en modo papel que el bot ya "abrió" y todavía no llegaron a su target ni a su stop.</p>
         <CryptoOpenTable rows={data.crypto_open} />
+      </div>
+      <div className="card">
+        <h2>Historial reciente</h2>
+        <p className="card-subtitle">Los últimos trades ya cerrados (ganaron, perdieron o tocaron stop), con el monto arriesgado y el P&L real.</p>
+        <CryptoResolvedTable rows={data.crypto_resolved} />
       </div>
       <EquityCard title="Equity — Cripto"
         subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
