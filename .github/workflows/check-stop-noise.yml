@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Correr análisis de stops
+      - name: Correr análisis de stops (cripto)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -33,11 +33,27 @@ jobs:
           python check_stop_noise.py \
             --hours ${{ inputs.hours }} \
             --min-r ${{ inputs.min_r }} \
-            --output resultados_stop_noise.csv
+            --output resultados_stop_noise_cripto.csv
+
+      # NUEVO: clima y MLB no necesitan credenciales del exchange -- solo
+      # pegan a la CLOB API de Polymarket (pública) y a la MLB Stats API
+      # (pública), ambas sin auth. Corre igual aunque el paso de cripto
+      # haya fallado (ej. exchange caído), para no perder este resultado.
+      - name: Correr análisis de stops (clima + MLB)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python check_stop_noise_weather_mlb.py \
+            --output resultados_stop_noise_weather_mlb.csv
 
       - name: Subir resultados como artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: check-stop-noise-${{ github.run_id }}
-          path: resultados_stop_noise.csv
+          path: |
+            resultados_stop_noise_cripto.csv
+            resultados_stop_noise_weather_mlb.csv
           retention-days: 30
