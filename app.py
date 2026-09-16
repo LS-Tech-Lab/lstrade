@@ -696,12 +696,6 @@ def run_weather_cycle():
     sent = 0
     scanned = 0
     detail = []
-    # NUEVO (16/09/2026): acumula un row por bucket evaluado (todos, pasen o
-    # no el filtro de EV) para loguear en weather_candidates al final del
-    # ciclo -- ver record_weather_candidates en supabase_db.py. Un solo
-    # insert batch al final, no uno por evento, mismo criterio que
-    # record_indicator_snapshots (12/09/2026).
-    candidate_rows = []
     for event in events:
         if time_left() < 1.0:
             detail.append({"title": event["title"], "status": "sin_tiempo"})
@@ -738,41 +732,6 @@ def run_weather_cycle():
         if signal.get("status") == "ok" and not signal.get("best_trade") and signal.get("discard_notes"):
             detail_entry["discard_notes"] = signal["discard_notes"]
         detail.append(detail_entry)
-
-        # NUEVO (16/09/2026): loguea CADA bucket evaluado (pasen o no el
-        # filtro de EV) para weather_candidates -- ver
-        # record_weather_candidates en supabase_db.py y la auditoría
-        # 14-16/09 más arriba. Corre para todo evento "ok", no solo los
-        # que terminan en best_trade -- es justo la población que faltaba
-        # para poder calibrar WEATHER_MIN_EV/WEATHER_BASE_SIGMA_F más
-        # adelante (weather_signals solo tiene los que YA pasaron el
-        # filtro, sesgados por selección).
-        if signal.get("status") == "ok" and signal.get("buckets"):
-            icao = (signal.get("station") or {}).get("icao")
-            best_condition_id = (signal.get("best_trade") or {}).get("condition_id")
-            for b in signal["buckets"]:
-                candidate_rows.append({
-                    "event_title": event["title"],
-                    "station_icao": icao,
-                    "target_date": signal.get("target_date"),
-                    "condition_id": b.get("condition_id"),
-                    "question": b.get("question"),
-                    "my_prob": b.get("my_prob"),
-                    "raw_my_prob": b.get("raw_my_prob"),
-                    "market_price": b.get("market_price"),
-                    "ev": b.get("ev"),
-                    "liquidity": b.get("liquidity"),
-                    "center_estimate_f": signal.get("center_estimate_f"),
-                    "sigma": signal.get("sigma"),
-                    "confidence_penalty": signal.get("confidence_penalty"),
-                    "trajectory_slope_f_per_hr": signal.get("trajectory_slope_f_per_hr"),
-                    "effective_min_ev": signal.get("min_ev_threshold"),
-                    "min_price": config.WEATHER_MIN_PRICE,
-                    "verified": signal.get("settlement_verified"),
-                    "is_best_trade": bool(best_condition_id) and b.get("condition_id") == best_condition_id,
-                    "discard_notes": signal.get("discard_notes") or None,
-                })
-
         if signal.get("status") == "sin_tiempo":
             break
         if signal.get("status") != "ok" or not signal.get("best_trade"):
@@ -853,18 +812,6 @@ def run_weather_cycle():
         except Exception as e:
             detail.append({"title": event["title"], "status": "error_envio", "error": str(e)})
 
-    # NUEVO (16/09/2026): un solo insert batch con TODOS los buckets
-    # evaluados en este ciclo -- mismo criterio que record_indicator_snapshots
-    # (12/09/2026), no sumar round-trips al presupuesto de 25s. Se envuelve
-    # en try/except propio: si esto falla, no debe tirar abajo la respuesta
-    # del ciclo (que ya mandó las señales reales si las hubo) -- es
-    # instrumentación para calibrar más adelante, no una señal.
-    if candidate_rows and time_left() > 1.0:
-        try:
-            db.record_weather_candidates(candidate_rows)
-        except Exception as e:
-            print(f"[weather_candidates] no se pudo loguear ({len(candidate_rows)} filas): {e}")
-
     return {
         "status": "ok",
         # CORREGIDO (14/09/2026): antes era len(events) DESPUÉS del recorte
@@ -876,7 +823,6 @@ def run_weather_cycle():
         "events_found": len(events),
         "events_scanned": scanned,
         "signals_sent": sent,
-        "candidates_logged": len(candidate_rows),
         "candidates": candidates,
         "detail": detail,
     }
@@ -950,6 +896,11 @@ def run_mlb_cycle():
     open_signals_now = db.get_open_mlb_signals()
     open_condition_ids = {s["condition_id"] for s in open_signals_now}
     open_game_pks = {s["game_pk"] for s in open_signals_now}
+    # AUDITORÍA (16/09/2026): ver get_todays_stopped_mlb_keys() en
+    # supabase_db.py -- complementa el dedupe de arriba (que solo cubre
+    # señales todavía abiertas) para no re-señalar la misma apuesta ya
+    # cortada por stop en el día.
+    todays_stopped_keys = db.get_todays_stopped_mlb_keys()
 
     # AUDITORÍA (05/09/2026): ver comentario de current_mlb_date() en
     # mlb_signal_engine.py -- time.strftime() usa la hora del servidor
@@ -1029,6 +980,13 @@ def run_mlb_cycle():
         if signal["game_pk"] in open_game_pks:
             detail.append({"question": market["question"], "status": "partido_ya_tiene_señal_abierta"})
             continue
+        # AUDITORÍA (16/09/2026): ver get_todays_stopped_mlb_keys() en
+        # supabase_db.py -- evita re-señalar la MISMA dirección de un
+        # partido que ya se cortó por stop hoy. Si direction cambió
+        # (el modelo pasó a favorecer al otro equipo), se deja pasar.
+        if (signal["game_pk"], signal["direction"]) in todays_stopped_keys:
+            detail.append({"question": market["question"], "status": "misma_direccion_ya_cortada_por_stop_hoy"})
+            continue
         if signal["confidence"] < min_confidence:
             detail.append({"question": market["question"], "status": "confianza_insuficiente"})
             continue
@@ -1050,7 +1008,17 @@ def run_mlb_cycle():
             # sale ninguna alerta (falso negativo, silenciable) en vez de
             # una alerta que después se repite sin parar (falso positivo
             # que además ensucia el chat).
-            stop = signal["market_price"] * (1 - config.WEATHER_MLB_STOP_LOSS_PCT)
+            # AUDITORÍA (16/09/2026): ver MLB_STOP_LOSS_ENABLED en config.py --
+            # desactivado por default, el análisis con datos reales
+            # (analyze_mlb_stop_losses.py) mostró que este stop cortaba ~80%
+            # de señales que terminaban ganando. stop=None hace que
+            # run_mlb_track_results ni siquiera chequee el book contra un
+            # stop (mismo `if stop is not None:` que ya usa el flujo de
+            # clima), la señal corre hasta la resolución real del partido.
+            stop = (
+                signal["market_price"] * (1 - config.WEATHER_MLB_STOP_LOSS_PCT)
+                if getattr(config, "MLB_STOP_LOSS_ENABLED", False) else None
+            )
             db.record_mlb_signal(
                 signal["condition_id"], signal["game_pk"], signal["question"],
                 signal["home_team"], signal["away_team"], signal["direction"],
