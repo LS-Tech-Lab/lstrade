@@ -48,6 +48,18 @@ jobs:
           python check_stop_noise_weather_mlb.py \
             --output resultados_stop_noise_weather_mlb.csv
 
+      # NUEVO: Polymarket genérico, mismo criterio -- solo pega a la CLOB
+      # API (pública). Corre igual aunque los pasos anteriores hayan
+      # fallado.
+      - name: Correr análisis de stops (Polymarket genérico)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python check_stop_noise_polymarket.py \
+            --output resultados_stop_noise_polymarket.csv
+
       - name: Subir resultados como artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -56,4 +68,5 @@ jobs:
           path: |
             resultados_stop_noise_cripto.csv
             resultados_stop_noise_weather_mlb.csv
+            resultados_stop_noise_polymarket.csv
           retention-days: 30
