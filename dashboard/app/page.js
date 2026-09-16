@@ -149,7 +149,7 @@ function formatChartDate(ts) {
 // donde el dashboard se permite un poco de espectáculo (relleno con
 // degradé, cuadrícula, tooltip al pasar el dedo/mouse). El resto del panel
 // se mantiene deliberadamente tranquilo alrededor de esto.
-function EquityChart({ points }) {
+function EquityChart({ points, riskContext }) {
   const [hoverIdx, setHoverIdx] = useState(null);
   if (!points || points.length < 2) {
     return <div className="empty">Todavía no hay suficiente historial de equity.</div>;
@@ -167,6 +167,18 @@ function EquityChart({ points }) {
   const changePct = first !== 0 ? ((last - first) / Math.abs(first)) * 100 : 0;
   const positive = changePct >= 0;
   const hover = hoverIdx !== null ? points[hoverIdx] : null;
+
+  // NUEVO (15/09/2026, pedido del usuario -- "mejorar los gráficos de
+  // equity"): peak móvil punto a punto (el máximo visto hasta cada
+  // índice) y la zona "underwater" entre ese peak y el valor real, para
+  // que el drawdown se vea de un vistazo en vez de tener que restar a
+  // mano con el tooltip. Mismo concepto que usa risk_manager.py para el
+  // throttle de tamaño de cripto (ver drawdown_risk_multiplier), acá
+  // aplicado de forma genérica a las 4 series de equity.
+  let peakSoFar = -Infinity;
+  const runningPeak = values.map((v) => (peakSoFar = Math.max(peakSoFar, v)));
+  const peakLinePoints = points.map((p, i) => `${xAt(i)},${yAt(runningPeak[i])}`).join(" ");
+  const underwaterPoints = `${linePoints} ${points.map((p, i) => `${xAt(points.length - 1 - i)},${yAt(runningPeak[points.length - 1 - i])}`).join(" ")}`;
 
   function handleMove(clientX, svgEl) {
     const rect = svgEl.getBoundingClientRect();
@@ -188,6 +200,22 @@ function EquityChart({ points }) {
           {positive ? "▲ " : "▼ "} {Math.abs(changePct).toFixed(2)}% desde el inicio del historial
         </div>
       </div>
+      {/* NUEVO (15/09/2026): contexto del throttle de drawdown en vivo --
+          solo se pasa riskContext para cripto (ver EquityCard más abajo).
+          FIX (15/09/2026, mismo día): el texto ya NO dice "bloquea señales
+          nuevas" -- otra sesión en paralelo reemplazó el bloqueo binario
+          por un throttle continuo de tamaño de posición el mismo día (ver
+          drawdown_risk_multiplier() en risk_manager.py) mientras se
+          armaba este gráfico. "ok" acá significa "sin throttle todavía"
+          (dd_pct por debajo de throttle_start_pct), no "no bloqueado". */}
+      {riskContext && riskContext.current_dd_pct !== null && (
+        <div className={`equity-risk-context ${riskContext.current_dd_pct > riskContext.throttle_start_pct ? "fail" : "ok"}`}>
+          Drawdown actual (últimos {riskContext.window_days}d): {riskContext.current_dd_pct.toFixed(1)}%
+          {riskContext.current_dd_pct > riskContext.throttle_start_pct
+            ? ` — riesgo de posiciones nuevas reducido a ${(riskContext.risk_mult * 100).toFixed(0)}%`
+            : ` (el throttle empieza a reducir tamaño a partir de ${riskContext.throttle_start_pct}%)`}
+        </div>
+      )}
       <svg
         viewBox={`0 0 ${w} ${h}`}
         className="equity-chart"
@@ -203,11 +231,25 @@ function EquityChart({ points }) {
             <stop offset="100%" stopColor="var(--accent)" stopOpacity="0" />
           </linearGradient>
         </defs>
-        {gridLines.map((g) => (
-          <line key={g} x1={padX} x2={w - padX} y1={padTop + g * (h - padTop - padBottom)} y2={padTop + g * (h - padTop - padBottom)}
-            className="equity-grid-line" />
-        ))}
+        {gridLines.map((g) => {
+          const y = padTop + g * (h - padTop - padBottom);
+          const value = max - g * (max - min);
+          return (
+            <g key={g}>
+              <line x1={padX} x2={w - padX} y1={y} y2={y} className="equity-grid-line" />
+              {/* NUEVO (15/09/2026, pedido del usuario): antes el valor de
+                  cada línea de grilla solo se veía al hacer hover en algún
+                  punto cercano -- ahora queda como referencia pasiva sin
+                  necesidad de tocar/pasar el mouse. */}
+              <text x={w - padX - 4} y={y - 3} className="equity-grid-label" textAnchor="end">
+                ${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+              </text>
+            </g>
+          );
+        })}
+        <polygon points={underwaterPoints} className="equity-underwater" />
         <polygon points={areaPoints} fill="url(#equityFill)" className="equity-area" />
+        <polyline points={peakLinePoints} fill="none" className="equity-peak-line" />
         <polyline points={linePoints} fill="none" stroke="var(--accent)" strokeWidth="2.25"
           strokeLinejoin="round" strokeLinecap="round" className="equity-line" />
         {hover && (
@@ -261,12 +303,12 @@ function EquityChart({ points }) {
 // que ver con cripto. Ahora cada tab (CriptoTab/WeatherTab/MlbTab/
 // PolymarketTab) muestra directamente el gráfico de SU propio módulo, acá
 // mismo donde vive el resto de sus métricas.
-function EquityCard({ title, subtitle, points }) {
+function EquityCard({ title, subtitle, points, riskContext }) {
   return (
     <div className="card">
       <h2>{title}</h2>
       <p className="card-subtitle">{subtitle}</p>
-      <EquityChart points={points} />
+      <EquityChart points={points} riskContext={riskContext} />
     </div>
   );
 }
@@ -1466,7 +1508,8 @@ function CriptoTab({ data }) {
       </div>
       <EquityCard title="Equity — Cripto"
         subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
-        points={data.equity} />
+        points={data.equity}
+        riskContext={data.equity_crypto_drawdown} />
       <div className="card">
         <h2>Bitácora de decisiones</h2>
         <p className="card-subtitle">Cada vez que el bot detecta una señal, queda registrado acá qué decidió hacer con ella.</p>
