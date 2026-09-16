@@ -1107,10 +1107,48 @@ def run_mlb_track_results():
         # NUEVO (06/09/2026): mismo mecanismo de stop-loss que
         # run_weather_track_results -- ver comentario ahí. Se chequea
         # antes de gastar la llamada a fetch_game_result.
+        #
+        # FIX (16/09/2026, pedido del usuario -- auditoría con
+        # check_stop_noise_weather_mlb.py sobre datos reales): de 90 señales
+        # de MLB cerradas por stop, 74 (82.2%) el equipo comprado terminó
+        # ganando el partido de verdad -- el stop no estaba protegiendo
+        # nada, le estaba regalando expectancy al bot. Causa: este bloque
+        # nunca recibió el fix de confirmación con ASK que sí se aplicó a
+        # clima el 10/09 (ver el comentario largo en run_weather_track_results
+        # más abajo) -- seguía gatillando con un solo `best_bid` bajo de un
+        # book fino, típico de mercados de MLB (bastante menos líquidos que
+        # los grandes mercados climáticos). Mismo criterio acá: si no hay
+        # bid, se cae a `yes_price` (último operado vía fetch_clob_market)
+        # pero exigiendo que el ASK real confirme el precio bajo antes de
+        # aceptar un print viejo/sin volumen como cruce de stop de verdad.
         stop = sig.get("stop")
-        if stop is not None and sig.get("token_id"):
-            book = client.fetch_order_book_snapshot(sig["token_id"])
-            if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
+        market = None
+        book = None
+        if stop is not None:
+            triggered_stop = False
+            if sig.get("token_id"):
+                book = client.fetch_order_book_snapshot(sig["token_id"])
+                if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
+                    triggered_stop = True
+            if not triggered_stop:
+                condition_id = sig.get("condition_id")
+                if condition_id:
+                    market = client.fetch_clob_market(condition_id)
+                if market and market.get("yes_price") is not None and market["yes_price"] <= stop:
+                    ask_confirms = (
+                        book is None
+                        or book.get("best_ask") is None
+                        or book["best_ask"] <= stop
+                    )
+                    if ask_confirms:
+                        triggered_stop = True
+                    else:
+                        print(
+                            f"[mlb stop] {sig.get('question', '')[:60]}: último precio {market['yes_price']:.3f} <= "
+                            f"stop {stop:.3f}, pero ask real del book ({book['best_ask']:.3f}) todavía "
+                            f"está por encima -- no se confía en el print viejo, se reintenta el próximo ciclo."
+                        )
+            if triggered_stop:
                 if db.resolve_mlb_signal(sig["id"], "stop", exit_price=stop):
                     # AUDITORÍA (07/09/2026): equity propio del módulo MLB
                     # (½ Kelly sobre my_prob/market_price ya guardados en la
