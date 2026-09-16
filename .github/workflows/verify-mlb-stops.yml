@@ -1,0 +1,58 @@
+name: Verificar stops de MLB (manual)
+
+# NUEVO (16/09/2026, pedido del usuario -- "confirmar que el stop-loss no
+# corte señales ganadoras por simples variaciones porcentuales"): corre
+# analyze_mlb_stop_losses.py, que resuelve cada señal de mlb_signals con
+# outcome='stop' contra el resultado REAL del partido (fetch_game_result()
+# de mlb_signal_engine.py, mismo helper que ya usa producción) y reporta
+# qué % de esos stops en realidad habrían ganado si no se cortaban.
+#
+# Corre en GitHub Actions (no localmente) por el mismo motivo que
+# backtest-mlb.yml/backtest-polymarket.yml: necesita salida de red hacia
+# statsapi.mlb.com y hacia Supabase, y así queda el log/artifact
+# reproducible sin depender del entorno de quien lo corre.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Ventana en días hacia atrás (vacío = todo el historial)"
+        default: ""
+      sleep:
+        description: "Pausa entre llamadas a la MLB Stats API (segundos)"
+        default: "0.3"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Correr verificación de stops de MLB
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python analyze_mlb_stop_losses.py \
+            $([ -n "${{ inputs.days }}" ] && echo --days ${{ inputs.days }}) \
+            --sleep ${{ inputs.sleep }} \
+            --csv stops_mlb.csv \
+          | tee stops_mlb_resumen.txt
+
+      - name: Subir resultados como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-mlb-stops-${{ github.run_id }}
+          path: |
+            stops_mlb.csv
+            stops_mlb_resumen.txt
+          if-no-files-found: warn
+          retention-days: 30
