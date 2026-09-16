@@ -25,6 +25,33 @@ function getClient() {
 const MLB_PROB_CLIP_MIN = parseFloat(process.env.MLB_PROB_CLIP_MIN || "0.40");
 const MLB_PROB_CLIP_MAX = parseFloat(process.env.MLB_PROB_CLIP_MAX || "0.60");
 
+// NUEVO (15/09/2026, pedido del usuario): mismos defaults que
+// Config.MAX_DRAWDOWN_PCT/MAX_DRAWDOWN_WINDOW_DAYS/
+// DRAWDOWN_THROTTLE_START_PCT/DRAWDOWN_MIN_RISK_MULT en config.py -- mismo
+// motivo que MLB_PROB_CLIP_MIN/MAX de arriba (este archivo no puede
+// importar config.py). Usados para mostrar en el gráfico de equity de
+// cripto el mismo throttle continuo que aplica risk_manager.check() (ver
+// drawdown_risk_multiplier() en risk_manager.py) -- ya no bloquea señales,
+// reduce el tamaño de la posición de forma progresiva. No se recalcula ni
+// se toca ese chequeo desde acá, solo se refleja el mismo número.
+const MAX_DRAWDOWN_PCT = parseFloat(process.env.MAX_DRAWDOWN_PCT || "8.0");
+const MAX_DRAWDOWN_WINDOW_DAYS = parseFloat(process.env.MAX_DRAWDOWN_WINDOW_DAYS || "7.0");
+const DRAWDOWN_THROTTLE_START_PCT = parseFloat(process.env.DRAWDOWN_THROTTLE_START_PCT || "4.0");
+const DRAWDOWN_MIN_RISK_MULT = parseFloat(process.env.DRAWDOWN_MIN_RISK_MULT || "0.20");
+
+// Misma fórmula que drawdown_risk_multiplier() en risk_manager.py --
+// duplicada acá por el mismo motivo de siempre (Next.js no puede importar
+// código Python). Si se toca una, hay que tocar la otra.
+function drawdownRiskMultiplier(ddPct) {
+  const start = DRAWDOWN_THROTTLE_START_PCT;
+  const cap = MAX_DRAWDOWN_PCT;
+  const minMult = DRAWDOWN_MIN_RISK_MULT;
+  if (ddPct <= start) return 1.0;
+  if (ddPct >= cap || cap <= start) return minMult;
+  const progress = (ddPct - start) / (cap - start);
+  return 1.0 - progress * (1.0 - minMult);
+}
+
 // FIX (08/09/2026, auditoría pedida por LS): win_rate y profit_factor
 // definían ganador/perdedor por el MOTIVO de cierre (outcome === "target"
 // vs "stop") en vez del resultado real de la operación (signo de
@@ -547,6 +574,7 @@ export async function GET() {
       equityWeatherRes,
       equityPolymarketRes,
       equityMlbRes,
+      cryptoDrawdownPeakRes,
       decisionsRes,
       stateRes,
       pendingRes,
@@ -560,22 +588,32 @@ export async function GET() {
       mlbOpenRes,
       mlbResolvedRes,
     ] = await Promise.all([
-      // FIX: antes traía las 200 filas MÁS VIEJAS (ascending + limit sin
-      // order by desc primero) — con 600+ filas acumuladas, esa ventana
-      // nunca llegaba a los datos recientes y el gráfico de equity se veía
-      // eternamente clavado en el valor inicial. Se pide descendente (las
-      // últimas 200) y se revierte abajo para mantener el orden cronológico
-      // ascendente que espera el frontend.
-      // AUDITORÍA (07/09/2026, pedido del usuario): se agrega el filtro
-      // module="crypto" -- equity_history ahora guarda una serie por
-      // módulo (ver migración add_module_to_equity_history en schema.sql),
-      // así que sin este filtro esta consulta mezclaría puntos de las 4
-      // series en una sola línea. Los otros 3 módulos se traen aparte
-      // abajo (equityWeatherRes/equityPolymarketRes/equityMlbRes).
-      supabase.from("equity_history").select("ts,equity").eq("module", "crypto").order("ts", { ascending: false }).limit(200),
-      supabase.from("equity_history").select("ts,equity").eq("module", "weather").order("ts", { ascending: false }).limit(200),
-      supabase.from("equity_history").select("ts,equity").eq("module", "polymarket").order("ts", { ascending: false }).limit(200),
-      supabase.from("equity_history").select("ts,equity").eq("module", "mlb").gte("ts", MLB_EQUITY_RESET_TS).order("ts", { ascending: false }).limit(200),
+      // FIX (15/09/2026, pedido del usuario): antes esto traía las últimas
+      // 200 filas CRUDAS (un snapshot cada ~10min, haya habido trade o no)
+      // -- con esa cadencia, 200 filas son apenas ~33h de historial, no el
+      // historial completo, y ese techo se va achicando en términos de
+      // días a medida que se acumulan más filas. El header del gráfico
+      // ("X% desde el inicio del historial") quedaba mintiendo: mostraba
+      // el inicio de esas 200 filas, no el inicio real. Se reemplaza por
+      // la RPC get_equity_history_changes (ver migración
+      // add_get_equity_history_changes_rpc), que devuelve solo las filas
+      // donde el equity CAMBIÓ respecto a la fila anterior -- descarta los
+      // snapshots planos repetidos sin tocar el rango de tiempo. Con los
+      // datos actuales esto reduce cripto de ~2476 filas a ~156, cubriendo
+      // el historial completo desde el inicio real en vez de solo ~33h.
+      supabase.rpc("get_equity_history_changes", { p_module: "crypto" }),
+      supabase.rpc("get_equity_history_changes", { p_module: "weather" }),
+      supabase.rpc("get_equity_history_changes", { p_module: "polymarket" }),
+      supabase.rpc("get_equity_history_changes", { p_module: "mlb", p_since: MLB_EQUITY_RESET_TS }),
+      // NUEVO (15/09/2026, pedido del usuario): mismo peak móvil que usa
+      // risk_manager.check() (ver peak_equity_window en supabase_db.py)
+      // para el throttle de drawdown -- se expone acá para que el gráfico
+      // de equity de cripto pueda mostrar el mismo número que usa el bot
+      // para decidir cuánto reducir el tamaño de las posiciones nuevas.
+      supabase.from("equity_history").select("equity")
+        .eq("module", "crypto")
+        .gte("ts", new Date(Date.now() - MAX_DRAWDOWN_WINDOW_DAYS * 86400000).toISOString())
+        .order("equity", { ascending: false }).limit(1),
       supabase.from("decisions").select("*").order("ts", { ascending: false }).limit(30),
       supabase.from("bot_state").select("*"),
       supabase.from("pending_decisions").select("*").eq("resolved", false),
@@ -617,6 +655,7 @@ export async function GET() {
       equity_weather: equityWeatherRes,
       equity_polymarket: equityPolymarketRes,
       equity_mlb: equityMlbRes,
+      crypto_drawdown_peak: cryptoDrawdownPeakRes,
       decisions: decisionsRes,
       bot_state: stateRes,
       pending: pendingRes,
@@ -666,8 +705,26 @@ export async function GET() {
       .map((r) => ({ ...r, category: categorize(r.question) }));
     const resolvedSignalsWithCategory = resolvedSignals.map((r) => ({ ...r, category: categorize(r.question) }));
 
+    // NUEVO (15/09/2026, pedido del usuario): mismo peak/throttle que usa
+    // risk_manager.check() para el gate de drawdown -- el frontend lo usa
+    // para mostrar, en el gráfico de equity de cripto, cuánto se está
+    // reduciendo el tamaño de las posiciones nuevas por el throttle
+    // continuo (ver drawdown_risk_multiplier() en risk_manager.py, que
+    // reemplazó el bloqueo binario que había antes hoy mismo). dd_pct y
+    // risk_mult se calculan acá con la misma fórmula exacta (ver
+    // drawdownRiskMultiplier arriba) porque risk_manager.py no corre en
+    // este proceso.
+    const cryptoWindowPeak = cryptoDrawdownPeakRes.error ? null : (cryptoDrawdownPeakRes.data?.[0]?.equity ?? null);
+    const cryptoLastEquity = equityRes.error || !equityRes.data?.length
+      ? null
+      : equityRes.data[equityRes.data.length - 1].equity;
+    const cryptoDrawdownPct = cryptoWindowPeak && cryptoLastEquity !== null && cryptoWindowPeak > 0
+      ? ((cryptoWindowPeak - cryptoLastEquity) / cryptoWindowPeak) * 100
+      : null;
+    const cryptoRiskMult = cryptoDrawdownPct !== null ? drawdownRiskMultiplier(cryptoDrawdownPct) : null;
+
     return NextResponse.json({
-      equity: (equityRes.data || []).slice().reverse(),
+      equity: equityRes.error ? [] : (equityRes.data || []),
       // AUDITORÍA (07/09/2026, pedido del usuario): series de equity por
       // módulo aparte de cripto (ver apply_binary_signal_pnl/
       // apply_r_multiple_pnl en supabase_db.py) -- cada una arranca en $100
@@ -675,9 +732,20 @@ export async function GET() {
       // módulo, así que pueden llegar vacías por un rato.
       // AUDITORÍA (13/09/2026): base unificada bajada de $100 a $20 (ver
       // mismo comentario en page.js y en supabase_db.py/db.py).
-      equity_weather: equityWeatherRes.error ? [] : (equityWeatherRes.data || []).slice().reverse(),
-      equity_polymarket: equityPolymarketRes.error ? [] : (equityPolymarketRes.data || []).slice().reverse(),
-      equity_mlb: equityMlbRes.error ? [] : (equityMlbRes.data || []).slice().reverse(),
+      // FIX (15/09/2026): ya no hace falta .reverse() -- la RPC
+      // get_equity_history_changes devuelve orden ascendente directo.
+      equity_weather: equityWeatherRes.error ? [] : (equityWeatherRes.data || []),
+      equity_polymarket: equityPolymarketRes.error ? [] : (equityPolymarketRes.data || []),
+      equity_mlb: equityMlbRes.error ? [] : (equityMlbRes.data || []),
+      equity_crypto_drawdown: {
+        window_days: MAX_DRAWDOWN_WINDOW_DAYS,
+        threshold_pct: MAX_DRAWDOWN_PCT,
+        throttle_start_pct: DRAWDOWN_THROTTLE_START_PCT,
+        min_risk_mult: DRAWDOWN_MIN_RISK_MULT,
+        window_peak: cryptoWindowPeak,
+        current_dd_pct: cryptoDrawdownPct,
+        risk_mult: cryptoRiskMult,
+      },
       decisions: decisionsRes.data || [],
       halted: stateMap.trading_halted === "1",
       halt_reason: stateMap.halt_reason || null,
