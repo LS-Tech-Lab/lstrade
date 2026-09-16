@@ -632,7 +632,47 @@ class SupabaseDatabase:
             update["exit_price"] = exit_price
         res = _with_retry(lambda: self.client.table("mlb_signals").update(update).eq("id", signal_id).is_("outcome", "null").execute())
         return bool(res.data)
-       
+
+    def record_mlb_price_snapshot(self, signal_id, game_pk, best_bid, best_ask, phase):
+        """NUEVO (16/09/2026, pedido del usuario): instrumentación para poder
+        calibrar WEATHER_MLB_STOP_LOSS_PCT (20% fijo) con datos reales en vez
+        de intuición -- ver auditoría larga de check_stop_noise_weather_mlb.py
+        (82.2% de los stops de MLB terminaron ganando el partido real).
+
+        Guarda un snapshot de precio en cada chequeo, tanto de señales
+        todavía abiertas (phase="open", antes de que toque target/stop) como
+        de señales ya cerradas por stop pero que se siguen mirando un rato
+        más solo para calibración (phase="post_stop", ver
+        get_recent_stopped_mlb_signals_for_shadow). No afecta ninguna
+        decisión de trading real -- es puramente para poder responder en
+        unas semanas "¿un dip de -20% suele recuperarse dentro del mismo
+        partido?" con la trayectoria real en vez de un solo punto win/loss
+        final. Falla en silencio (no debe tumbar el ciclo de resolución real
+        por un insert de instrumentación que no es crítico).
+        """
+        try:
+            _with_retry(lambda: self.client.table("mlb_price_snapshots").insert({
+                "signal_id": signal_id, "game_pk": game_pk,
+                "best_bid": best_bid, "best_ask": best_ask,
+                "phase": phase, "ts": _now_iso(),
+            }).execute())
+        except Exception as e:
+            print(f"[mlb price snapshot] No se pudo guardar (signal_id={signal_id}): {e}")
+
+    def get_recent_stopped_mlb_signals_for_shadow(self, hours=5):
+        """Señales de MLB resueltas por stop en las últimas `hours` horas --
+        candidatas a seguir observando (phase="post_stop") para saber si el
+        precio se recupera después del cierre anticipado. Ventana acotada
+        porque un partido de MLB dura ~3h en promedio; 5h da margen sin
+        arrastrar señales de días atrás para siempre."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        res = _with_retry(lambda: self.client.table("mlb_signals")
+                           .select("id,game_pk,token_id,ts_resolved")
+                           .eq("outcome", "stop")
+                           .gte("ts_resolved", cutoff)
+                           .execute())
+        return res.data or []
+
     def weather_calibration_summary(self, bucket_size=0.1):
         rows = self.client.table("weather_signals").select("my_prob,outcome").not_.is_("outcome", "null").execute().data or []
         n = len(rows)
