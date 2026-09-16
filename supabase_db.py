@@ -222,7 +222,13 @@ class SupabaseDatabase:
         _with_retry(lambda: self.client.table("bot_state").upsert({"key": key, "value": str(value)}).execute())
 
     def log_decision(self, symbol, signal, risk_report, plan, decision, order_detail=None):
-        _with_retry(lambda: self.client.table("decisions").insert({
+        # NUEVO (16/09/2026, pedido del usuario): devuelve el id de la fila
+        # insertada -- Supabase devuelve la fila completa por default en un
+        # insert (representation), así que no hace falta un SELECT aparte.
+        # El caller usa este id como decision_id al abrir la posición en
+        # open_trades, para poder vincular "por qué" (bitácora) con "qué
+        # pasó" (historial de trades) en el dashboard.
+        res = _with_retry(lambda: self.client.table("decisions").insert({
             "ts": _now_iso(), "symbol": symbol,
             "signal_type": signal.get("type") if signal else None,
             "direction": signal.get("direction") if signal else None,
@@ -230,6 +236,7 @@ class SupabaseDatabase:
             "risk_pass": bool(risk_report["pass"]) if risk_report else None,
             "risk_detail": risk_report, "plan_detail": plan, "decision": decision, "order_detail": order_detail,
         }).execute())
+        return res.data[0]["id"] if res.data else None
 
     def recent_decisions(self, limit=20):
         return self.client.table("decisions").select("*").order("ts", desc=True).limit(limit).execute().data
@@ -289,7 +296,8 @@ class SupabaseDatabase:
     # analyze_crypto_setups.py. Se propagan a closed_trades al cerrar (ver
     # close_trade_with_outcome de acá abajo).
     def add_open_trade(self, symbol, direction, entry_price, stop_price, target_price, position_size,
-                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None):
+                        order_id=None, stop_distance=None, setup_type=None, confidence=None, score=None,
+                        decision_id=None, stake_dollars=None):
         if stop_distance is None:
             stop_distance = abs(entry_price - stop_price)
         try:
@@ -302,6 +310,15 @@ class SupabaseDatabase:
                 "target_price": target_price, "position_size": position_size, "order_id": order_id,
                 "ts_opened": _now_iso(), "stop_distance": stop_distance,
                 "setup_type": setup_type, "confidence": confidence, "score": score,
+                # NUEVO (16/09/2026, pedido del usuario): decision_id vincula
+                # esta posición con la fila de `decisions` que la originó, y
+                # stake_dollars guarda el monto realmente arriesgado (mismo
+                # risk_amount que ya se calculaba en risk_manager.check() y
+                # vivía solo de paso en plan_detail) -- ambos se copian a
+                # closed_trades al cerrar (ver close_trade_with_outcome) para
+                # poder armar un historial reciente de Cripto igual al de
+                # los demás módulos, con el motivo de la decisión a mano.
+                "decision_id": decision_id, "stake_dollars": stake_dollars,
             }).execute())
             return True
         except Exception as e:
@@ -338,12 +355,26 @@ class SupabaseDatabase:
             return False, None
         entry, direction, stop_distance = trade["entry_price"], trade["direction"], trade.get("stop_distance")
         r_multiple = ((exit_price - entry) / stop_distance) * (1 if direction == "LONG" else -1) if stop_distance else None
+
+        # NUEVO (16/09/2026, pedido del usuario): pnl_dollars se calculaba
+        # acá abajo para el equity pero nunca se guardaba en la fila (mismo
+        # bug que ya se había corregido en Polymarket/MLB/Clima el
+        # 15/09/2026) -- se calcula primero para poder persistirlo junto
+        # con stake_dollars/decision_id, copiados desde open_trades.
+        pnl_dollars = None
+        position_size = trade.get("position_size")
+        if position_size:
+            sign = 1 if direction == "LONG" else -1
+            pnl_dollars = (exit_price - entry) * position_size * sign
+
         _with_retry(lambda: self.client.table("closed_trades").insert({
             "symbol": trade["symbol"], "direction": direction, "entry_price": entry, "exit_price": exit_price,
             "outcome": outcome, "r_multiple": r_multiple, "ts_opened": trade["ts_opened"], "ts_closed": _now_iso(),
             # AUDITORÍA (08/09/2026): copiados desde open_trades (get_open_trades
             # hace SELECT *, así que ya vienen en `trade` si la columna existe).
             "setup_type": trade.get("setup_type"), "confidence": trade.get("confidence"), "score": trade.get("score"),
+            "decision_id": trade.get("decision_id"), "stake_dollars": trade.get("stake_dollars"),
+            "pnl_dollars": round(pnl_dollars, 2) if pnl_dollars is not None else None,
         }).execute())
 
         # NUEVO: aplicar el P&L realizado al equity simulado. Sin esto, el
@@ -358,11 +389,9 @@ class SupabaseDatabase:
         # pedido del usuario de unificar los 4 módulos (cripto, MLB, clima,
         # Polymarket) en la misma base de $20. Historial completo de
         # equity_history (los 4 módulos) rescalado x0.2 en la misma migración.
-        pnl_dollars = None
-        position_size = trade.get("position_size")
-        if position_size:
-            sign = 1 if direction == "LONG" else -1
-            pnl_dollars = (exit_price - entry) * position_size * sign
+        # (pnl_dollars ya se calculó arriba, antes del insert, para poder
+        # persistirlo en la fila -- acá solo se usa para mover el equity.)
+        if pnl_dollars is not None:
             base_equity = self.last_equity("crypto")
             if base_equity is None:
                 base_equity = 20.0
