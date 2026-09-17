@@ -201,7 +201,36 @@ def generate_polymarket_signal(market, price_history=None, min_score=0.06,
         # se escala por el precio de entrada, así que una volatilidad
         # relativa del 10% en una entrada de $0.05 da un stop de $0.015
         # (30% de pérdida), no $0.30.
-        stop_distance = entry_price * volatility * stop_vol_mult
+        #
+        # FIX (17/09/2026, pedido del usuario -- auditoría con
+        # check_stop_noise_polymarket.py sobre datos reales, segmentada por
+        # tipo de mercado): `volatility` sale de fetch_price_history con
+        # interval="1d"/fidelity=60 -- desvío estándar de retornos HORARIOS
+        # de las últimas 24h, sin importar cuánto le queda de vida real al
+        # mercado. Eso calibra bien una pregunta política que tarda
+        # semanas en resolver (65% de esas señales, promedio ~17h abiertas,
+        # solo 16.4% de los stops resultaron cortes de más), pero para un
+        # partido/esports que arranca y termina en 2-4h, usar la
+        # volatilidad horaria de un día ENTERO (con 20+ horas donde el
+        # mercado ni se movía) subestima el ruido real por unidad de
+        # tiempo -- resultado medido: 26.7% de falsos cortes en deportes
+        # moneyline, 39.1% en esports, contra apenas 3-5% en cripto/clima
+        # (que sí tienen stop calibrado a su propia escala temporal). Se
+        # ensancha el stop cuando quedan menos de 24h para resolver,
+        # escalando por raíz cuadrada del tiempo restante (supuesto
+        # estándar de que la volatilidad escala con sqrt(tiempo) -- mismo
+        # principio que ATR_STOP_MULT en cripto, adaptado acá al tiempo de
+        # vida del mercado en vez de al indicador de precio). Tope en 2x
+        # para no ensanchar sin límite en mercados que resuelven en
+        # minutos -- MAX_STOP_LOSS_PCT más abajo sigue siendo el techo
+        # final de todas formas.
+        effective_stop_vol_mult = stop_vol_mult
+        if days_to_resolution is not None:
+            hours_to_resolution = days_to_resolution * 24.0
+            if 0 < hours_to_resolution < 24:
+                widen_factor = min(2.0, (24.0 / hours_to_resolution) ** 0.5)
+                effective_stop_vol_mult = stop_vol_mult * widen_factor
+        stop_distance = entry_price * volatility * effective_stop_vol_mult
 
         # AUDITORÍA (03/09/2026): además del fix de unidades de arriba, se
         # agrega un techo duro a cuánto puede perder un solo trade según el
