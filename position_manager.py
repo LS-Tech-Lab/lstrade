@@ -70,8 +70,15 @@ class PositionManager:
                 # redeploy y medir el efecto con analyze_crypto_setups.py.
                 # Bajar TRAIL_ATR_MULT protege antes la ganancia ya hecha, a
                 # costa de cortar antes algunos trades que hubieran seguido.
+                #
+                # NUEVO (17/09/2026, pedido del usuario): el margen del
+                # trailing ya no es un solo número fijo -- se ensancha según
+                # cuántos ATR de ganancia lleva el trade (ver
+                # _trailing_mult() y el comentario largo en config.py junto
+                # a TRAIL_ATR_MULT_GROWTH).
                 breakeven_dist = atr * self.config.TRAIL_BREAKEVEN_ATR_MULT
-                trail_dist = atr * self.config.TRAIL_ATR_MULT
+                atrs_in_profit = abs(current_price - entry) / atr
+                trail_dist = atr * self._trailing_mult(atrs_in_profit)
 
                 # Lógica de Trailing Stop
                 if direction == "LONG":
@@ -230,6 +237,19 @@ class PositionManager:
 
             except Exception as e:
                 log.warning(f"Error gestionando posición {symbol}: {e}")
+
+    def _trailing_mult(self, atrs_in_profit):
+        """NUEVO (17/09/2026, pedido del usuario): en vez de un
+        TRAIL_ATR_MULT fijo para cualquier trade, el margen del trailing
+        crece con cuántos ATR de ganancia ya lleva el trade -- un trade que
+        recién pasó breakeven (atrs_in_profit ~= TRAIL_BREAKEVEN_ATR_MULT)
+        recibe el mismo margen de siempre; uno que ya corrió varios ATR a
+        favor recibe más espacio, hasta el techo TRAIL_ATR_MULT_MAX. Ver el
+        comentario largo junto a estas constantes en config.py para el
+        razonamiento completo y los números de la auditoría que lo motivó."""
+        growth = max(0.0, atrs_in_profit - self.config.TRAIL_BREAKEVEN_ATR_MULT)
+        mult = self.config.TRAIL_ATR_MULT + self.config.TRAIL_ATR_MULT_GROWTH * growth
+        return min(mult, self.config.TRAIL_ATR_MULT_MAX)
 
     def _get_atr_for_symbol(self, symbol):
         try:
