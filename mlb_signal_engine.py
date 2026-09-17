@@ -247,12 +247,34 @@ MOMENTUM_DISAGREEMENT_THRESHOLD = 0.08  # ver price_disagrees_with_model() -- si
 # subiendo corrida a corrida (a=0.08 pre-fix de HOME_FIELD_EDGE/
 # MIN_GAMES_FOR_FORM -> a=0.36 post-fix -> a=0.40 post-FIP/Pythagorean) --
 # cada mejora estructural recupera más señal real, en la misma dirección
-# las tres veces. Ver calibrate_prob() más abajo. Reemplazar estos dos
-# valores la próxima vez que se corra mlb_calibration.py con datos más
-# nuevos (el workflow backtest-mlb.yml ya corre esa calibración
-# automáticamente al final de cada backtest).
-CALIBRATION_A = 0.4018  # pendiente (logit-space) -- ver AUDITORÍA arriba
-CALIBRATION_B = 0.0525  # shift (logit-space) -- ver AUDITORÍA arriba
+# las tres veces. Ver calibrate_prob() más abajo.
+#
+# AUDITORÍA (17/09/2026, cuarta corrida -- primera con pitcher_edge en
+# espacio de log-odds, ver AUDITORÍA en combine_components()): mismo
+# dataset (7303 partidos, holdout 1461 desde 2025-06-08), corrido por el
+# usuario vía backtest-mlb.yml. Confirmado el efecto esperado del fix: en
+# la calibración CRUDA (antes de este Platt) del holdout, el bucket
+# 40-50% -- el mismo que mostraba -21pts de sobreconfianza en vivo en la
+# versión e5b399eb, motivo original de este fix -- pasó a predicho 45.2%
+# / real 50.4%, solo +5.2pts de gap. El Brier crudo agregado del holdout
+# prácticamente no se mueve (0.2527 vs. 0.2531 antes) porque la mayoría de
+# los partidos ya estaban cerca de 50-50 y el fix atenúa el shift
+# principalmente lejos de ahí -- la mejora es real pero LOCAL a esa zona,
+# no un salto agregado. Sigue habiendo sobreconfianza clara del lado
+# favorito (60-90% predicho, real 7-12pts por debajo en cada bucket de esa
+# franja) -- no se toca en este pase, queda para la próxima auditoría
+# (candidato: mismo tipo de revisión que ya se le hizo a pitcher_edge, pero
+# sobre FIP_CONSTANT/PYTHAGOREAN_EXPONENT o SEASON_FORM_WEIGHT). Platt
+# completo sigue ganando en holdout (0.2459 calibrado vs. 0.2527 crudo) con
+# pendiente casi sin cambios (a=0.4175 vs. 0.4018) -- esperable, dado que
+# el fix corrige una distorsión LOCAL cerca de 40-50%, no la forma general
+# de sobreconfianza en los extremos que Platt ya venía corrigiendo.
+# Reemplazar estos dos valores la próxima vez que se corra
+# mlb_calibration.py con datos más nuevos (el workflow backtest-mlb.yml ya
+# corre esa calibración automáticamente al final de cada backtest).
+CALIBRATION_A = 0.4175  # pendiente (logit-space) -- ver AUDITORÍA arriba (17/09/2026)
+CALIBRATION_B = 0.0511  # shift (logit-space) -- ver AUDITORÍA arriba (17/09/2026)
+
 
 
 MIN_GAMES_FOR_FORM = 15
