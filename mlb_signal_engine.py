@@ -328,13 +328,27 @@ PYTHAGOREAN_EXPONENT = 1.83
 # VALORES activos (incluye overrides por env var de Config), no del commit
 # -- dos commits distintos con los mismos valores activos comparten
 # versión, y un mismo commit con un env var distinto en producción no.
+# AUDITORÍA (17/09/2026): MODEL_VERSION fingerprinteaba solo VALORES de
+# constantes -- correcto para detectar que alguien subió HOME_FIELD_EDGE de
+# 0.12 a 0.16, pero ciego a un cambio de FÓRMULA que deja las constantes
+# intactas (como el fix de pitcher_edge a espacio de log-odds, ver
+# AUDITORÍA en combine_components()): las señales de ANTES y DESPUÉS de
+# ese fix habrían compartido el mismo hash, mezclándose en el dashboard sin
+# forma de distinguirlas -- exactamente el problema que MODEL_VERSION
+# existe para evitar (ver AUDITORÍA 13/09/2026 más arriba). Se agrega este
+# literal al fingerprint, a subir a mano cada vez que se toque la
+# SECUENCIA de combine_components()/calibrate_prob() (no sus constantes,
+# esas ya se fingerprintean solas) sin cambiar ningún valor.
+MODEL_FORMULA_VERSION = 2  # 1 = pitcher_edge en espacio de probabilidad; 2 = en espacio de log-odds (17/09/2026)
+
+
 def _compute_model_version():
     import hashlib
     fingerprint = "|".join(str(v) for v in [
         HOME_FIELD_EDGE, PITCHER_ERA_SCALE, PITCHER_EDGE_CAP, SEASON_FORM_WEIGHT,
         MIN_INNINGS_FOR_ERA, MIN_GAMES_FOR_FORM, MOMENTUM_DISAGREEMENT_THRESHOLD,
         CALIBRATION_A, CALIBRATION_B, FIP_CONSTANT, PYTHAGOREAN_EXPONENT,
-        Config.MLB_EXTREME_PRICE_FLOOR,
+        Config.MLB_EXTREME_PRICE_FLOOR, MODEL_FORMULA_VERSION,
     ])
     return hashlib.sha256(fingerprint.encode()).hexdigest()[:8]
 
@@ -731,14 +745,60 @@ def pitcher_edge(era_a, era_b, scale=PITCHER_ERA_SCALE, cap=PITCHER_EDGE_CAP):
     return max(-cap, min(cap, (era_b - era_a) * scale))
 
 
+def _prob_shift_to_log_odds(prob_shift):
+    """Convierte un shift de probabilidad DEFINIDO EN REFERENCIA A UN 50-50
+    (ej. 0.08 significa "un partido 50-50 pasa a 58%") al delta equivalente
+    en espacio de log-odds -- mismo criterio que ya se usó para expresar
+    HOME_FIELD_EDGE en estas unidades (ver AUDITORÍA 13/09/2026 junto a esa
+    constante: 0.16 en log-odds se eligió porque equivale a mover un 50-50
+    a ~54%, el mismo punto de referencia que antes daba 0.04 en espacio de
+    probabilidad). Se usa acá para pitcher_edge -- ver AUDITORÍA 17/09/2026
+    en combine_components().
+
+    Clampeado a ±0.499 antes de convertir para no mandar to_log_odds() a
+    ±infinito si algún día cap/scale se subieran por encima de 0.5 (no
+    debería pasar con los valores actuales de PITCHER_EDGE_CAP, es solo
+    defensa en profundidad barata)."""
+    prob_shift = max(-0.499, min(0.499, prob_shift))
+    return to_log_odds(0.5 + prob_shift) - to_log_odds(0.5)
+
+
 def combine_components(home_pct, away_pct, era_home, era_away,
                         home_field_edge_logodds=HOME_FIELD_EDGE,
                         pitcher_era_scale=PITCHER_ERA_SCALE, pitcher_edge_cap=PITCHER_EDGE_CAP):
     """
     log5(home_pct, away_pct) -> + localía (en espacio de log-odds, ver
-    AUDITORÍA 13/09/2026 en HOME_FIELD_EDGE) -> + pitcher_edge (en espacio
-    de probabilidad, sin cambios -- el usuario solo pidió mover la localía)
-    -> cap de sanidad 0.05-0.95.
+    AUDITORÍA 13/09/2026 en HOME_FIELD_EDGE) -> + pitcher_edge (AHORA
+    también en espacio de log-odds, ver AUDITORÍA 17/09/2026 abajo) ->
+    cap de sanidad 0.05-0.95.
+
+    AUDITORÍA (17/09/2026, a partir de la calibración por bucket del
+    dashboard en la versión e5b399eb -- 40-50% predicho, n=16, solo 25%
+    de acierto real): pitcher_edge seguía sumándose directo a una
+    probabilidad (raw_prob = prob_with_home_field + edge), el MISMO tipo
+    de distorsión que HOME_FIELD_EDGE tenía antes del 13/09 -- empuja
+    desproporcionadamente fuerte cuando el partido YA está lejos de 50-50
+    (que es exactamente la situación de una apuesta a desvalido: log5+
+    localía ya dio algo bajo, y ahí pitcher_edge todavía sumaba hasta
+    ±0.08 en probabilidad cruda, en vez de un delta más chico una vez
+    lejos del centro de la curva). La auditoría del 12/09/2026 ya había
+    aislado a pitcher_edge como el mayor contribuyente individual al
+    exceso de confianza (Brier 0.388 -> 0.298 al sacarlo, sobre las 22
+    señales con componentes guardados) -- por simetría, el mismo mecanismo
+    puede estar inflando probabilidades de desvalido, no solo de favorito.
+    Se aplica ahora la misma solución que ya funcionó para la localía:
+    pitcher_edge se sigue calculando igual (mismos PITCHER_ERA_SCALE/
+    PITCHER_EDGE_CAP, mismo significado "shift desde un 50-50" -- ver
+    pitcher_edge() y _prob_shift_to_log_odds()), pero se COMPONE en
+    log-odds junto con log5+localía en vez de sumarse aparte en
+    probabilidad. Pendiente confirmar con un backtest fresco (no se puede
+    correr desde este entorno de desarrollo, sin acceso a statsapi.mlb.com
+    -- ver TODO en el header del archivo) si esto mejora el Brier
+    específicamente en el bucket 40-50%, y volver a fitear
+    CALIBRATION_A/CALIBRATION_B con mlb_calibration.py sobre ese backtest
+    (la curva actual, a=0.4018/b=0.0525, se fiteó sobre el raw_prob VIEJO
+    -- con la fórmula nueva el raw_prob cambia de distribución y la curva
+    queda desactualizada hasta refitear).
 
     NUEVO (13/09/2026): extraído de estimate_win_probability() para que
     backtest_mlb.py pueda llamar exactamente esta misma función en vez de
@@ -749,14 +809,20 @@ def combine_components(home_pct, away_pct, era_home, era_away,
     archivo. Con esto, un solo lugar de verdad para ambos.
 
     Devuelve (raw_prob sin el cap 0.05-0.95, prob ya con el cap, edge de
-    pitcher ya aplicado) -- el shape que generate_mlb_signal()/backtest_mlb.py
+    pitcher ya aplicado, EN UNIDADES DE PROBABILIDAD -- ver AUDITORÍA
+    17/09/2026 arriba: el shape/las unidades de este componente en
+    components["pitcher_edge"] no cambian aunque ahora se componga en
+    log-odds internamente, para no romper el dashboard ni requerir
+    migración) -- el shape que generate_mlb_signal()/backtest_mlb.py
     necesitan para guardar raw_my_prob/my_prob y el componente pitcher_edge
     por separado.
     """
     base_prob = log5(home_pct, away_pct)
-    prob_with_home_field = from_log_odds(to_log_odds(base_prob) + home_field_edge_logodds)
     edge = pitcher_edge(era_home, era_away, scale=pitcher_era_scale, cap=pitcher_edge_cap)
-    raw_prob = prob_with_home_field + edge
+    combined_log_odds = (
+        to_log_odds(base_prob) + home_field_edge_logodds + _prob_shift_to_log_odds(edge)
+    )
+    raw_prob = from_log_odds(combined_log_odds)
     prob = max(0.05, min(0.95, raw_prob))
     return raw_prob, prob, edge
 
