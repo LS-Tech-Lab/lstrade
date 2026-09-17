@@ -707,6 +707,18 @@ def run_weather_cycle():
     sent = 0
     scanned = 0
     detail = []
+    # RESTAURADO (17/09/2026): esto se había subido bien (commit 2e2d4b0) y
+    # se perdió en 408f1e1 ("Clean up app.py by removing unused comments")
+    # -- el nombre del commit describe una limpieza cosmética, pero borró
+    # el bloque funcional entero (acumulador, logging por bucket, insert
+    # final y candidates_logged en la respuesta). Sin este caller, el
+    # método record_weather_candidates en supabase_db.py quedó sin uso
+    # visible y se borró 2 commits después (1392ff3) como "código muerto".
+    # Acumula un row por bucket evaluado (todos, pasen o no el filtro de
+    # EV) para loguear en weather_candidates al final del ciclo -- ver
+    # record_weather_candidates en supabase_db.py. Un solo insert batch al
+    # final, no uno por evento, mismo criterio que record_indicator_snapshots.
+    candidate_rows = []
     for event in events:
         if time_left() < 1.0:
             detail.append({"title": event["title"], "status": "sin_tiempo"})
@@ -743,6 +755,41 @@ def run_weather_cycle():
         if signal.get("status") == "ok" and not signal.get("best_trade") and signal.get("discard_notes"):
             detail_entry["discard_notes"] = signal["discard_notes"]
         detail.append(detail_entry)
+
+        # RESTAURADO (17/09/2026, ver nota completa junto a candidate_rows
+        # más arriba): loguea CADA bucket evaluado (pasen o no el filtro de
+        # EV) para weather_candidates -- ver record_weather_candidates en
+        # supabase_db.py y la auditoría 14-16/09. Corre para todo evento
+        # "ok", no solo los que terminan en best_trade -- es justo la
+        # población que faltaba para poder calibrar
+        # WEATHER_MIN_EV/WEATHER_BASE_SIGMA_F más adelante (weather_signals
+        # solo tiene los que YA pasaron el filtro, sesgados por selección).
+        if signal.get("status") == "ok" and signal.get("buckets"):
+            icao = (signal.get("station") or {}).get("icao")
+            best_condition_id = (signal.get("best_trade") or {}).get("condition_id")
+            for b in signal["buckets"]:
+                candidate_rows.append({
+                    "event_title": event["title"],
+                    "station_icao": icao,
+                    "target_date": signal.get("target_date"),
+                    "condition_id": b.get("condition_id"),
+                    "question": b.get("question"),
+                    "my_prob": b.get("my_prob"),
+                    "raw_my_prob": b.get("raw_my_prob"),
+                    "market_price": b.get("market_price"),
+                    "ev": b.get("ev"),
+                    "liquidity": b.get("liquidity"),
+                    "center_estimate_f": signal.get("center_estimate_f"),
+                    "sigma": signal.get("sigma"),
+                    "confidence_penalty": signal.get("confidence_penalty"),
+                    "trajectory_slope_f_per_hr": signal.get("trajectory_slope_f_per_hr"),
+                    "effective_min_ev": signal.get("min_ev_threshold"),
+                    "min_price": config.WEATHER_MIN_PRICE,
+                    "verified": signal.get("settlement_verified"),
+                    "is_best_trade": bool(best_condition_id) and b.get("condition_id") == best_condition_id,
+                    "discard_notes": signal.get("discard_notes") or None,
+                })
+
         if signal.get("status") == "sin_tiempo":
             break
         if signal.get("status") != "ok" or not signal.get("best_trade"):
@@ -823,6 +870,19 @@ def run_weather_cycle():
         except Exception as e:
             detail.append({"title": event["title"], "status": "error_envio", "error": str(e)})
 
+    # RESTAURADO (17/09/2026, ver nota junto a candidate_rows más arriba):
+    # un solo insert batch con TODOS los buckets evaluados en este ciclo --
+    # mismo criterio que record_indicator_snapshots, no sumar round-trips
+    # al presupuesto de 25s. Envuelto en try/except propio: si esto falla,
+    # no debe tirar abajo la respuesta del ciclo (que ya mandó las señales
+    # reales si las hubo) -- es instrumentación para calibrar más adelante,
+    # no una señal.
+    if candidate_rows and time_left() > 1.0:
+        try:
+            db.record_weather_candidates(candidate_rows)
+        except Exception as e:
+            print(f"[weather_candidates] no se pudo loguear ({len(candidate_rows)} filas): {e}")
+
     return {
         "status": "ok",
         # CORREGIDO (14/09/2026): antes era len(events) DESPUÉS del recorte
@@ -834,6 +894,7 @@ def run_weather_cycle():
         "events_found": len(events),
         "events_scanned": scanned,
         "signals_sent": sent,
+        "candidates_logged": len(candidate_rows),
         "candidates": candidates,
         "detail": detail,
     }
@@ -1085,6 +1146,54 @@ async def mlb_cycle_post(request: Request):
 # ────────────────────────────────────────────────────────────────────
 # /api/mlb_track_results
 # ────────────────────────────────────────────────────────────────────
+# RESTAURADO (17/09/2026): esta función se había perdido en producción --
+# el commit 216146e ("Remove decision_id variable assignment from
+# log_decision calls") la borró de acá, camuflada dentro de un commit sobre
+# un tema completamente distinto (decision_id de cripto). No hubo forma de
+# verlo en el diffstat del commit sin abrirlo entero. Sus 2 call sites de
+# más abajo (el atajo "no_open_signals" y el return final) y el logging
+# inline dentro del loop de stops también se perdieron en el mismo commit
+# -- se restauran los 3 puntos juntos. La tabla mlb_price_snapshots en
+# Supabase nunca se tocó (116 filas del 16/09 entre 12:16 y 19:16, justo
+# hasta que se cortó esto); esto solo restaura el código.
+def _track_mlb_stop_shadows(db, client, time_left):
+    """NUEVO (16/09/2026, pedido del usuario): sigue observando el precio de
+    señales de MLB YA cerradas por stop, un rato más, solo para calibración
+    -- ver record_mlb_price_snapshot en supabase_db.py y la auditoría larga
+    en el bloque de stop más abajo (82.2% de los stops de MLB terminaron
+    ganando el partido real). No reabre ni modifica la señal ni el equity
+    -- la posición real ya está cerrada, esto es puramente instrumentación
+    para responder en unas semanas si el 20% fijo (WEATHER_MLB_STOP_LOSS_PCT)
+    es un ancho razonable para MLB o si conviene ensancharlo/hacerlo
+    adaptativo como en cripto.
+
+    Se corre al final de run_mlb_track_results(), con el mismo presupuesto
+    de tiempo ya agotándose (time_left compartido) -- si no queda margen,
+    simplemente no se llega a loguear nada este ciclo y se reintenta en el
+    próximo, sin arriesgar el 504 que ya se diagnosticó en la auditoría del
+    12/09."""
+    if time_left() < 2.0:
+        return {"checked": 0, "note": "sin tiempo"}
+    candidates = db.get_recent_stopped_mlb_signals_for_shadow(hours=5)
+    checked = 0
+    for sig in candidates:
+        if time_left() < 1.0:
+            break
+        token_id = sig.get("token_id")
+        if not token_id:
+            continue
+        book = client.fetch_order_book_snapshot(token_id)
+        if not book:
+            continue
+        db.record_mlb_price_snapshot(
+            sig["id"], sig.get("game_pk"),
+            best_bid=book.get("best_bid"), best_ask=book.get("best_ask"),
+            phase="post_stop",
+        )
+        checked += 1
+    return {"checked": checked, "candidates": len(candidates)}
+
+
 def run_mlb_track_results():
     """NUEVO (06/09/2026): resolve_mlb_signal() existía en supabase_db.py
     desde que se agregó el motor de MLB, pero nada lo llamaba -- las
@@ -1129,7 +1238,7 @@ def run_mlb_track_results():
 
     open_signals = db.get_open_mlb_signals()
     if not open_signals:
-        return {"status": "no_open_signals"}
+        return {"status": "no_open_signals", "shadow_watch": _track_mlb_stop_shadows(db, client, time_left)}
 
     resolved = []
     checked = 0
@@ -1143,6 +1252,20 @@ def run_mlb_track_results():
         stop = sig.get("stop")
         if stop is not None and sig.get("token_id"):
             book = client.fetch_order_book_snapshot(sig["token_id"])
+            # RESTAURADO (17/09/2026, adaptado a la refactorización de la
+            # lógica de stop que pasó mientras esto estaba caído): antes
+            # este logueo vivía dentro del bloque "ask_confirms" que ya no
+            # existe -- se reengancha acá, apenas se tiene `book`, antes de
+            # decidir si gatilla el stop o no, para conservar la intención
+            # original ("se loguea SIEMPRE que hay stop configurado, haya
+            # gatillado o no, para tener la trayectoria completa de la
+            # señal"). Ver record_mlb_price_snapshot en supabase_db.py.
+            if book is not None:
+                db.record_mlb_price_snapshot(
+                    sig["id"], sig.get("game_pk"),
+                    best_bid=book.get("best_bid"), best_ask=book.get("best_ask"),
+                    phase="open",
+                )
             if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
                 if db.resolve_mlb_signal(sig["id"], "stop", exit_price=stop):
                     # AUDITORÍA (07/09/2026): equity propio del módulo MLB
@@ -1198,6 +1321,7 @@ def run_mlb_track_results():
         "status": "ok", "resolved": resolved,
         "still_open": len(open_signals) - len(resolved),
         "skipped_no_time": len(open_signals) - checked,
+        "shadow_watch": _track_mlb_stop_shadows(db, client, time_left),
     }
 
 
