@@ -168,6 +168,28 @@ class Config:
     # cortar antes algunos trades que hubieran seguido corriendo.
     TRAIL_BREAKEVEN_ATR_MULT = _float("TRAIL_BREAKEVEN_ATR_MULT", 1.0)
     TRAIL_ATR_MULT = _float("TRAIL_ATR_MULT", 1.2)
+
+    # NUEVO (17/09/2026, pedido del usuario -- "¿no podría ser un valor no
+    # fijo, que lo analice según el movimiento que lleve?"): auditoría con
+    # check_stop_noise.py (ventana 24h) mostró que 8 de 43 stops puros
+    # (18.6%) hubieran llegado igual al target si el trailing les daba más
+    # margen, y otros 11 se quedaron a mitad de camino (0.86R a 2.37R de
+    # ganancia real después del stop, sin llegar al 1.8R completo) -- en
+    # ambos casos son trades que YA venían corriendo bien cuando el
+    # trailing fijo de 1.2 ATR los sacó con una sacudida normal. En vez de
+    # ensanchar TRAIL_ATR_MULT para todos los trades (lo que también
+    # dejaría correr más a los que sí se estaban por dar vuelta de verdad),
+    # el trailing ahora se ensancha progresivamente según cuántos ATR de
+    # ganancia ya lleva el trade -- mismo principio que un "chandelier
+    # stop": a un trade que recién pasó breakeven se le sigue dando el
+    # mismo margen de siempre (TRAIL_ATR_MULT, sin cambios para el caso
+    # común), pero a uno que ya corrió varios ATR a favor se le da más
+    # espacio para respirar, porque una sacudida de esa magnitud es
+    # proporcionalmente más normal en un movimiento que ya se demostró
+    # fuerte. TRAIL_ATR_MULT_MAX pone un techo para no aflojar sin límite
+    # en una racha excepcional. Ver _trailing_mult() en position_manager.py.
+    TRAIL_ATR_MULT_GROWTH = _float("TRAIL_ATR_MULT_GROWTH", 0.4)
+    TRAIL_ATR_MULT_MAX = _float("TRAIL_ATR_MULT_MAX", 2.5)
     
     # NUEVO: Filtro de Spread/Liquidez
     MAX_SPREAD_PCT = _float("MAX_SPREAD_PCT", 0.5)  # Máximo 0.5% de diferencia entre bid y ask
@@ -445,26 +467,6 @@ class Config:
     # cerrar la señal si el precio cae 20% desde el precio de entrada.
     # Ver run_weather_track_results / run_mlb_track_results en app.py.
     WEATHER_MLB_STOP_LOSS_PCT = _float("WEATHER_MLB_STOP_LOSS_PCT", 0.20)
-
-    # AUDITORÍA (16/09/2026, pedido del usuario -- "confirmar que el stop no
-    # corte señales ganadoras"): analyze_mlb_stop_losses.py corrió contra las
-    # 92 señales de mlb_signals con outcome='stop' hasta esa fecha, resolviendo
-    # cada una contra el resultado REAL del partido (fetch_game_result()).
-    # Resultado: 76/92 (83%, 80% incluso deduplicando por game_pk+direction)
-    # HABRÍAN GANADO si no se cortaban -- muy por encima del 38% de win rate
-    # real de las señales que sí llegaron a resolución. El stop del 20% no
-    # está filtrando señales malas: en MLB está cortando ruido normal de
-    # precio pre-partido, que en la enorme mayoría de los casos revierte a
-    # favor del lado comprado para cuando el partido termina. Se desactiva
-    # el stop-loss para MLB por default (queda el toggle por si se quiere
-    # reactivar tras investigar más, ej. acotado a movimientos que sí
-    # correlacionan con noticia real como scratch de abridor). Clima usa el
-    # mismo WEATHER_MLB_STOP_LOSS_PCT de arriba sin cambios -- no se corrió
-    # todavía el mismo análisis para clima (analyze_mlb_stop_losses.py es
-    # específico de MLB por game_pk; para clima faltaría parsear el rango de
-    # temperatura del bucket desde `question`), así que no hay evidencia
-    # todavía de que el mismo problema aplique ahí.
-    MLB_STOP_LOSS_ENABLED = _bool("MLB_STOP_LOSS_ENABLED", False)
 
     # AUDITORÍA (09/09/2026, pedido del usuario -- "saltos" raros en el
     # equity de MLB): _half_kelly_fraction() en weather_signal_engine.py no
