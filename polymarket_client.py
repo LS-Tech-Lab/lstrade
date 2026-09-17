@@ -244,7 +244,32 @@ class PolymarketClient:
         verdad. El esquema de la CLOB API es distinto al de Gamma (tokens es
         una lista de {token_id, outcome, price, winner}, no hay `liquidity` ni
         `outcomePrices` como en Gamma), así que este método devuelve un dict
-        chico propio en vez de reusar parse_market_for_analysis()."""
+        chico propio en vez de reusar parse_market_for_analysis().
+
+        FIX (17/09/2026, pedido del usuario -- auditoría con
+        check_stop_noise_polymarket.py sobre datos reales): el 92.7% de las
+        398 señales de Polymarket genérico cerradas por stop mostraban un
+        patrón imposible -- 100% de las de dirección YES con final_price
+        EXACTO 0.0, 100% de las de dirección NO con final_price EXACTO 1.0,
+        sin un solo valor intermedio en 398 mercados distintos. Causa: el
+        loop de abajo buscaba un token con outcome literalmente "YES", que
+        solo existe en mercados fraseados como pregunta Sí/No real (ej.
+        "¿Va a pasar X?"). Para partidos (equipo vs equipo, esports,
+        Over/Under) el token no se llama "Yes"/"No" -- se llama por el
+        nombre real del outcome -- así que el loop nunca lo encontraba y
+        yes_price se quedaba pegado en el default 0.0, dejando parecer que
+        toda señal YES perdió y toda señal NO ganó, sin importar el
+        resultado real. Ya existía el fix correcto para este mismo problema
+        en parse_market_for_analysis() (ver "Fallback si el mercado no es
+        Yes/No" más arriba en este archivo), pero nunca se replicó acá.
+        Mismo criterio ahora: si no hay un token literal "YES", se usa el
+        primer token de la lista que devuelve la CLOB API -- Polymarket
+        documenta que clobTokenIds[0] es siempre el token Yes
+        (docs.polymarket.com/quickstart: "The first ID is the Yes token,
+        the second is the No token"), sea cual sea su label de display.
+        Esto afecta a run_weather_track_results, run_mlb_track_results
+        (rama de fallback sin book) y check_open_signals -- todos comparten
+        este método."""
         try:
             resp = self.session.get(f"{CLOB_API}/markets/{condition_id}", timeout=timeout)
             resp.raise_for_status()
@@ -256,11 +281,16 @@ class PolymarketClient:
                 )
                 return None
 
+            tokens = data.get("tokens", [])
             yes_price = 0.0
-            for token in data.get("tokens", []):
+            found_literal_yes = False
+            for token in tokens:
                 if str(token.get("outcome", "")).upper() == "YES":
                     yes_price = float(token.get("price", 0) or 0)
+                    found_literal_yes = True
                     break
+            if not found_literal_yes and tokens:
+                yes_price = float(tokens[0].get("price", 0) or 0)
 
             return {
                 "condition_id": data.get("condition_id"),
