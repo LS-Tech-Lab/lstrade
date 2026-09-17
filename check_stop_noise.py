@@ -99,6 +99,22 @@ def analyze(exchange, trade, hours_forward):
     if not candles:
         return None
 
+    # AUDITORÍA (17/09/2026, pedido del usuario -- ventana de 24h reveló
+    # varios SHORT con MFE grande pero hit_target_after=False, matemáticamente
+    # inconsistente si las velas realmente arrancan en `since` y van
+    # ordenadas -- posible señal de que el exchange no honró `since` como se
+    # esperaba (quirk conocido de ccxt con algunos exchanges) o de que
+    # llegaron desordenadas. Dos chequeos baratos para no confiar ciego en
+    # el resultado:
+    candles = sorted(candles, key=lambda c: c["ts"])
+    first_gap_hours = abs(candles[0]["ts"] - since_ms) / 3_600_000
+    if first_gap_hours > 2 * _timeframe_hours():
+        print(
+            f"  [SOSPECHOSO] {symbol} {trade['ts_closed']}: la primera vela devuelta "
+            f"está a {first_gap_hours:.1f}h de `since` (se esperaba ~0) -- el exchange "
+            f"puede no haber respetado el punto de partida pedido, no confiar en este resultado."
+        )
+
     hit_target = False
     best_favorable = trade["exit_price"]
     for c in candles:
@@ -122,6 +138,22 @@ def analyze(exchange, trade, hours_forward):
         if best_favorable < trade["exit_price"]:
             mfe_r = 0.0
 
+    # Distancia (en unidades de stop_distance) desde exit_price hasta el
+    # target reconstruido. Si mfe_r la superó, el bucle de arriba TENÍA que
+    # haber marcado hit_target=True en esa misma vela -- si no lo hizo, algo
+    # no cierra (ver el chequeo de `since` más arriba; puede ser la misma
+    # causa, o una vela con high/low invertido, o `Config.MIN_RR` real
+    # distinto al usado para reconstruir el target de esta señal en
+    # particular). Se marca en vez de fallar en silencio.
+    target_dist_from_exit = abs(target - trade["exit_price"]) / stop_distance if stop_distance else 0.0
+    sospechoso = (not hit_target) and mfe_r >= target_dist_from_exit
+    if sospechoso:
+        print(
+            f"  [SOSPECHOSO] {symbol} {trade['ts_closed']}: mfe_r={mfe_r:.2f} >= "
+            f"distancia al target ({target_dist_from_exit:.2f}) pero hit_target_after=False "
+            f"-- no debería ser matemáticamente posible, no confiar en esta fila sin revisar."
+        )
+
     return {
         "symbol": symbol,
         "direction": direction,
@@ -130,6 +162,7 @@ def analyze(exchange, trade, hours_forward):
         "target": target,
         "hit_target_after": hit_target,
         "mfe_r_after_stop": round(mfe_r, 2),
+        "sospechoso": sospechoso,
     }
 
 
@@ -181,9 +214,13 @@ def main():
 
     n_recovered = sum(1 for r in results if r["hit_target_after"])
     pct = 100 * n_recovered / len(results)
+    n_sospechosos = sum(1 for r in results if r.get("sospechoso"))
     print(f"\n=== RESUMEN ===")
     print(f"Analizados: {len(results)}")
     print(f"Hubieran llegado al target igual (posible corte por ruido): {n_recovered} ({pct:.1f}%)")
+    if n_sospechosos:
+        print(f"⚠️  {n_sospechosos} fila(s) marcadas [SOSPECHOSO] arriba -- inconsistencia matemática "
+              f"entre MFE y hit_target_after, revisar antes de confiar en el {pct:.1f}% de arriba.")
     avg_mfe = sum(r["mfe_r_after_stop"] for r in results) / len(results)
     print(f"MFE promedio post-stop (entre los que NO llegaron al target): "
           f"{sum(r['mfe_r_after_stop'] for r in results if not r['hit_target_after']) / max(1, len(results) - n_recovered):.2f}R")
@@ -191,4 +228,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(
