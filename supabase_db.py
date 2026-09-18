@@ -7,7 +7,11 @@ import time
 from datetime import datetime, timezone, timedelta
 from supabase import create_client
 
-from weather_signal_engine import _half_kelly_fraction
+# FIX (18/09/2026): _half_kelly_fraction ya no se llama desde acá -- el
+# cálculo se movió a la función de Postgres apply_binary_signal_pnl (ver
+# migración add_atomic_kelly_and_r_multiple_pnl) para que corra atómico
+# bajo el mismo lock que lee el equity. Se deja de importar para no tener
+# un import sin uso real (la lógica que reemplaza vive documentada ahí).
 from config import Config
 
 def _now_iso():
@@ -134,25 +138,27 @@ class SupabaseDatabase:
         unificó todo a $20 y se rescaló x0.2 el historial completo en la
         misma migración que baja este número).
         """
-        base = self.last_equity(module)
-        if base is None:
-            base = 20.0
-
-        kelly = _half_kelly_fraction(my_prob, market_price, max_pct=Config.MAX_KELLY_STAKE_PCT)
-        pnl = 0.0
-        stake = 0.0
-        if kelly and kelly > 0 and market_price and market_price > 0:
-            stake = base * kelly
-            if outcome in ("yes", "win"):
-                pnl = stake * (1 - market_price) / market_price
-            elif outcome in ("no", "loss"):
-                pnl = -stake
-            elif outcome == "stop" and exit_price is not None:
-                pnl = stake * (exit_price - market_price) / market_price
-            # "void" u otro outcome: pnl se queda en 0.0 -- sin apuesta real que resolver.
-
-        new_equity = base + pnl
-        self.record_equity(new_equity, module=module)
+        # FIX (18/09/2026, auditoría): el cálculo completo (fracción de
+        # Kelly, stake, pnl) se movió a la función de Postgres
+        # apply_binary_signal_pnl (ver migración
+        # add_atomic_kelly_and_r_multiple_pnl) -- antes `base` se leía acá
+        # afuera de cualquier lock, así que dos señales del mismo módulo
+        # resolviendo casi al mismo segundo podían calcular su stake contra
+        # el MISMO equity viejo, no solo pisarse el resultado final en
+        # equity_history. La RPC hace el select+cálculo+insert en una sola
+        # transacción con pg_advisory_xact_lock(hashtext(module)), mismo
+        # mecanismo que increment_equity.
+        result = _with_retry(lambda: self.client.rpc("apply_binary_signal_pnl", {
+            "p_module": module,
+            "p_my_prob": my_prob,
+            "p_market_price": market_price,
+            "p_outcome": outcome,
+            "p_exit_price": exit_price,
+            "p_max_kelly_pct": Config.MAX_KELLY_STAKE_PCT,
+            "p_default": 20.0,
+        }).execute())
+        data = result.data or {}
+        new_equity, stake, pnl = data.get("new_equity"), data.get("stake", 0.0), data.get("pnl", 0.0)
 
         if signal_id is not None and signal_table is not None:
             try:
@@ -189,13 +195,19 @@ class SupabaseDatabase:
         signal_id/signal_table (mismo criterio: informativo, si falla no
         debe tumbar el tracking real de equity).
         """
-        base = self.last_equity(module)
-        if base is None:
-            base = 20.0
-        risk_amount = base * (risk_pct / 100.0)
-        pnl = risk_amount * r_multiple
-        new_equity = base + pnl
-        self.record_equity(new_equity, module=module)
+        # FIX (18/09/2026, auditoría): mismo cambio que en
+        # apply_binary_signal_pnl -- el cálculo (risk_amount, pnl) se mueve
+        # a la función de Postgres apply_r_multiple_pnl bajo el mismo
+        # pg_advisory_xact_lock, para que el % de riesgo se calcule contra
+        # el equity ya actualizado y no uno leído afuera del lock.
+        result = _with_retry(lambda: self.client.rpc("apply_r_multiple_pnl", {
+            "p_module": module,
+            "p_r_multiple": r_multiple,
+            "p_risk_pct": risk_pct,
+            "p_default": 20.0,
+        }).execute())
+        data = result.data or {}
+        new_equity, risk_amount, pnl = data.get("new_equity"), data.get("stake", 0.0), data.get("pnl", 0.0)
 
         if signal_id is not None and signal_table is not None:
             try:
