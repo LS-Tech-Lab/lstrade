@@ -28,6 +28,17 @@ class Executor:
 
             order = self.exchange_client.create_order(symbol, side, amount, order_type=self.config.ORDER_TYPE)
 
+            # FIX (18/09/2026, auditoría): fill_price guarda el precio REAL de
+            # llenado que devuelve el exchange, para que el caller (app.py)
+            # lo persista en add_open_trade en vez de plan["entry"] (el precio
+            # TEÓRICO de la señal). Arranca con lo que venga en la respuesta
+            # de create_order (a veces ya trae average/price), y se pisa más
+            # abajo con el valor de fetch_order si está disponible, que es más
+            # confiable porque consulta el estado post-ejecución real.
+            fill_price = None
+            if isinstance(order, dict):
+                fill_price = order.get("average") or order.get("price")
+
             # NUEVO (Semana 1): Validación de llenado parcial (Partial Fill).
             # Si la orden es límite o hay baja liquidez, puede no llenarse al 100%.
             # Verificamos el estado real para ajustar el stop-loss al tamaño ejecutado.
@@ -36,6 +47,15 @@ class Executor:
                 try:
                     order_status = self.exchange_client.fetch_order(order["id"], symbol)
                     actual_filled = float(order_status.get("filled", 0) or 0)
+                    # FIX (18/09/2026): el fill real (average/price) sale de
+                    # fetch_order, no de la respuesta de create_order -- en
+                    # pares poco líquidos con ORDER_TYPE=market el precio de
+                    # ejecución casi seguro difiere del precio de señal por
+                    # slippage, y create_order puede devolver el average en
+                    # None si todavía no se propagó cuando se creó la orden.
+                    actual_average = order_status.get("average") or order_status.get("price")
+                    if actual_average:
+                        fill_price = actual_average
                     # FIX (auditoría 02/09/2026): la condición anterior era
                     # `actual_filled > 0 and actual_filled < amount * 0.95`,
                     # así que si la orden todavía tenía CERO llenado (ej.
@@ -74,6 +94,7 @@ class Executor:
             return {
                 "mode": "live", "status": "filled", "order": order,
                 "stop_order": stop_order, "stop_order_error": stop_error,
+                "fill_price": fill_price,
             }
         except Exception as e:
             log.exception(f"Error ejecutando orden real en {symbol}: {e}")
