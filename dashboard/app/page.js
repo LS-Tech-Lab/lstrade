@@ -781,9 +781,19 @@ function CryptoResolvedTable({ rows }) {
       keyExtractor={(r) => r.id}
       emptyMessage="Todavía no hay trades de Cripto cerrados."
       renderFields={(r) => {
-        const isWin = r.outcome === "target";
+        // FIX (18/09/2026): antes "isWin" salía de outcome === "target",
+        // igual que el bug ya corregido el 08/09 en computeStats (route.js)
+        // para el win_rate agregado -- un trade que cierra por trailing
+        // stop en verde (outcome="stop" con r_multiple>0) se mostraba acá
+        // como derrota (badge rojo "TOCÓ STOP"), aunque el win rate de
+        // arriba ya lo contaba bien como ganancia. Ahora el veredicto
+        // (color/tone) sale del signo de r_multiple, igual que route.js;
+        // outcome solo decide el texto informativo del motivo de salida.
+        const isWin = r.r_multiple !== null && r.r_multiple !== undefined && r.r_multiple > 0;
         const badgeClass = isWin ? "result-win" : "result-loss";
-        const badgeText = isWin ? "✅ TOCÓ TARGET" : "🛑 TOCÓ STOP";
+        const badgeText = r.outcome === "target"
+          ? "✅ TOCÓ TARGET"
+          : (isWin ? "✅ STOP EN GANANCIA" : "🛑 TOCÓ STOP");
         return (
           <>
             <RowField label="Símbolo" value={r.symbol} />
