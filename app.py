@@ -369,8 +369,20 @@ def run_cycle():
             stop_order.get("id") if isinstance(stop_order, dict)
             else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
         )
+        # FIX (18/09/2026, auditoría — CRÍTICO): antes se guardaba plan["entry"]
+        # (el precio TEÓRICO de la señal) también en modo LIVE. Con
+        # ORDER_TYPE=market en pares poco líquidos el fill real casi seguro
+        # difiere por slippage, así que todo r_multiple/pnl_dollars calculado
+        # desde ahí en adelante quedaba referido a un precio de entrada que
+        # nunca existió. Ahora se usa el fill real que devuelve executor.py
+        # (order_detail["fill_price"]), con fallback a plan["entry"] solo si
+        # el exchange no lo devolvió (no debería pasar con status "filled",
+        # pero no queremos que add_open_trade reciba None).
+        real_entry = (
+            order_detail.get("fill_price") if isinstance(order_detail, dict) else None
+        ) or plan["entry"]
         db.add_open_trade(
-            best_symbol, best_signal["direction"], plan["entry"], plan["stop"], plan["target"],
+            best_symbol, best_signal["direction"], real_entry, plan["stop"], plan["target"],
             plan["position_size"], order_id,
             setup_type=best_signal.get("type"), confidence=best_signal.get("confidence"), score=best_signal.get("score"),
             decision_id=decision_id, stake_dollars=plan.get("risk_amount"),
@@ -1696,8 +1708,16 @@ def handle_update(update):
                 stop_order.get("id") if isinstance(stop_order, dict)
                 else order_detail.get("order", {}).get("id") if isinstance(order_detail, dict) else None
             )
+            # FIX (18/09/2026, auditoría — mismo bug y mismo fix que en
+            # run_cycle()/AUTO_EXECUTE más arriba): este flujo de aprobación
+            # manual tenía el mismo problema, plan["entry"] en vez del fill
+            # real. En "simulated" (modo papel) fill_price es None y el
+            # fallback usa plan["entry"] como siempre.
+            real_entry = (
+                order_detail.get("fill_price") if isinstance(order_detail, dict) else None
+            ) or plan["entry"]
             db.add_open_trade(
-                symbol, signal["direction"], plan["entry"], plan["stop"],
+                symbol, signal["direction"], real_entry, plan["stop"],
                 plan["target"], plan["position_size"], order_id,
                 setup_type=signal.get("type"), confidence=signal.get("confidence"), score=signal.get("score"),
                 decision_id=decision_id, stake_dollars=plan.get("risk_amount") if plan else None,
