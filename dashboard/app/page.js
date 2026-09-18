@@ -53,7 +53,12 @@ function formatPrice(price) {
   if (price === null || price === undefined || Number.isNaN(price)) return "—";
   const abs = Math.abs(price);
   const decimals = abs >= 1000 ? 2 : abs >= 1 ? 4 : abs >= 0.01 ? 6 : 8;
-  return Number(price).toLocaleString(undefined, { maximumFractionDigits: decimals, minimumFractionDigits: 2 });
+  // FIX (18/09/2026, auditoría, menor): "undefined" como locale usa el del
+  // navegador de quien mira el dashboard -- en un locale que usa "." como
+  // separador de miles, "$2.524" se leía como 2 con decimales en vez de
+  // 2524. Locale fijo en "en-US" para que el formato no dependa de quién
+  // esté mirando.
+  return Number(price).toLocaleString("en-US", { maximumFractionDigits: decimals, minimumFractionDigits: 2 });
 }
 
 function formatMoney(price) {
