@@ -417,10 +417,17 @@ class SupabaseDatabase:
         # (pnl_dollars ya se calculó arriba, antes del insert, para poder
         # persistirlo en la fila -- acá solo se usa para mover el equity.)
         if pnl_dollars is not None:
-            base_equity = self.last_equity("crypto")
-            if base_equity is None:
-                base_equity = 20.0
-            self.record_equity(base_equity + pnl_dollars, module="crypto")
+            # FIX (18/09/2026, auditoría): last_equity() (lectura) + record_equity()
+            # (escritura) por separado no era atómico -- dos trades cerrando casi
+            # al mismo segundo podían leer el mismo last_equity y el que escribe
+            # segundo pisaba el pnl_dollars del primero en la curva de equity
+            # (closed_trades quedaba bien, solo el gráfico se desincronizaba).
+            # increment_equity() es una función de Postgres (ver migración
+            # add_increment_equity_atomic) que hace el select+insert en una sola
+            # transacción con pg_advisory_xact_lock, serializando por módulo.
+            _with_retry(lambda: self.client.rpc(
+                "increment_equity", {"p_module": "crypto", "p_delta": pnl_dollars, "p_default": 20.0}
+            ).execute())
 
         return r_multiple, pnl_dollars
 
