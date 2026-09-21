@@ -23,6 +23,23 @@ class ExchangeClient:
             params["password"] = config.API_PASSWORD
         self.exchange = exchange_class(params)
 
+        # NUEVO (activación OKX live, 20/09/2026): set_sandbox_mode(True)
+        # es el mecanismo genérico de ccxt para correr contra el entorno
+        # demo del exchange en vez de producción -- para OKX puntualmente
+        # esto agrega el header x-simulated-trading:1 a cada request. Usa
+        # las MISMAS credenciales de la cuenta demo (OKX las genera aparte
+        # de las de producción), así que EXCHANGE_SANDBOX=true sin haber
+        # cargado credenciales de demo va a fallar auth igual que si
+        # faltaran del todo -- no hay forma de "adivinar" el entorno
+        # correcto desde acá. Si el exchange no soporta sandbox en ccxt,
+        # set_sandbox_mode no rompe: ccxt simplemente no hace nada.
+        if getattr(config, "EXCHANGE_SANDBOX", False):
+            self.exchange.set_sandbox_mode(True)
+            log.warning(
+                f"[SANDBOX] {config.EXCHANGE_ID} corriendo en modo demo/sandbox "
+                f"(EXCHANGE_SANDBOX=true) -- ninguna orden acá es real."
+            )
+
     def fetch_ohlcv(self, symbol, timeframe=None, limit=None, since=None):
         timeframe = timeframe or self.config.TIMEFRAME
         limit = limit or self.config.CANDLE_LIMIT
