@@ -205,6 +205,29 @@ class Config:
     AUTO_EXECUTE = _bool("AUTO_EXECUTE", False)
     ORDER_TYPE = os.getenv("ORDER_TYPE", "market")
 
+    # NUEVO (activación OKX live, 20/09/2026): permite correr contra el
+    # demo trading del exchange (misma API real, sin plata real) antes de
+    # pasar a producción. ccxt expone set_sandbox_mode() para esto; OKX en
+    # particular lo implementa vía el header x-simulated-trading:1, así
+    # que basta con este flag genérico para cualquier exchange soportado
+    # por ccxt, no solo OKX. Default False para no cambiar el comportamiento
+    # de nadie que ya esté corriendo en real o en papel.
+    EXCHANGE_SANDBOX = _bool("EXCHANGE_SANDBOX", False)
+
+    # NUEVO (activación OKX live, 20/09/2026): signal_engine.py genera
+    # señales LONG y SHORT indistintamente, pero una cuenta OKX *spot*
+    # (sin margin/futuros habilitado) no puede vender un activo que no
+    # tiene -- una señal SHORT ejecutada ahí falla o, si la cuenta sí
+    # tiene margin habilitado sin que se haya decidido a propósito, abre
+    # una posición apalancada no planeada. Default False (spot-only) hasta
+    # que se confirme explícitamente que la cuenta soporta short selling.
+    ALLOW_SHORT = _bool("ALLOW_SHORT", False)
+
+    # Exchanges ccxt que exigen passphrase (API_PASSWORD) además de
+    # key/secret -- OKX es el caso que nos ocupa, pero se deja la lista
+    # abierta para no repetir este bug con otro exchange más adelante.
+    _EXCHANGES_REQUIRING_PASSWORD = {"okx", "kucoin", "kucoinfutures", "bitget"}
+
     LOOP_INTERVAL_SECONDS = _int("LOOP_INTERVAL_SECONDS", 300)
     DB_PATH = os.getenv("DB_PATH", "trader_ia_247.db")
 
@@ -585,6 +608,21 @@ class Config:
         problems = []
         if cls.LIVE_TRADING and (not cls.API_KEY or not cls.API_SECRET):
             problems.append("LIVE_TRADING=true pero falta API_KEY/API_SECRET en .env")
+        # NUEVO (activación OKX live, 20/09/2026): antes esto no se
+        # chequeaba -- con EXCHANGE_ID=okx y API_PASSWORD vacío, ccxt
+        # recién fallaba al hacer la primera request autenticada real
+        # (create_order), no acá. Ver también el fix en app.py: esta
+        # función ahora se llama también al arrancar run_cycle(), no solo
+        # en main.py (que ni siquiera corre en Vercel).
+        if (
+            cls.LIVE_TRADING
+            and cls.EXCHANGE_ID.lower() in cls._EXCHANGES_REQUIRING_PASSWORD
+            and not cls.API_PASSWORD
+        ):
+            problems.append(
+                f"LIVE_TRADING=true con EXCHANGE_ID={cls.EXCHANGE_ID} pero falta "
+                f"API_PASSWORD (passphrase) en .env"
+            )
         if not cls.SYMBOLS:
             problems.append("SYMBOLS está vacío")
         if cls.NOTIFY_TELEGRAM and (not cls.TELEGRAM_BOT_TOKEN or not cls.TELEGRAM_CHAT_ID):
