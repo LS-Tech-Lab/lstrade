@@ -146,6 +146,18 @@ def build_memo_markdown(symbol, signal, risk_report, plan, deadline_seconds=None
 def run_cycle():
     config = Config
 
+    # NUEVO (activación OKX live, 20/09/2026): Config.validate() existía
+    # desde antes pero solo se llamaba en main.py (modo VPS), que está
+    # excluido del build por .vercelignore y nunca corre en producción --
+    # app.py/run_cycle() es lo que realmente ejecuta Vercel, y hasta ahora
+    # una config rota (ej. LIVE_TRADING=true sin API_PASSWORD en un
+    # exchange que lo exige, como OKX) recién se descubría cuando fallaba
+    # la primera orden real. Ahora aborta acá, con un mensaje claro, antes
+    # de tocar el exchange para nada.
+    config_problems = config.validate()
+    if config_problems:
+        return {"status": "config_error", "problems": config_problems}
+
     # FIX (02/09/2026): el reloj del time budget arrancaba recién antes del
     # loop de escaneo, pero position_manager.manage_open_positions() (2
     # llamadas de red sin límite por cada posición abierta), el health check
@@ -294,6 +306,16 @@ def run_cycle():
         # corría siempre con el default hardcodeado en signal_engine.py
         # (0.03) sin ningún knob para subirlo -- ver config.CRYPTO_MIN_SCORE.
         signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias, min_score=config.CRYPTO_MIN_SCORE)
+        # NUEVO (activación OKX live, 20/09/2026): generate_signal() no
+        # distingue LONG/SHORT según lo que la cuenta puede operar --
+        # una cuenta OKX spot-only no puede vender un activo que no
+        # tiene. Se descarta acá, antes de competir por "mejor señal",
+        # para que ni siquiera aparezca en logs/Telegram como candidata
+        # si ALLOW_SHORT sigue en su default (False). Cuando se confirme
+        # que la cuenta soporta short (margin/futuros) y se decida a
+        # propósito, ALLOW_SHORT=true la vuelve a habilitar.
+        if signal and signal["direction"] == "SHORT" and not config.ALLOW_SHORT:
+            signal = None
         if signal and (best_signal is None or signal["score"] > best_signal["score"]):
             best_signal, best_symbol = signal, symbol
 
