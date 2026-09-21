@@ -114,6 +114,11 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
         # AUDITORÍA (08/09/2026): ver mismo cambio en app.py -- antes corría
         # con el default hardcodeado de signal_engine.py (0.03).
         signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias, min_score=config.CRYPTO_MIN_SCORE)
+        # NUEVO (activación OKX live, 20/09/2026): ver mismo fix y motivo en
+        # app.py -- se mantiene el mismo criterio en el modo VPS por
+        # consistencia, aunque hoy este archivo no se despliega en Vercel.
+        if signal and signal["direction"] == "SHORT" and not config.ALLOW_SHORT:
+            signal = None
         if signal:
             risk_report = risk_manager.check(symbol, signal, equity, ticker=ticker)
             if risk_report["pass"] and (best_signal is None or signal["score"] > best_signal["score"]):
