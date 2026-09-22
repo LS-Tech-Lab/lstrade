@@ -220,6 +220,35 @@ class SupabaseDatabase:
 
         return new_equity
 
+    def record_equity_sync_failure(self, module, fn_name, error, signal_id=None, signal_table=None):
+        """
+        NUEVO (22/09/2026, pedido del usuario): hasta ahora, si
+        apply_binary_signal_pnl/apply_r_multiple_pnl tiraban excepción
+        dentro de _safe_apply_pnl (app.py), lo único que quedaba era un
+        print() en los logs de Vercel -- efímeros y solo visibles si
+        alguien los está mirando en el momento exacto. Encontramos un caso
+        real (11/09/2026, ventana 04:00-10:45 UTC) donde el RPC completo
+        falló para 6 señales de MLB sin dejar rastro en equity_history ni
+        en mlb_signals.stake_dollars/pnl_dollars -- se detectó recién el
+        22/09 revisando manualmente. Esta tabla (equity_sync_failures) es
+        el registro persistente y consultable de esos fallos.
+
+        Igual que apply_binary_signal_pnl/apply_r_multiple_pnl, esto es
+        tracking secundario: si el insert acá adentro falla, no debe
+        romper nada más arriba (se llama ya dentro de un except en
+        _safe_apply_pnl).
+        """
+        try:
+            self.client.table("equity_sync_failures").insert({
+                "module": module,
+                "fn_name": fn_name,
+                "signal_id": signal_id,
+                "signal_table": signal_table,
+                "error": str(error)[:2000],
+            }).execute()
+        except Exception:
+            pass  # ver docstring -- esto es el propio mecanismo de "no romper nada", no puede fallar hacia arriba
+
     def current_exposure_pct(self, equity):
         cutoff = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         res = _with_retry(lambda: self.client.table("decisions").select("plan_detail").in_("decision", ["approved", "auto_executed"]).gte("ts", cutoff).execute())
