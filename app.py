@@ -609,6 +609,11 @@ async def polymarket_history(request: Request):
 
 def run_weather_cycle():
     config = Config
+    # DESACTIVADO (22/09/2026): módulo de clima apagado por decisión del
+    # usuario (bajo rendimiento + consumo de recursos) -- ver comentario
+    # completo en Config.WEATHER_ANALYSIS_ENABLED (config.py). Este return
+    # temprano evita instanciar SupabaseDatabase/PolymarketClient/notifier
+    # y cualquier llamada de red mientras el flag esté en False.
     if not config.WEATHER_ANALYSIS_ENABLED:
         return {"status": "disabled"}
 
@@ -1453,7 +1458,17 @@ def run_weather_track_results():
     (weather_signal_engine.py lo usa al generar la señal original, vía
     _capped_timeout) pero no estaba conectado acá -- ahora también acorta
     su propio timeout interno si queda poco presupuesto, en vez de arrancar
-    una llamada de hasta 6s fijos sin importar cuánto quede."""
+    una llamada de hasta 6s fijos sin importar cuánto quede.
+
+    DESACTIVADO (22/09/2026): el módulo de clima se apagó (ver comentario
+    en Config.WEATHER_ANALYSIS_ENABLED, config.py) por bajo rendimiento y
+    consumo de recursos -- pero esta función NO respeta ese flag a propósito.
+    Su trabajo es resolver señales ya abiertas contra el resultado real, y
+    apagarla de golpe dejaría cualquier señal de clima pendiente "abierta"
+    para siempre, rompiendo el historial/equity. Se deja correr hasta que
+    open_signals quede vacío (ver chequeo debajo) -- a partir de ahí el
+    costo de cada corrida es una sola query a Supabase, sin llamadas de red
+    externas."""
     started = time.monotonic()
     time_budget = float(os.environ.get("WEATHER_TRACK_TIME_BUDGET_SECONDS", "20.0"))
 

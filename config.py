@@ -362,15 +362,32 @@ class Config:
     # más liquidez no cambia la ejecución real de un trade de este tamaño.
     POLYMARKET_LIQUIDITY_SCORE_REF = _float("POLYMARKET_LIQUIDITY_SCORE_REF", 20000.0)
 
-    # NUEVO: módulo de análisis de clima (weather_signal_engine.py) — usa
-    # fuentes oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
+    # Módulo de análisis de clima (weather_signal_engine.py) — usa fuentes
+    # oficiales gratis (NWS + METAR/TAF de aviationweather.gov) para
     # estimar la distribución de probabilidad de la máxima del día y
     # compararla contra los precios de los buckets de Polymarket. Corre
     # separado del ciclo de precio/momentum (/api/weather_cycle en app.py,
     # propio cron externo) porque las llamadas de red que necesita (NWS points +
     # forecast + METAR + TAF por evento) no entran cómodas en el
     # presupuesto de 10s del ciclo principal.
-    WEATHER_ANALYSIS_ENABLED = _bool("WEATHER_ANALYSIS_ENABLED", True)
+    #
+    # DESACTIVADO (22/09/2026): decisión del usuario de apagar el módulo --
+    # no estaba mejorando los números (a diferencia de MLB/Polymarket
+    # genérico, nunca mostró edge real sostenido) y competía por recursos
+    # (tiempo de ciclo, cron-jobs, llamadas de red) con los otros tres
+    # módulos activos (cripto, Polymarket genérico, MLB). No es un bug ni
+    # un hallazgo de auditoría -- es una decisión de producto. run_weather_cycle()
+    # (app.py) respeta este flag y no genera señales nuevas ni consume
+    # presupuesto de tiempo/red cuando está en False. run_weather_track_results()
+    # (app.py) sigue activo a propósito para resolver limpiamente cualquier
+    # señal que haya quedado abierta antes de este cambio -- una vez que no
+    # queden señales de clima abiertas, ese endpoint también pasa a ser
+    # prácticamente gratis (una sola query a Supabase, sin llamadas de red
+    # externas). Para reactivar el módulo: volver este flag a True (o
+    # setear WEATHER_ANALYSIS_ENABLED=true en Vercel) y reactivar los
+    # cron-jobs de /api/weather_cycle y /api/weather_track_results en
+    # cron-job.org.
+    WEATHER_ANALYSIS_ENABLED = _bool("WEATHER_ANALYSIS_ENABLED", False)
 
     # api.weather.gov exige un User-Agent identificable (no un navegador
     # genérico) — poné acá un contacto real (app + email/repo), si no NWS

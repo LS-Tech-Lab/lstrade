@@ -1,6 +1,17 @@
 "use client";
 import { Fragment, useEffect, useRef, useState } from "react";
 
+// DESACTIVADO (22/09/2026): módulo de clima apagado en el backend
+// (Config.WEATHER_ANALYSIS_ENABLED en config.py) por bajo rendimiento y
+// consumo de recursos -- se oculta también el tab acá para no confundir
+// con datos que ya no se actualizan con señales nuevas (las señales viejas
+// siguen resolviéndose vía /api/weather_track_results hasta agotarse, ver
+// comentario en app.py). El componente WeatherTab y sus datos NO se
+// borraron -- solo se dejan de mostrar. Para reactivar: volver esta
+// constante a true (y reactivar WEATHER_ANALYSIS_ENABLED + los cron-jobs
+// de clima en cron-job.org).
+const DASHBOARD_SHOW_WEATHER_TAB = false;
+
 // ────────────────────────────────────────────────────────────────────
 // Diccionario en español simple. Centraliza las explicaciones de los
 // términos técnicos (RSI, expectancy, profit factor, etc.) para que no
@@ -498,9 +509,11 @@ function Tabs({ active, onChange }) {
       <button className={`tab ${active === "polymarket" ? "active" : ""}`} onClick={() => onChange("polymarket")}>
         Polymarket
       </button>
-      <button className={`tab ${active === "clima" ? "active" : ""}`} onClick={() => onChange("clima")}>
-        Clima
-      </button>
+      {DASHBOARD_SHOW_WEATHER_TAB && (
+        <button className={`tab ${active === "clima" ? "active" : ""}`} onClick={() => onChange("clima")}>
+          Clima
+        </button>
+      )}
       <button className={`tab ${active === "mlb" ? "active" : ""}`} onClick={() => onChange("mlb")}>
         MLB
       </button>
@@ -1768,7 +1781,7 @@ export default function Dashboard() {
       <Tabs active={tab} onChange={setTab} />
       {tab === "cripto" && <CriptoTab data={data} />}
       {tab === "polymarket" && <PolymarketTab data={data} />}
-      {tab === "clima" && <WeatherTab data={data} />}
+      {DASHBOARD_SHOW_WEATHER_TAB && tab === "clima" && <WeatherTab data={data} />}
       {tab === "mlb" && <MlbTab data={data} />}
     </div>
   );
