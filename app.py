@@ -94,11 +94,50 @@ def _safe_apply_pnl(fn, *args, **kwargs):
     parte de esta sesión arreglando, pero por una causa nueva y distinta.
     Un fallo en el tracking de equity (algo secundario/informativo) nunca
     debería poder frenar la resolución real de una señal (lo importante).
+
+    FIX (22/09/2026, pedido del usuario): hasta ahora el único rastro de
+    un fallo acá era este print(), que en Vercel es efímero -- se
+    encontró un caso real (11/09/2026) de 6 señales de MLB donde el RPC
+    completo falló en silencio y nadie se enteró hasta revisarlo a mano
+    11 días después. Ahora, además del print(): (1) se deja un registro
+    persistente/consultable en equity_sync_failures vía
+    db.record_equity_sync_failure() (mismo patrón "no debe romper nada" --
+    fn está bindeada a una instancia de SupabaseDatabase, se recupera con
+    fn.__self__), y (2) se manda una alerta a Telegram, con cooldown de
+    EQUITY_SYNC_ALERT_COOLDOWN_SECONDS (default 30min, vía bot_state) para
+    no floodear si la falla es sostenida (ej. la migración de una columna
+    nueva no corrida en Supabase, como ya pasó una vez) en vez de un caso
+    aislado -- igual se sigue registrando CADA fallo en la tabla, el
+    cooldown es solo para la notificación.
     """
+    module = args[0] if args else "?"
+    signal_id = kwargs.get("signal_id")
+    signal_table = kwargs.get("signal_table")
     try:
         fn(*args, **kwargs)
     except Exception as e:
-        print(f"[equity] no se pudo actualizar equity de {args[0] if args else '?'}: {e}")
+        print(f"[equity] no se pudo actualizar equity de {module}: {e}")
+
+        db = getattr(fn, "__self__", None)
+        if db is not None:
+            try:
+                db.record_equity_sync_failure(module, fn.__name__, e, signal_id=signal_id, signal_table=signal_table)
+            except Exception:
+                pass  # ver docstring de record_equity_sync_failure -- no puede fallar hacia arriba
+
+            try:
+                cooldown = float(os.environ.get("EQUITY_SYNC_ALERT_COOLDOWN_SECONDS", "1800"))
+                state_key = f"last_equity_sync_alert_ts:{module}"
+                last = float(db.get_state(state_key, "0") or 0)
+                now = time.time()
+                if now - last >= cooldown:
+                    TelegramNotifier(Config).send_alert(
+                        f"Fallo actualizando equity de *{module}* ({fn.__name__}): {e}\n"
+                        f"Señal ya resolvió bien (id {signal_id}), pero el tracking de equity/stake quedó sin registrar -- ver tabla equity_sync_failures."
+                    )
+                    db.set_state(state_key, str(now))
+            except Exception:
+                pass  # la alerta es best-effort, nunca debe frenar el loop de resolución
 
 def _maybe_send_heartbeat(db, notifier, equity, dd_pct, snapshots):
     if not notifier.enabled:
