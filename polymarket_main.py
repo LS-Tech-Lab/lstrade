@@ -273,8 +273,11 @@ def run_polymarket_cycle(config, client, notifier, state_store, db=None, top_n=N
                     # en los logs, varios segundos) sin importar qué endpoint se
                     # llamara -- confirmado como causa de al menos parte de los
                     # timeouts de 25s en /api/cycle (Vercel Runtime Logs, 08/09).
-                    # Ahora solo se paga ese costo la primera vez que hace falta
-                    # mandar un gráfico de verdad.
+                    # ACTUALIZACIÓN (22/09/2026): polymarket_chart.py ya no usa
+                    # matplotlib (ver ese archivo) -- el costo de fontManager que
+                    # motivó este import diferido ya no existe. Se deja el import
+                    # diferido de todas formas: no tiene downside y evita cargar
+                    # Pillow en endpoints que nunca mandan un gráfico.
                     from polymarket_chart import build_signal_chart
                     chart_png = build_signal_chart(signal, history)
                     notifier.send_photo(chart_png, caption=f"📈 {signal['market']['question'][:80]}")
