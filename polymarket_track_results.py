@@ -90,21 +90,47 @@ def check_open_signals(db, client, notifier, config, open_signals=None, time_bud
     log.info(f"Revisando {len(open_signals)} señal(es) pendiente(s)...")
     min_liquidity = getattr(config, "POLYMARKET_MIN_EXIT_LIQUIDITY", 500.0)
 
-    def fetch_history_for_signal(sig):
+    def fetch_snapshot_for_signal(sig):
+        # FIX (23/09/2026, auditoría pedida por el usuario sobre expectancy
+        # real de Polymarket vs. planeado): fetch_price_history con
+        # fidelity=60 trae una vela por HORA -- el cron corre cada 10 min
+        # (cron-job.org, /api/polymarket_cycle) pero el precio que este
+        # chequeo usaba solo se actualizaba 1 de cada 6 corridas. Medido
+        # sobre datos reales: 75% de los "target" y una fracción menor pero
+        # cara de los "stop" se resolvían por el fallback de "mercado
+        # cerrado sin cruce detectado" (ver más abajo) en vez de por un
+        # cruce limpio de precio, capturando en promedio 0.63R en vez de
+        # los 1.5R planeados (y hasta -3.7R en vez de -1R del lado de las
+        # pérdidas). fetch_order_book_snapshot ya existe en
+        # polymarket_client.py (lo usa weather_signal_engine.py para EV) y
+        # da best_bid/best_ask EN VIVO -- se prefetchea acá en paralelo con
+        # el historial, y el midpoint del book pasa a ser la fuente
+        # primaria de current_price; el historial hourly queda como
+        # fallback si el book no responde. Esto baja la ventana de
+        # detección de "hasta 60 min" a "hasta 10 min" (la cadencia real
+        # del cron), sin tocar la lógica de qué cuenta como target/stop.
+        book = None
         try:
-            return sig["id"], client.fetch_price_history(sig["token_id"], interval="1d", fidelity=60, timeout=request_timeout)
+            book = client.fetch_order_book_snapshot(sig["token_id"], timeout=request_timeout)
+        except Exception as e:
+            log.warning(f"Error obteniendo book para señal {sig['id']}: {e}")
+        history = []
+        try:
+            history = client.fetch_price_history(sig["token_id"], interval="1d", fidelity=60, timeout=request_timeout)
         except Exception as e:
             log.warning(f"Error obteniendo historial para señal {sig['id']}: {e}")
-            return sig["id"], []
+        return sig["id"], book, history
 
+    book_by_signal_id = {}
     history_by_signal_id = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_history_for_signal, sig): sig for sig in open_signals}
+        futures = {executor.submit(fetch_snapshot_for_signal, sig): sig for sig in open_signals}
         for future in concurrent.futures.as_completed(futures):
             if time_left() < 3.0:
-                log.warning("Presupuesto de tiempo agotado durante el prefetch de historiales.")
+                log.warning("Presupuesto de tiempo agotado durante el prefetch de book/historiales.")
                 break
-            sig_id, history = future.result()
+            sig_id, book, history = future.result()
+            book_by_signal_id[sig_id] = book
             history_by_signal_id[sig_id] = history
 
     processed = 0
@@ -147,8 +173,20 @@ def check_open_signals(db, client, notifier, config, open_signals=None, time_bud
         # cruce de precio). interval="1d" trae ~24 puntos (uno por hora del
         # último día) incluso para tokens ilíquidos, así current_price casi
         # nunca es None salvo que el token no tenga NINGÚN trade en 24h.
-        history = history_by_signal_id.get(sig["id"], [])
-        current_price = history[-1]["p"] if history else None
+        # FIX (23/09/2026): preferir el midpoint del book EN VIVO (prefetcheado
+        # arriba) sobre la vela hourly -- ver comentario largo en
+        # fetch_snapshot_for_signal más arriba. Solo cae al historial si el
+        # book no vino (token sin liquidez en ese instante, error de red, etc.).
+        book = book_by_signal_id.get(sig["id"])
+        current_price = None
+        if book and book.get("best_bid") is not None and book.get("best_ask") is not None:
+            current_price = (book["best_bid"] + book["best_ask"]) / 2.0
+        elif book and book.get("best_bid") is not None:
+            current_price = book["best_bid"]
+
+        if current_price is None:
+            history = history_by_signal_id.get(sig["id"], [])
+            current_price = history[-1]["p"] if history else None
 
         hit_target = current_price is not None and current_price >= sig["target"]
         hit_stop = current_price is not None and current_price <= sig["stop"]
