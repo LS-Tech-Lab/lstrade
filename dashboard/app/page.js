@@ -1383,7 +1383,7 @@ function formatVersionRangeEs(firstSeen, lastSeen) {
 // resuelta en los últimos ACTIVE_VERSION_DAYS días -- se usa para no listar
 // para siempre, en el selector, versiones viejas que ya nadie va a mirar
 // (ver AUDITORÍA 14/09/2026 más abajo).
-const ACTIVE_VERSION_DAYS = 30;
+const ACTIVE_VERSION_DAYS = 3;
 function isVersionActive(v) {
   if (!v || !v.last_seen) return false;
   return (Date.now() - new Date(v.last_seen).getTime()) < ACTIVE_VERSION_DAYS * 86400000;
