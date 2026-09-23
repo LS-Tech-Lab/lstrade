@@ -2,6 +2,7 @@
   "functions": {
     "app.py": { "maxDuration": 45 }
   },
+  "regions": ["dub1"],
   "crons": [
     { "path": "/api/cycle", "schedule": "0 12 * * *" }
   ],
