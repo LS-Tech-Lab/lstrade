@@ -225,6 +225,18 @@ create table if not exists mlb_signals (
     pnl_dollars double precision,
     raw_my_prob double precision,
     model_version text,
+    -- NUEVO (24/09/2026): evidencia de ejecutabilidad (ask/bid reales del
+    -- book CLOB al generar la señal, fee taker estimada, EV neto contra el
+    -- ask) y hora de inicio del partido. Migración aplicada en Supabase
+    -- (add_ask_evidence_and_game_start_to_mlb_signals): alter table
+    -- mlb_signals add column if not exists ask_at_signal double precision,
+    -- bid_at_signal double precision, est_fee_per_share double precision,
+    -- ev_at_ask_net double precision, game_start_ts timestamptz.
+    ask_at_signal double precision,
+    bid_at_signal double precision,
+    est_fee_per_share double precision,
+    ev_at_ask_net double precision,
+    game_start_ts timestamptz,
     ts_signaled timestamptz not null,
     outcome text,
     ts_resolved timestamptz
