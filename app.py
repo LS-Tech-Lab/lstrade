@@ -1229,10 +1229,9 @@ async def mlb_cycle_post(request: Request):
 # elegibilidad de quien opera la cuenta.
 @app.get("/api/geoblock_check")
 async def geoblock_check(request: Request):
-    expected = os.environ.get("CRON_SECRET")
-    auth = request.headers.get("Authorization", "")
-    if expected and auth != f"Bearer {expected}":
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    # TEMPORAL: SIN AUTENTICACION a proposito (prueba desde el telefono).
+    # Devuelve solo region, IP del servidor y estado del geoblock.
+    # Restaurar la version con CRON_SECRET o borrar este endpoint al terminar.
     import requests
     try:
         r = requests.get("https://polymarket.com/api/geoblock", timeout=8)
