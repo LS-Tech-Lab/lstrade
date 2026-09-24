@@ -549,8 +549,37 @@ def fetch_probable_pitchers_for_date(date_str):
                 "away_id": away.get("team", {}).get("id"),
                 "home_pitcher_id": (home.get("probablePitcher") or {}).get("id"),
                 "away_pitcher_id": (away.get("probablePitcher") or {}).get("id"),
+                # NUEVO (24/09/2026): hora de inicio (ISO UTC) y estado del
+                # partido, para el filtro pregame de generate_mlb_signal().
+                "game_date": g.get("gameDate"),
+                "game_state": (g.get("status") or {}).get("abstractGameState"),
             })
     return games
+
+
+def game_is_pregame(game, now=None):
+    """NUEVO (24/09/2026): True si el partido todavía no empezó.
+
+    Exige abstractGameState == "Preview" (cuando la API lo trae) y, si hay
+    gameDate parseable, que la hora actual sea anterior. Si faltan ambos
+    datos no se puede verificar y se deja pasar (comportamiento anterior),
+    para no dejar el módulo mudo por un cambio de formato de la API.
+    `now` es un datetime con tz (solo para tests)."""
+    from datetime import datetime, timezone
+    state = game.get("game_state")
+    if state is not None and state != "Preview":
+        return False
+    raw = game.get("game_date")
+    if not raw:
+        return True
+    try:
+        start = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return True
+    current = now or datetime.now(timezone.utc)
+    return current < start
 
 
 def _parse_innings_pitched(ip_str):
@@ -994,6 +1023,9 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
     # resueltas, es justamente el +8315.5% que se ve en el dashboard.
     # Se corta de raíz consultando si el partido ya está Final antes de
     # seguir.
+    if getattr(Config, "MLB_PREGAME_ONLY", True) and not game_is_pregame(game):
+        return None  # partido ya empezado: el modelo no ve estado en vivo, no es una señal válida
+
     if fetch_game_result(game["game_pk"]) is not None:
         return None  # el partido real ya terminó -- el mercado quedó desactualizado/en liquidación, no es una oportunidad real
 
@@ -1130,6 +1162,7 @@ def generate_mlb_signal(market, min_ev=0.05, season=None, today_games=None, pric
         "url": market.get("url"),
         "notes": notes,
         "token_id": token_id,
+        "game_date": game.get("game_date"),
     }
 
 
