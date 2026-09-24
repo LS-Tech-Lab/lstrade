@@ -1169,6 +1169,24 @@ def run_mlb_cycle():
                 signal["market_price"] * (1 - config.WEATHER_MLB_STOP_LOSS_PCT)
                 if getattr(config, "MLB_STOP_LOSS_ENABLED", False) else None
             )
+            # NUEVO (24/09/2026): evidencia de ejecutabilidad. La señal se
+            # genera con el precio de Gamma (último trade); acá se registra,
+            # sin operar ni filtrar, el ask/bid reales del book, la fee taker
+            # estimada y el EV neto contra el ask, para medir cuánto del
+            # edge sobrevive al precio real antes de considerar ejecución.
+            # Si el book no responde o no queda tiempo, quedan en None.
+            ask_at_signal = bid_at_signal = est_fee = ev_at_ask_net = None
+            if signal.get("token_id") and time_left() > 3.0:
+                book = client.fetch_order_book_snapshot(
+                    signal["token_id"], timeout=min(6.0, time_left() - 1.0),
+                )
+                if book:
+                    ask_at_signal = book.get("best_ask")
+                    bid_at_signal = book.get("best_bid")
+                    if ask_at_signal:
+                        fee_rate = getattr(config, "MLB_TAKER_FEE_RATE", 0.05)
+                        est_fee = round(fee_rate * ask_at_signal * (1 - ask_at_signal), 5)
+                        ev_at_ask_net = round(signal["my_prob"] / (ask_at_signal + est_fee) - 1, 4)
             db.record_mlb_signal(
                 signal["condition_id"], signal["game_pk"], signal["question"],
                 signal["home_team"], signal["away_team"], signal["direction"],
@@ -1182,6 +1200,9 @@ def run_mlb_cycle():
                 era_home=signal.get("era_home"), era_away=signal.get("era_away"),
                 pitcher_edge=signal.get("pitcher_edge"), home_field_edge=signal.get("home_field_edge"),
                 raw_my_prob=signal.get("raw_my_prob"), model_version=signal.get("model_version"),
+                ask_at_signal=ask_at_signal, bid_at_signal=bid_at_signal,
+                est_fee_per_share=est_fee, ev_at_ask_net=ev_at_ask_net,
+                game_start_ts=signal.get("game_date"),
             )
             notifier.send_message(memo)
             open_condition_ids.add(signal["condition_id"])
@@ -1220,29 +1241,6 @@ async def mlb_cycle_get(request: Request):
 @app.post("/api/mlb_cycle")
 async def mlb_cycle_post(request: Request):
     return await _mlb_cycle_endpoint(request)
-
-# ────────────────────────────────────────────────────────────────────
-# /api/geoblock_check  (TEMPORAL -- diagnóstico, borrar tras la prueba)
-# ────────────────────────────────────────────────────────────────────
-# Consulta https://polymarket.com/api/geoblock DESDE la IP de esta función
-# de Vercel. Solo dice si la IP del servidor está bloqueada; no valida la
-# elegibilidad de quien opera la cuenta.
-@app.get("/api/geoblock_check")
-async def geoblock_check(request: Request):
-    # TEMPORAL: SIN AUTENTICACION a proposito (prueba desde el telefono).
-    # Devuelve solo region, IP del servidor y estado del geoblock.
-    # Restaurar la version con CRON_SECRET o borrar este endpoint al terminar.
-    import requests
-    try:
-        r = requests.get("https://polymarket.com/api/geoblock", timeout=8)
-        data = r.json()
-        return JSONResponse({
-            "http_status": r.status_code,
-            "vercel_region": os.environ.get("VERCEL_REGION"),
-            "geoblock": data,
-        })
-    except Exception as e:
-        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
 
 # ────────────────────────────────────────────────────────────────────
 # /api/mlb_track_results
