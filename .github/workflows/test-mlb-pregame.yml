@@ -1,0 +1,35 @@
+name: Test MLB pregame + ask real
+
+# NUEVO (24/09/2026): corre test_mlb_pregame_and_ask_evidence.py -- filtro
+# pregame (game_is_pregame), payload/fallback de record_mlb_signal y fórmula
+# de fee. No necesita secrets ni red: todo con datos sintéticos.
+# Se puede lanzar a mano (pestaña Actions -> Run workflow) y además corre
+# solo cuando cambia alguno de los archivos que toca.
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "mlb_signal_engine.py"
+      - "supabase_db.py"
+      - "config.py"
+      - "test_mlb_pregame_and_ask_evidence.py"
+      - ".github/workflows/test-mlb-pregame.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Correr tests
+        run: python test_mlb_pregame_and_ask_evidence.py
