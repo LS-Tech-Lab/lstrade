@@ -699,7 +699,15 @@ class SupabaseDatabase:
     def record_mlb_signal(self, condition_id, game_pk, question, home_team, away_team, direction,
                            my_prob, market_price, ev, confidence, confidence_penalty, token_id, stop=None,
                            home_win_pct=None, away_win_pct=None, era_home=None, era_away=None,
-                           pitcher_edge=None, home_field_edge=None, raw_my_prob=None, model_version=None):
+                           pitcher_edge=None, home_field_edge=None, raw_my_prob=None, model_version=None,
+                           ask_at_signal=None, bid_at_signal=None, est_fee_per_share=None,
+                           ev_at_ask_net=None, game_start_ts=None):
+        # NUEVO (24/09/2026): ask/bid reales del book CLOB al momento de la
+        # señal, fee taker estimado, EV neto contra el ask y hora de inicio
+        # del partido (ver run_mlb_cycle en app.py). Columnas agregadas por
+        # migración add_ask_evidence_and_game_start_to_mlb_signals. Si la
+        # tabla no las tuviera todavía, el insert se reintenta sin ellas
+        # para no perder la señal (ver incidente del 08/09 más abajo).
         # AUDITORÍA (07/09/2026): se agregan los componentes de
         # estimate_win_probability() (home_win_pct/away_win_pct/era_home/
         # era_away/pitcher_edge/home_field_edge) -- antes solo se guardaba
@@ -719,7 +727,17 @@ class SupabaseDatabase:
         # constante. Columna nueva vía migración
         # 2026-09-13_add_model_version_to_mlb_signals.sql -- filas
         # anteriores a esta migración quedan con model_version=NULL.
-        _with_retry(lambda: self.client.table("mlb_signals").insert({"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "home_win_pct": home_win_pct, "away_win_pct": away_win_pct, "era_home": era_home, "era_away": era_away, "pitcher_edge": pitcher_edge, "home_field_edge": home_field_edge, "raw_my_prob": raw_my_prob, "model_version": model_version, "ts_signaled": _now_iso()}).execute())
+        row = {"condition_id": condition_id, "game_pk": game_pk, "question": question, "home_team": home_team, "away_team": away_team, "direction": direction, "my_prob": my_prob, "market_price": market_price, "ev": ev, "confidence": confidence, "confidence_penalty": confidence_penalty, "token_id": token_id, "stop": stop, "home_win_pct": home_win_pct, "away_win_pct": away_win_pct, "era_home": era_home, "era_away": era_away, "pitcher_edge": pitcher_edge, "home_field_edge": home_field_edge, "raw_my_prob": raw_my_prob, "model_version": model_version, "ts_signaled": _now_iso()}
+        extras = {"ask_at_signal": ask_at_signal, "bid_at_signal": bid_at_signal, "est_fee_per_share": est_fee_per_share, "ev_at_ask_net": ev_at_ask_net, "game_start_ts": game_start_ts}
+        extras = {k: v for k, v in extras.items() if v is not None}
+        try:
+            _with_retry(lambda: self.client.table("mlb_signals").insert({**row, **extras}).execute())
+        except Exception:
+            if not extras:
+                raise
+            import logging
+            logging.getLogger(__name__).warning("record_mlb_signal: insert con columnas extra falló, reintentando sin ellas", exc_info=True)
+            _with_retry(lambda: self.client.table("mlb_signals").insert(row).execute())
 
     def get_open_mlb_signals(self):
         res = _with_retry(lambda: self.client.table("mlb_signals").select("*").is_("outcome", "null").execute())
