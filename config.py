@@ -575,6 +575,22 @@ class Config:
     # inferirlo indirectamente por precio.
     MLB_EXTREME_PRICE_FLOOR = _float("MLB_EXTREME_PRICE_FLOOR", 0.10)
 
+    # NUEVO (24/09/2026, auditoría de "qué falta para operar MLB"):
+    # (1) MLB_PREGAME_ONLY: solo se emiten señales de partidos que todavía
+    # no empezaron (abstractGameState == "Preview" y hora actual anterior
+    # a gameDate). El modelo (log5 + ERA + localía) no tiene estado en
+    # vivo del partido -- ver AUDITORÍA 10/09 sobre MLB_EXTREME_PRICE_FLOOR --
+    # así que una señal con el partido ya en juego se calcula como si fuera
+    # antes del primer pitch. Poner en false para volver al comportamiento
+    # anterior. NO cambia MODEL_VERSION (no es una constante del modelo).
+    # (2) MLB_TAKER_FEE_RATE: coeficiente de la comisión taker de deportes
+    # de Polymarket, fee por acción = rate * p * (1 - p). Valor vigente
+    # según fuentes secundarias (julio 2026); verificar en la doc oficial.
+    # Solo se usa para ESTIMAR y registrar est_fee_per_share/ev_at_ask_net
+    # en cada señal -- no filtra ni opera nada.
+    MLB_PREGAME_ONLY = _bool("MLB_PREGAME_ONLY", True)
+    MLB_TAKER_FEE_RATE = _float("MLB_TAKER_FEE_RATE", 0.05)
+
     # AUDITORÍA (04/09/2026, tras 20 señales cerradas con 15% de aciertos):
     # best_trade se elegía con yes_price de Gamma (outcomePrices), que es el
     # ÚLTIMO PRECIO OPERADO, no el ask real -- en un bucket barato e ilíquido
