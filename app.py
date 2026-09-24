@@ -1222,6 +1222,30 @@ async def mlb_cycle_post(request: Request):
     return await _mlb_cycle_endpoint(request)
 
 # ────────────────────────────────────────────────────────────────────
+# /api/geoblock_check  (TEMPORAL -- diagnóstico, borrar tras la prueba)
+# ────────────────────────────────────────────────────────────────────
+# Consulta https://polymarket.com/api/geoblock DESDE la IP de esta función
+# de Vercel. Solo dice si la IP del servidor está bloqueada; no valida la
+# elegibilidad de quien opera la cuenta.
+@app.get("/api/geoblock_check")
+async def geoblock_check(request: Request):
+    expected = os.environ.get("CRON_SECRET")
+    auth = request.headers.get("Authorization", "")
+    if expected and auth != f"Bearer {expected}":
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import requests
+    try:
+        r = requests.get("https://polymarket.com/api/geoblock", timeout=8)
+        data = r.json()
+        return JSONResponse({
+            "http_status": r.status_code,
+            "vercel_region": os.environ.get("VERCEL_REGION"),
+            "geoblock": data,
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+
+# ────────────────────────────────────────────────────────────────────
 # /api/mlb_track_results
 # ────────────────────────────────────────────────────────────────────
 # RESTAURADO (17/09/2026): esta función se había perdido en producción --
