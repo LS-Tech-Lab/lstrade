@@ -358,6 +358,40 @@ const MLB_LEGACY_VERSION_LABEL = "legacy (sin model_version)";
 // fechas que cubre para poder mostrarlo en el panel. Se ordena por
 // primera aparición (más vieja primero) para que el panel lea como una
 // línea de tiempo de versiones del modelo.
+// AUDITORÍA (27/09/2026, pedido del usuario): "Performance — Polymarket"
+// mostraba siempre las últimas 200 señales resueltas (tope fijo del
+// código, ver POLYMARKET_HISTORY_LIMIT) -- el usuario preguntó si estaba
+// congelado porque el número "200" nunca cambiaba, aunque el contenido de
+// esas 200 sí rotaba con el tiempo. Reemplazado por 4 ventanas reales
+// (mismo patrón de selector que ya usa MLB con model_version): total
+// histórico, últimos 30 días, últimos 7 días, últimas 24 horas. Cada
+// ventana trae tanto las stats "core" (sin categorías excluidas, ver
+// EXCLUDED_CATEGORIES) como "todas las categorías", para no perder el pie
+// de página que ya existía comparando ambas.
+const POLYMARKET_WINDOWS = [
+  { key: "historico", label: "Total histórico", days: null },
+  { key: "30d", label: "Últimos 30 días", days: 30 },
+  { key: "7d", label: "Últimos 7 días", days: 7 },
+  { key: "24h", label: "Últimas 24 horas", days: 1 },
+];
+
+function computePolymarketStatsByWindow(resolvedSignals, resolvedSignalsCore) {
+  const now = Date.now();
+  return POLYMARKET_WINDOWS.map(({ key, label, days }) => {
+    const cutoff = days !== null ? now - days * 86400000 : null;
+    const inWindow = (r) => cutoff === null || (r.ts_resolved && new Date(r.ts_resolved).getTime() >= cutoff);
+    const coreRows = resolvedSignalsCore.filter(inWindow);
+    const allRows = resolvedSignals.filter(inWindow);
+    return {
+      window: key,
+      label,
+      n: coreRows.length,
+      stats: computePolymarketStats(coreRows),
+      stats_all_categories: computePolymarketStats(allRows),
+    };
+  });
+}
+
 function groupMlbByVersion(resolvedSignals) {
   const groups = {};
   for (const r of resolvedSignals || []) {
@@ -547,6 +581,15 @@ function computeWeatherCalibration(resolvedSignals, bucketSize = 0.1) {
 // (cada 15s) traería la tabla entera. 100 es generoso para lo que realmente
 // se muestra (el carrusel no pagina más allá de eso de forma usable).
 const OPEN_ROWS_LIMIT = 100;
+// AUDITORÍA (27/09/2026, pedido del usuario): antes se traían solo las
+// últimas 200 señales resueltas de Polymarket -- ese "200" es un tope fijo
+// del código, no el total real (que sigue creciendo ~90-110/día), así que
+// el número que se mostraba en el dashboard nunca cambiaba aunque el
+// contenido detrás sí rotara. Se sube el límite para poder calcular
+// ventanas de tiempo reales (ver POLYMARKET_WINDOWS/computePolymarketStatsByWindow
+// más abajo) en vez de "las últimas N señales" -- con ~100/día esto cubre
+// más de 6 meses de historial antes de necesitar subirlo de nuevo.
+const POLYMARKET_HISTORY_LIMIT = 20000;
 // FIX: antes pedía 200 filas de indicator_snapshots solo para quedarse con
 // la más reciente POR SÍMBOLO (ver latestIndicatorsBySymbol abajo) — con 2-3
 // símbolos y un snapshot cada ~10 min, 200 filas son ~33h de historial
@@ -633,8 +676,9 @@ export async function GET() {
       supabase.from("closed_trades").select("*").order("ts_closed", { ascending: false }).limit(500),
       // Señales de Polymarket todavía sin resolver — "posiciones abiertas" de ese módulo.
       supabase.from("polymarket_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
-      // Últimas resueltas: para el historial reciente y las stats por categoría.
-      supabase.from("polymarket_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
+      // Resueltas: para el historial reciente, las stats por categoría, y
+      // ahora también las ventanas de tiempo (ver POLYMARKET_HISTORY_LIMIT).
+      supabase.from("polymarket_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(POLYMARKET_HISTORY_LIMIT),
       // NUEVO: último snapshot de indicadores por símbolo (ver
       // indicator_snapshots en schema.sql) — antes el dashboard solo podía
       // mostrar RSI/tendencia en los raros ciclos donde hubo señal real.
@@ -770,6 +814,12 @@ export async function GET() {
       crypto_resolved: closedTradesRes.error ? [] : (closedTradesRes.data || []).slice(0, 20),
       stats: closedTradesRes.error ? { n: 0, win_rate: null, expectancy_r: null, profit_factor: null, breakdown: null }
         : computeStats(closedTradesRes.data),
+      // NUEVO (27/09/2026): desglose real por ventana de tiempo -- ver
+      // computePolymarketStatsByWindow arriba. polymarket_stats/
+      // polymarket_stats_all_categories se dejan apuntando a la ventana
+      // "histórico" para no romper PlainSummary ni nada que ya los use.
+      polymarket_by_window: polymarketResolvedRes.error ? []
+        : computePolymarketStatsByWindow(resolvedSignals, resolvedSignalsCore),
       polymarket_stats: polymarketResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, expectancy_r: null, profit_factor: null }
         : computePolymarketStats(resolvedSignalsCore),
       polymarket_stats_all_categories: polymarketResolvedRes.error ? { n: 0, win_rate: null, avg_return_pct: null, expectancy_r: null, profit_factor: null }
