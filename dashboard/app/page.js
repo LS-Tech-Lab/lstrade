@@ -1614,21 +1614,51 @@ function CriptoTab({ data }) {
   );
 }
 
+// AUDITORÍA (27/09/2026, pedido del usuario): antes esta tarjeta mostraba
+// siempre las últimas 200 señales resueltas (tope fijo del código) -- el
+// "200" nunca cambiaba aunque el contenido de atrás sí rotara con el
+// tiempo, dando la impresión de que el módulo estaba congelado. Reemplazado
+// por un selector de ventana (mismo patrón que el selector de versión de
+// MLB, ver MlbTab/groupMlbByVersion) con datos reales de
+// polymarket_by_window (ver computePolymarketStatsByWindow en
+// api/data/route.js).
 function PolymarketTab({ data }) {
   const excluded = data.polymarket_excluded_categories || [];
+  const byWindow = data.polymarket_by_window || [];
+  const [selectedWindow, setSelectedWindow] = useState("historico");
+  const selected = byWindow.find((w) => w.window === selectedWindow) || byWindow[0];
+
   return (
     <>
       <PlainSummary halted={false} stats={data.polymarket_stats} label="Polymarket" />
-      <PerformanceCard title="Performance — Polymarket (sin categorías excluidas)"
+      {byWindow.length > 0 && (
+        <div className="version-select-row">
+          <label className="version-select-label">
+            Ventana de tiempo
+            <select
+              className="version-select"
+              value={selectedWindow}
+              onChange={(e) => setSelectedWindow(e.target.value)}
+            >
+              {byWindow.map((w) => (
+                <option key={w.window} value={w.window}>
+                  {w.label} — {w.n} señal{w.n === 1 ? "" : "es"}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+      <PerformanceCard title={`Performance — Polymarket (${selected?.label || "sin categorías excluidas"})`}
         subtitle="Retorno comparando precio de entrada contra precio de salida (target o stop); expectancy en R-múltiplos sobre el riesgo inicial."
-        emptyMessage="Sin señales resueltas todavía — las métricas aparecen cuando el motor encuentre y cierre alguna."
-        statCards={buildPolymarketStatCards(data.polymarket_stats)} />
+        emptyMessage="Sin señales resueltas todavía en esta ventana — las métricas aparecen cuando el motor encuentre y cierre alguna."
+        statCards={buildPolymarketStatCards(selected?.stats)} />
       {excluded.length > 0 && (
         <p className="card-subtitle">
           Excluidas del indicador de arriba por bajo desempeño: {excluded.join(", ")}.{" "}
-          {data.polymarket_stats_all_categories?.n > 0 && (
-            <>Con esas categorías incluidas, el win rate real es {data.polymarket_stats_all_categories.win_rate.toFixed(1)}%
-            {" "}sobre {data.polymarket_stats_all_categories.n} señales.</>
+          {selected?.stats_all_categories?.n > 0 && (
+            <>Con esas categorías incluidas, el win rate real es {selected.stats_all_categories.win_rate.toFixed(1)}%
+            {" "}sobre {selected.stats_all_categories.n} señales (misma ventana).</>
           )}
         </p>
       )}
