@@ -127,6 +127,78 @@ def compute_var_cvar(pnl_pct_series, confidence=0.95):
     }
 
 
+def module_drawdown_mult(config, db, module, days=None):
+    """
+    NUEVO (27/09/2026, pedido del usuario): extiende a MLB, clima y
+    Polymarket el mismo throttle de drawdown que hasta ahora solo tenía
+    cripto (ver drawdown_risk_multiplier() arriba, y risk_manager.check()
+    donde cripto ya lo calcula contra peak_equity_window()). Reusa
+    peak_equity_window(module=...) -- ya era genérico por módulo, solo que
+    nada fuera de cripto lo llamaba todavía.
+
+    Se calcula en el momento de RESOLVER cada señal (no al abrirla), igual
+    que ya hace apply_binary_signal_pnl/apply_r_multiple_pnl con el
+    equity base -- estos 3 módulos no reservan capital al abrir una
+    señal, simulan el tamaño contra el equity/drawdown vigente recién al
+    resolver (ver docstring de apply_binary_signal_pnl en supabase_db.py).
+
+    Devuelve 1.0 (sin throttle) si el módulo todavía no tiene equity
+    registrado -- primera señal del módulo, nada que diluir todavía.
+    """
+    equity = db.last_equity(module)
+    if equity is None:
+        return 1.0
+    window_days = days if days is not None else getattr(config, "MAX_DRAWDOWN_WINDOW_DAYS", 7.0)
+    peak = db.peak_equity_window(module=module, days=window_days) or equity
+    dd_pct = ((peak - equity) / peak * 100) if peak > 0 else 0.0
+    return drawdown_risk_multiplier(config, dd_pct)
+
+
+def calculate_stake(base_equity, risk_pct, min_stake_usd, hard_cap_pct):
+    """
+    DECISIÓN (27/09/2026, pedido del usuario): un solo lugar de la verdad
+    para el tamaño de apuesta/posición en los 4 módulos (cripto, MLB,
+    clima, Polymarket). Reemplaza ½ Kelly (MLB/clima, ver
+    MAX_KELLY_STAKE_PCT retirado de config.py) y el riesgo fijo % sin piso
+    ni techo que ya usaban cripto/Polymarket -- ninguno de los dos tenía
+    resuelto que, con equity chico (ej. $20), el 1% nominal ($0.20) queda
+    por debajo del mínimo de orden ejecutable real (~$1 en Polymarket/
+    exchanges).
+
+    Tres niveles, en orden de autoridad creciente:
+      1. Nominal = base_equity * risk_pct / 100
+      2. Piso    = min_stake_usd (gana sobre el nominal -- así la señal
+                   siempre es ejecutable con equity chico)
+      3. Techo   = hard_cap_pct de base_equity (gana SIEMPRE, incluso
+                   sobre el piso -- evita que el piso mismo reproduzca el
+                   problema de "15% de casino" que tenía Kelly sin techo,
+                   ver AUDITORÍA 09/09/2026 preservada en config.py)
+
+    risk_pct ya debe traer aplicado cualquier throttle de drawdown (ver
+    drawdown_risk_multiplier() arriba) y cualquier régimen de volatilidad
+    (ver volatility_regime()) antes de llegar acá -- esta función no sabe
+    de ninguno de los dos, solo aplica los 3 niveles sobre el risk_pct que
+    le pasen.
+
+    Devuelve (stake, executable). executable=False solo cuando ni el piso
+    entra bajo el techo (equity muy castigado) -- el caller debe SALTAR la
+    señal ese ciclo, nunca forzar el trade por debajo del piso real.
+    """
+    if base_equity is None or base_equity <= 0:
+        return 0.0, False
+
+    nominal_stake = base_equity * (risk_pct / 100.0)
+    hard_cap_stake = base_equity * (hard_cap_pct / 100.0)
+
+    stake = max(nominal_stake, min_stake_usd)
+    stake = min(stake, hard_cap_stake)
+
+    if stake < min_stake_usd:
+        return 0.0, False
+
+    return round(stake, 2), True
+
+
 def format_blocked_message(symbol, signal, failed_checks):
     """
     Arma el mensaje de Telegram para una señal bloqueada por riesgo.
@@ -237,8 +309,17 @@ class RiskManager:
         # reductores independientes del mismo tamaño base).
         vol_regime, regime_size_mult = volatility_regime(self.config, vol_pct)
 
-        risk_amount = equity * (self.config.RISK_PCT_PER_TRADE / 100) * drawdown_risk_mult * regime_size_mult
-        position_size = risk_amount / stop_distance if stop_distance > 0 else 0
+        # NUEVO (27/09/2026, pedido del usuario): cripto tampoco tenía piso
+        # ejecutable ni techo absoluto -- ver calculate_stake() arriba en
+        # este archivo (mismo helper que ahora usan MLB/clima/Polymarket,
+        # un solo lugar de la verdad para los 4 módulos). El drawdown
+        # throttle y el régimen de volatilidad ya vienen aplicados en el
+        # risk_pct efectivo que se le pasa acá.
+        effective_risk_pct = self.config.RISK_PCT_PER_TRADE * drawdown_risk_mult * regime_size_mult
+        risk_amount, stake_executable = calculate_stake(
+            equity, effective_risk_pct, self.config.MIN_STAKE_USD, self.config.HARD_CAP_PCT
+        )
+        position_size = risk_amount / stop_distance if stop_distance > 0 and stake_executable else 0
 
         exposure_pct = self.db.current_exposure_pct(equity)
 

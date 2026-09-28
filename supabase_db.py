@@ -73,11 +73,18 @@ class SupabaseDatabase:
         de "nunca romper el chequeo de riesgo por un dato faltante" que ya
         usa el resto de esta clase.
         """
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        # NUEVO (27/09/2026): el corte de la ventana nunca es anterior a
+        # Config.EQUITY_RESET_TS -- ver comentario ahí. Si la ventana no
+        # devuelve filas, el fallback también respeta el reset (antes caía
+        # a peak_equity() histórico, que sí incluía el peak previo).
+        window_cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        reset_ts = datetime.fromisoformat(Config.EQUITY_RESET_TS)
+        cutoff = max(window_cutoff, reset_ts).isoformat()
         res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).gte("ts", cutoff).order("equity", desc=True).limit(1).execute())
         if res.data:
             return res.data[0]["equity"]
-        return self.peak_equity(module)
+        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).gte("ts", reset_ts.isoformat()).order("equity", desc=True).limit(1).execute())
+        return res.data[0]["equity"] if res.data else None
 
     def last_equity(self, module="crypto"):
         """Último equity registrado (no el pico histórico) PARA ESE MÓDULO.
@@ -99,15 +106,11 @@ class SupabaseDatabase:
         return returns
 
     def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None,
-                                 signal_id=None, signal_table=None):
+                                 signal_id=None, signal_table=None, drawdown_mult=1.0):
         """
         NUEVO (07/09/2026, pedido del usuario): simula el equity de un
         módulo de mercados binarios (clima, MLB -- ambos con my_prob/
-        market_price ya armados sobre el lado comprado) aplicando ½ Kelly
-        como tamaño de apuesta, igual que ya se le sugiere informativamente
-        al usuario en build_weather_memo()/build_mlb_memo() vía
-        _half_kelly_fraction(). Arranca en $100 si el módulo no tiene
-        historial todavía (mismo default que la base de cripto post-rescale).
+        market_price ya armados sobre el lado comprado).
 
         outcome esperado: "yes"/"win" (ganó el lado comprado), "no"/"loss"
         (perdió), "stop" (salida anticipada a `exit_price`, ver
@@ -115,46 +118,45 @@ class SupabaseDatabase:
         (sin P&L real -- partido cancelado o similar, no mueve el equity
         pero tampoco rompe si se llama).
 
-        AUDITORÍA (09/09/2026, pedido del usuario -- "saltos" raros en el
-        equity de MLB): el tamaño ya no es ½ Kelly sin techo -- se limita a
-        Config.MAX_KELLY_STAKE_PCT del equity del módulo (ver comentario en
-        _half_kelly_fraction, weather_signal_engine.py) para que una sola
-        señal no pueda mover el equity varias veces su valor cuando
-        market_price es bajo. Además, si se pasan signal_id/signal_table
-        (la fila ya resuelta en weather_signals/mlb_signals), esta función
-        guarda stake_dollars/pnl_dollars en esa fila -- antes el $ real
-        apostado/ganado por cada señal solo vivía de paso acá adentro y no
-        quedaba en ningún lado para mostrarlo en el historial de cerrados
-        (dashboard mostraba solo el % de retorno nocional de $1, no el $
-        real que sí movió el equity). Ese guardado es solo informativo: si
-        falla, no debe tumbar el tracking de equity (que ya corre dentro
-        de _safe_apply_pnl en app.py).
+        DECISIÓN (27/09/2026, pedido del usuario): ½ Kelly retirado -- ver
+        MAX_KELLY_STAKE_PCT en config.py y calculate_stake() en
+        risk_manager.py para el motivo completo (sensibilidad a
+        calibración, sesgo confirmado en el bucket 40-50% de MLB, blowup
+        de $482,209 a $8,651). El tamaño ahora es riesgo fijo % + piso +
+        techo, mismo esquema que cripto/Polymarket: p_risk_pct ya viene
+        con Config.RISK_PCT_PER_TRADE multiplicado por `drawdown_mult`
+        (throttle de drawdown por módulo, ver drawdown_risk_multiplier()
+        en risk_manager.py -- antes solo lo tenía cripto, ahora se calcula
+        también para MLB/clima/Polymarket en cada call-site). `my_prob` ya
+        no se usa para el tamaño, se mantiene en la firma solo para no
+        romper los call-sites existentes (mlb/weather en app.py).
+
+        Si se pasan signal_id/signal_table (la fila ya resuelta en
+        weather_signals/mlb_signals), guarda stake_dollars/pnl_dollars en
+        esa fila -- informativo: si falla, no debe tumbar el tracking de
+        equity (que ya corre dentro de _safe_apply_pnl en app.py).
 
         Devuelve el nuevo equity del módulo.
 
         AUDITORÍA (13/09/2026): default bajado de 100.0 a 20.0 -- pedido del
-        usuario de que todos los módulos arranquen en $20 (antes cripto
-        arrancaba en $100 mientras el resto ya usaba este mismo default; se
-        unificó todo a $20 y se rescaló x0.2 el historial completo en la
-        misma migración que baja este número).
+        usuario de que todos los módulos arranquen en $20.
         """
-        # FIX (18/09/2026, auditoría): el cálculo completo (fracción de
-        # Kelly, stake, pnl) se movió a la función de Postgres
-        # apply_binary_signal_pnl (ver migración
-        # add_atomic_kelly_and_r_multiple_pnl) -- antes `base` se leía acá
-        # afuera de cualquier lock, así que dos señales del mismo módulo
-        # resolviendo casi al mismo segundo podían calcular su stake contra
-        # el MISMO equity viejo, no solo pisarse el resultado final en
-        # equity_history. La RPC hace el select+cálculo+insert en una sola
-        # transacción con pg_advisory_xact_lock(hashtext(module)), mismo
-        # mecanismo que increment_equity.
+        # FIX (18/09/2026, auditoría): el cálculo completo (stake, pnl) se
+        # hace en la función de Postgres apply_binary_signal_pnl (ver
+        # migración replace_kelly_fixed_risk_position_sizing) dentro del
+        # mismo pg_advisory_xact_lock que el select+insert, para que dos
+        # señales del mismo módulo resolviendo casi al mismo segundo no
+        # calculen su stake contra el MISMO equity viejo.
+        risk_pct = Config.RISK_PCT_PER_TRADE * drawdown_mult
         result = _with_retry(lambda: self.client.rpc("apply_binary_signal_pnl", {
             "p_module": module,
             "p_my_prob": my_prob,
             "p_market_price": market_price,
             "p_outcome": outcome,
             "p_exit_price": exit_price,
-            "p_max_kelly_pct": Config.MAX_KELLY_STAKE_PCT,
+            "p_risk_pct": risk_pct,
+            "p_min_stake_usd": Config.MIN_STAKE_USD,
+            "p_hard_cap_pct": Config.HARD_CAP_PCT,
             "p_default": 20.0,
         }).execute())
         data = result.data or {}
@@ -171,20 +173,27 @@ class SupabaseDatabase:
 
         return new_equity
 
-    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0, signal_id=None, signal_table=None):
+    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0, signal_id=None, signal_table=None,
+                              drawdown_mult=1.0):
         """
         NUEVO (07/09/2026, pedido del usuario): equivalente de
         apply_binary_signal_pnl() para Polymarket genérico, que no arma
         una probabilidad de fundamentos (`my_prob`) sino un plan de
-        entrada/target/stop -- ahí ½ Kelly no aplica (no hay `prob` con
-        qué calcularlo), así que se reusa el mismo esquema de riesgo fijo
-        por operación que ya usa risk_manager.py para cripto
-        (RISK_PCT_PER_TRADE, default 1.0% -- ver config.py): se arriesga
-        ese % del equity del módulo por señal, y el resultado (r_multiple,
-        ya calculado igual que en polymarket_stats_summary/
-        polymarket_recent_history) determina la ganancia o pérdida real.
-        Arranca en $20 si el módulo no tiene historial todavía (AUDITORÍA
-        13/09/2026: bajado de $100, ver mismo cambio en apply_binary_signal_pnl).
+        entrada/target/stop -- se reusa el mismo esquema de riesgo fijo
+        por operación que cripto/MLB/clima (RISK_PCT_PER_TRADE, default
+        1.0% -- ver config.py): se arriesga ese % del equity del módulo
+        por señal, y el resultado (r_multiple, ya calculado igual que en
+        polymarket_stats_summary/polymarket_recent_history) determina la
+        ganancia o pérdida real. Arranca en $20 si el módulo no tiene
+        historial todavía.
+
+        DECISIÓN (27/09/2026, pedido del usuario): se agregan piso
+        (Config.MIN_STAKE_USD) y techo absoluto (Config.HARD_CAP_PCT) --
+        antes Polymarket no tenía ninguno de los dos, mismo hueco que
+        cripto (ver calculate_stake() en risk_manager.py). `drawdown_mult`
+        extiende a Polymarket el throttle de drawdown que antes solo tenía
+        cripto -- se multiplica contra `risk_pct` antes de mandarlo a la
+        RPC.
 
         FIX (15/09/2026, pedido del usuario): a diferencia de
         apply_binary_signal_pnl (clima/MLB), esta función nunca guardaba
@@ -196,14 +205,17 @@ class SupabaseDatabase:
         debe tumbar el tracking real de equity).
         """
         # FIX (18/09/2026, auditoría): mismo cambio que en
-        # apply_binary_signal_pnl -- el cálculo (risk_amount, pnl) se mueve
-        # a la función de Postgres apply_r_multiple_pnl bajo el mismo
+        # apply_binary_signal_pnl -- el cálculo (risk_amount, pnl) se hace
+        # en la función de Postgres apply_r_multiple_pnl bajo el mismo
         # pg_advisory_xact_lock, para que el % de riesgo se calcule contra
         # el equity ya actualizado y no uno leído afuera del lock.
+        effective_risk_pct = risk_pct * drawdown_mult
         result = _with_retry(lambda: self.client.rpc("apply_r_multiple_pnl", {
             "p_module": module,
             "p_r_multiple": r_multiple,
-            "p_risk_pct": risk_pct,
+            "p_risk_pct": effective_risk_pct,
+            "p_min_stake_usd": Config.MIN_STAKE_USD,
+            "p_hard_cap_pct": Config.HARD_CAP_PCT,
             "p_default": 20.0,
         }).execute())
         data = result.data or {}

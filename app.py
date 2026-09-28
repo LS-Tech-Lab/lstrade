@@ -34,7 +34,7 @@ from config import Config
 from supabase_db import SupabaseDatabase
 from exchange_client import ExchangeClient
 from signal_engine import compute_indicator_snapshot, generate_signal
-from risk_manager import RiskManager, format_blocked_message
+from risk_manager import RiskManager, format_blocked_message, module_drawdown_mult
 from trade_planner import compute_plan
 from telegram_notifier import TelegramNotifier
 from format_utils import build_crypto_memo, format_money
@@ -1367,10 +1367,12 @@ def run_mlb_track_results():
                 )
             if book and book.get("best_bid") is not None and book["best_bid"] <= stop:
                 if db.resolve_mlb_signal(sig["id"], "stop", exit_price=stop):
-                    # AUDITORÍA (07/09/2026): equity propio del módulo MLB
-                    # (½ Kelly sobre my_prob/market_price ya guardados en la
-                    # señal) -- ver apply_binary_signal_pnl en supabase_db.py.
-                    _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], "stop", exit_price=stop, signal_id=sig["id"], signal_table="mlb_signals")
+                    # DECISIÓN (27/09/2026): riesgo fijo % + piso + techo en
+                    # vez de ½ Kelly -- ver apply_binary_signal_pnl en
+                    # supabase_db.py. drawdown_mult extiende a MLB el
+                    # throttle que antes solo tenía cripto.
+                    dd_mult = module_drawdown_mult(Config, db, "mlb")
+                    _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], "stop", exit_price=stop, signal_id=sig["id"], signal_table="mlb_signals", drawdown_mult=dd_mult)
                     resolved.append({
                         "game_pk": sig.get("game_pk"), "question": sig.get("question"),
                         "outcome": "stop", "exit_price": stop,
@@ -1405,10 +1407,11 @@ def run_mlb_track_results():
 
         if not db.resolve_mlb_signal(sig["id"], outcome):
             continue
-        # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop) --
-        # mismo equity propio del módulo MLB, actualizado también en la
-        # resolución completa (no solo en la salida anticipada por stop).
-        _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], outcome, signal_id=sig["id"], signal_table="mlb_signals")
+        # DECISIÓN (27/09/2026): ver comentario de más arriba (stop) --
+        # mismo riesgo fijo % + piso + techo + drawdown throttle,
+        # actualizado también en la resolución completa.
+        dd_mult = module_drawdown_mult(Config, db, "mlb")
+        _safe_apply_pnl(db.apply_binary_signal_pnl, "mlb", sig["my_prob"], sig["market_price"], outcome, signal_id=sig["id"], signal_table="mlb_signals", drawdown_mult=dd_mult)
         resolved.append({
             "game_pk": game_pk,
             "question": sig.get("question"),
@@ -1582,10 +1585,11 @@ def run_weather_track_results():
                         )
             if triggered_stop:
                 if db.resolve_weather_signal(sig["id"], "stop", exit_price=stop):
-                    # AUDITORÍA (07/09/2026): equity propio del módulo clima
-                    # (mismo mecanismo ½ Kelly que MLB -- ver
-                    # apply_binary_signal_pnl en supabase_db.py).
-                    _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], "stop", exit_price=stop, signal_id=sig["id"], signal_table="weather_signals")
+                    # DECISIÓN (27/09/2026): riesgo fijo % + piso + techo en
+                    # vez de ½ Kelly -- mismo cambio que MLB, ver
+                    # apply_binary_signal_pnl en supabase_db.py.
+                    dd_mult = module_drawdown_mult(Config, db, "weather")
+                    _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], "stop", exit_price=stop, signal_id=sig["id"], signal_table="weather_signals", drawdown_mult=dd_mult)
                     resolved.append({"condition_id": condition_id, "outcome": "stop", "exit_price": stop})
                 continue
 
@@ -1639,8 +1643,9 @@ def run_weather_track_results():
 
         if not db.resolve_weather_signal(sig["id"], outcome, actual_high_f=actual_high_f):
             continue
-        # AUDITORÍA (07/09/2026): ver comentario de más arriba (stop).
-        _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], outcome, signal_id=sig["id"], signal_table="weather_signals")
+        # DECISIÓN (27/09/2026): ver comentario de más arriba (stop).
+        dd_mult = module_drawdown_mult(Config, db, "weather")
+        _safe_apply_pnl(db.apply_binary_signal_pnl, "weather", sig["my_prob"], sig["market_price"], outcome, signal_id=sig["id"], signal_table="weather_signals", drawdown_mult=dd_mult)
         resolved.append({"condition_id": condition_id, "outcome": outcome, "actual_high_f": actual_high_f})
 
     return {

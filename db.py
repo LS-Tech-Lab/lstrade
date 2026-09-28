@@ -4,9 +4,10 @@ Persistencia en SQLite con soporte para Open Trades (Trailing Stop).
 import sqlite3
 import time
 import json
+from datetime import datetime
 
-from weather_signal_engine import _half_kelly_fraction
 from config import Config
+from risk_manager import calculate_stake
 
 class Database:
     def __init__(self, path):
@@ -194,13 +195,19 @@ class Database:
         en esta tabla es epoch en segundos (time.time()), a diferencia del
         timestamptz de Supabase, así que el corte de la ventana se calcula
         restando `days` en segundos en vez de un ISO string."""
-        cutoff = time.time() - (days * 86400)
+        # NUEVO (27/09/2026): mismo corte por Config.EQUITY_RESET_TS que en
+        # supabase_db.py (acá convertido a epoch, que es lo que guarda `ts`).
+        reset_epoch = datetime.fromisoformat(Config.EQUITY_RESET_TS).timestamp()
+        cutoff = max(time.time() - (days * 86400), reset_epoch)
         row = self.conn.execute(
             "SELECT MAX(equity) as peak FROM equity_history WHERE module = ? AND ts >= ?", (module, cutoff)
         ).fetchone()
         if row and row["peak"] is not None:
             return row["peak"]
-        return self.peak_equity(module)
+        row = self.conn.execute(
+            "SELECT MAX(equity) as peak FROM equity_history WHERE module = ? AND ts >= ?", (module, reset_epoch)
+        ).fetchone()
+        return row["peak"] if row and row["peak"] is not None else None
 
     def last_equity(self, module="crypto"):
         """Último equity registrado (no el pico histórico) PARA ESE MÓDULO.
@@ -234,24 +241,29 @@ class Database:
                 returns.append((equities[i] - prev) / prev)
         return returns
 
-    def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None):
+    def apply_binary_signal_pnl(self, module, my_prob, market_price, outcome, exit_price=None,
+                                 drawdown_mult=1.0):
         """Ver apply_binary_signal_pnl en supabase_db.py (misma lógica, esta
-        es la variante SQLite para el modo VPS/local).
+        es la variante SQLite para el modo VPS/local -- usada por CI vía
+        Database(':memory:'), ver .github/workflows/ci.yml).
 
-        AUDITORÍA (09/09/2026): mismo techo de tamaño (Config.MAX_KELLY_STAKE_PCT)
-        que la variante Supabase -- ver comentario ahí y en
-        _half_kelly_fraction (weather_signal_engine.py).
+        DECISIÓN (27/09/2026): ½ Kelly retirado, reemplazado por
+        calculate_stake() (risk_manager.py) -- mismo cambio que en
+        supabase_db.py, ver ese comentario para el motivo completo.
+        `my_prob` ya no se usa para el tamaño, se mantiene en la firma
+        para no romper los call-sites existentes.
 
         AUDITORÍA (13/09/2026): default bajado de 100.0 a 20.0, igual que en
-        supabase_db.py -- ver ese comentario para el motivo."""
+        supabase_db.py."""
         base = self.last_equity(module)
         if base is None:
             base = 20.0
 
-        kelly = _half_kelly_fraction(my_prob, market_price, max_pct=Config.MAX_KELLY_STAKE_PCT)
+        risk_pct = Config.RISK_PCT_PER_TRADE * drawdown_mult
+        stake, executable = calculate_stake(base, risk_pct, Config.MIN_STAKE_USD, Config.HARD_CAP_PCT)
+
         pnl = 0.0
-        if kelly and kelly > 0 and market_price and market_price > 0:
-            stake = base * kelly
+        if executable and market_price and market_price > 0:
             if outcome in ("yes", "win"):
                 pnl = stake * (1 - market_price) / market_price
             elif outcome in ("no", "loss"):
@@ -263,17 +275,21 @@ class Database:
         self.record_equity(new_equity, module=module)
         return new_equity
 
-    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0):
+    def apply_r_multiple_pnl(self, module, r_multiple, risk_pct=1.0, drawdown_mult=1.0):
         """Ver apply_r_multiple_pnl en supabase_db.py (misma lógica, esta es
         la variante SQLite para el modo VPS/local).
+
+        DECISIÓN (27/09/2026): se agregan piso/techo vía calculate_stake()
+        -- mismo cambio que en supabase_db.py.
 
         AUDITORÍA (13/09/2026): default bajado de 100.0 a 20.0, igual que en
         supabase_db.py."""
         base = self.last_equity(module)
         if base is None:
             base = 20.0
-        risk_amount = base * (risk_pct / 100.0)
-        pnl = risk_amount * r_multiple
+        effective_risk_pct = risk_pct * drawdown_mult
+        risk_amount, executable = calculate_stake(base, effective_risk_pct, Config.MIN_STAKE_USD, Config.HARD_CAP_PCT)
+        pnl = risk_amount * r_multiple if executable else 0.0
         new_equity = base + pnl
         self.record_equity(new_equity, module=module)
         return new_equity

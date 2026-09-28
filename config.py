@@ -508,19 +508,44 @@ class Config:
     # Ver run_weather_track_results / run_mlb_track_results en app.py.
     WEATHER_MLB_STOP_LOSS_PCT = _float("WEATHER_MLB_STOP_LOSS_PCT", 0.20)
 
-    # AUDITORÍA (09/09/2026, pedido del usuario -- "saltos" raros en el
-    # equity de MLB): _half_kelly_fraction() en weather_signal_engine.py no
-    # tenía techo. Kelly = (prob - price) / (1 - price); con price bajo
-    # (ej. $0.05) y prob alta, la mitad de Kelly ya da ~45-49% del bankroll
-    # apostado en UNA sola señal, y el pago de esa señal es stake * (1-price)/
-    # price -- con price=$0.05 eso es *19x* el stake. Ese combo (motor de
-    # MLB "primer draft sin validar", ver mlb_signal_engine.py) es lo que
-    # produce saltos de varios cientos % en una sola resolución en vez de
-    # una curva de equity suave. Techo conservador mientras el modelo no
-    # esté calibrado (ver mlb_calibration_summary/weather_calibration_summary
-    # en supabase_db.py); se puede subir a medida que se confirme que las
-    # probabilidades están bien calibradas.
-    MAX_KELLY_STAKE_PCT = _float("MAX_KELLY_STAKE_PCT", 0.15)
+    # RETIRADO (27/09/2026, pedido del usuario): MAX_KELLY_STAKE_PCT y todo
+    # ½ Kelly quedaron reemplazados por riesgo fijo % + piso + techo (ver
+    # MIN_STAKE_USD/HARD_CAP_PCT abajo y calculate_stake() en
+    # risk_manager.py). Motivo: Kelly es sensible a que `my_prob` esté
+    # calibrado, y el bucket 40-50% de MLB tiene sesgo de calibración
+    # confirmado (ver AUDITORÍA de calibración en supabase_db.py) -- apostar
+    # tamaño proporcional a un edge sobre una probabilidad sesgada fue lo
+    # que llevó el equity de MLB de $482,209 a $8,651. El comentario
+    # original sobre por qué Kelly sin techo era peligroso (price bajo +
+    # prob alta -> ½ Kelly de ~45-49% del bankroll, pago hasta 19x el
+    # stake) se preserva acá como contexto histórico de la decisión.
+
+    # NUEVO (27/09/2026, pedido del usuario): piso ejecutable en USD -- con
+    # equity chico (ej. $20), risk_pct% nominal puede dar menos que el
+    # mínimo de orden real (~$1 en Polymarket/exchanges). El piso gana
+    # sobre el nominal para que la señal siempre sea ejecutable, salvo que
+    # ni el piso entre bajo HARD_CAP_PCT (ver calculate_stake en
+    # risk_manager.py).
+    MIN_STAKE_USD = _float("MIN_STAKE_USD", 1.0)
+
+    # NUEVO (27/09/2026, pedido del usuario): timestamp (UTC, ISO 8601) del
+    # reset de equity a $20 en los 4 módulos. peak_equity_window() en
+    # supabase_db.py/db.py no mira nada anterior a este corte -- sin esto,
+    # el peak viejo (ej. MLB $8,651) seguía dentro de la ventana de
+    # MAX_DRAWDOWN_WINDOW_DAYS y module_drawdown_mult() veía ~99% de
+    # drawdown justo después del reset, dejando el riesgo en el mínimo
+    # (DRAWDOWN_MIN_RISK_MULT) hasta que ese peak saliera de la ventana.
+    # Para un próximo reset: actualizar este valor (o la variable de
+    # entorno EQUITY_RESET_TS) con el timestamp del nuevo INSERT.
+    EQUITY_RESET_TS = os.getenv("EQUITY_RESET_TS", "2026-09-27T21:21:35+00:00")
+
+    # NUEVO (27/09/2026, pedido del usuario): techo absoluto de emergencia,
+    # gana SIEMPRE (incluso sobre el piso) -- reemplaza al viejo
+    # MAX_KELLY_STAKE_PCT (que era 0.15 en escala 0-1; este queda en escala
+    # 0-100 como el resto de los *_PCT de este archivo, ej.
+    # MAX_DRAWDOWN_PCT). Evita que el piso mismo reproduzca el problema de
+    # "15% de casino" que tenía Kelly sin techo en equity muy chico.
+    HARD_CAP_PCT = _float("HARD_CAP_PCT", 15.0)
 
     # AUDITORÍA (09/09/2026, pedido del usuario -- backtest de calibración
     # sobre 51 señales de MLB ya resueltas): el modelo de estimate_win_probability()
