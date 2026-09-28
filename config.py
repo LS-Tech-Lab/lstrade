@@ -539,6 +539,18 @@ class Config:
     # entorno EQUITY_RESET_TS) con el timestamp del nuevo INSERT.
     EQUITY_RESET_TS = os.getenv("EQUITY_RESET_TS", "2026-09-27T21:21:35+00:00")
 
+    # NUEVO (28/09/2026, pedido del usuario): reset propio de Polymarket a
+    # $20 (tras el fix de MAX_LOSS_R) sin tocar los otros módulos. Si un
+    # módulo aparece acá, su corte es este; si no, vale EQUITY_RESET_TS.
+    # Se usa vía Config.equity_reset_ts(module) -- peak_equity() y
+    # peak_equity_window() en supabase_db.py/db.py. route.js tiene el mismo
+    # mapa (EQUITY_RESET_TS_BY_MODULE): actualizar ambos en cada reset.
+    EQUITY_RESET_TS_BY_MODULE = {"polymarket": "2026-09-28T03:14:35.781081+00:00"}
+
+    @classmethod
+    def equity_reset_ts(cls, module):
+        return cls.EQUITY_RESET_TS_BY_MODULE.get(module, cls.EQUITY_RESET_TS)
+
     # NUEVO (27/09/2026, pedido del usuario): techo absoluto de emergencia,
     # gana SIEMPRE (incluso sobre el piso) -- reemplaza al viejo
     # MAX_KELLY_STAKE_PCT (que era 0.15 en escala 0-1; este queda en escala

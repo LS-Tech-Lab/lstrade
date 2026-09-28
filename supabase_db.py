@@ -63,7 +63,7 @@ class SupabaseDatabase:
         # cripto (update_equity_and_check_kill_switch) usa este peak, y tras
         # el reset a $20 el pico previo ($25.92) daba 22.85% de drawdown y
         # frenaba el bot en el primer ciclo.
-        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).gte("ts", Config.EQUITY_RESET_TS).order("equity", desc=True).limit(1).execute())
+        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).gte("ts", Config.equity_reset_ts(module)).order("equity", desc=True).limit(1).execute())
         return res.data[0]["equity"] if res.data else None
 
     def peak_equity_window(self, module="crypto", days=7.0):
@@ -83,7 +83,7 @@ class SupabaseDatabase:
         # devuelve filas, el fallback también respeta el reset (antes caía
         # a peak_equity() histórico, que sí incluía el peak previo).
         window_cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        reset_ts = datetime.fromisoformat(Config.EQUITY_RESET_TS)
+        reset_ts = datetime.fromisoformat(Config.equity_reset_ts(module))
         cutoff = max(window_cutoff, reset_ts).isoformat()
         res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).gte("ts", cutoff).order("equity", desc=True).limit(1).execute())
         if res.data:

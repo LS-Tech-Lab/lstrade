@@ -186,7 +186,7 @@ class Database:
 
     def peak_equity(self, module="crypto"):
         # NUEVO (28/09/2026): ver peak_equity en supabase_db.py -- no mira antes de EQUITY_RESET_TS.
-        reset_epoch = datetime.fromisoformat(Config.EQUITY_RESET_TS).timestamp()
+        reset_epoch = datetime.fromisoformat(Config.equity_reset_ts(module)).timestamp()
         row = self.conn.execute("SELECT MAX(equity) as peak FROM equity_history WHERE module = ? AND ts >= ?", (module, reset_epoch)).fetchone()
         return row["peak"] if row and row["peak"] is not None else None
 
@@ -199,7 +199,7 @@ class Database:
         restando `days` en segundos en vez de un ISO string."""
         # NUEVO (27/09/2026): mismo corte por Config.EQUITY_RESET_TS que en
         # supabase_db.py (acá convertido a epoch, que es lo que guarda `ts`).
-        reset_epoch = datetime.fromisoformat(Config.EQUITY_RESET_TS).timestamp()
+        reset_epoch = datetime.fromisoformat(Config.equity_reset_ts(module)).timestamp()
         cutoff = max(time.time() - (days * 86400), reset_epoch)
         row = self.conn.execute(
             "SELECT MAX(equity) as peak FROM equity_history WHERE module = ? AND ts >= ?", (module, cutoff)
