@@ -619,6 +619,12 @@ const MLB_EQUITY_RESET_TS = "2026-09-10T10:15:47.388163+00:00";
 // próximo reset hay que actualizar los dos.
 const EQUITY_RESET_TS = "2026-09-27T21:21:35.472496+00:00";
 
+// NUEVO (28/09/2026, pedido del usuario): reset propio de Polymarket a $20
+// (tras el fix de MAX_LOSS_R). Mismo mapa que Config.EQUITY_RESET_TS_BY_MODULE
+// en config.py -- actualizar ambos en cada reset.
+const EQUITY_RESET_TS_BY_MODULE = { polymarket: "2026-09-28T03:14:35.781081+00:00" };
+const resetTsFor = (module) => EQUITY_RESET_TS_BY_MODULE[module] || EQUITY_RESET_TS;
+
 export async function GET() {
   try {
     const supabase = getClient();
@@ -657,7 +663,7 @@ export async function GET() {
       // el historial completo desde el inicio real en vez de solo ~33h.
       supabase.rpc("get_equity_history_changes", { p_module: "crypto", p_since: EQUITY_RESET_TS }),
       supabase.rpc("get_equity_history_changes", { p_module: "weather", p_since: EQUITY_RESET_TS }),
-      supabase.rpc("get_equity_history_changes", { p_module: "polymarket", p_since: EQUITY_RESET_TS }),
+      supabase.rpc("get_equity_history_changes", { p_module: "polymarket", p_since: resetTsFor("polymarket") }),
       supabase.rpc("get_equity_history_changes", { p_module: "mlb", p_since: EQUITY_RESET_TS > MLB_EQUITY_RESET_TS ? EQUITY_RESET_TS : MLB_EQUITY_RESET_TS }),
       // NUEVO (15/09/2026, pedido del usuario): mismo peak móvil que usa
       // risk_manager.check() (ver peak_equity_window en supabase_db.py)
