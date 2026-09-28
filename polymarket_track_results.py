@@ -12,7 +12,7 @@ from config import Config
 from db import Database
 from polymarket_client import PolymarketClient
 from telegram_notifier import TelegramNotifier
-from risk_manager import calculate_stake, module_drawdown_mult
+from risk_manager import calculate_stake, module_drawdown_mult, clamp_r_multiple
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 log = logging.getLogger("polymarket_track_results")
@@ -237,6 +237,8 @@ def check_open_signals(db, client, notifier, config, open_signals=None, time_bud
                 pnl_dollars = None
                 if stop_distance > 0:
                     r_multiple = (final_price - sig["entry"]) / stop_distance
+                    # NUEVO (28/09/2026): pérdida máxima por señal, ver Config.MAX_LOSS_R.
+                    r_multiple = clamp_r_multiple(r_multiple, getattr(config, "MAX_LOSS_R", 2.0))
                     risk_pct = getattr(config, "RISK_PCT_PER_TRADE", 1.0)
                     dd_mult = module_drawdown_mult(config, db, "polymarket")
                     pnl_dollars = _safe_pnl_dollars(db, "polymarket", r_multiple, risk_pct)
@@ -295,6 +297,8 @@ def check_open_signals(db, client, notifier, config, open_signals=None, time_bud
         pnl_dollars = None
         if stop_distance > 0:
             r_multiple = (exit_price - sig["entry"]) / stop_distance
+            # NUEVO (28/09/2026): pérdida máxima por señal, ver Config.MAX_LOSS_R.
+            r_multiple = clamp_r_multiple(r_multiple, getattr(config, "MAX_LOSS_R", 2.0))
             risk_pct = getattr(config, "RISK_PCT_PER_TRADE", 1.0)
             dd_mult = module_drawdown_mult(config, db, "polymarket")
             pnl_dollars = _safe_pnl_dollars(db, "polymarket", r_multiple, risk_pct)

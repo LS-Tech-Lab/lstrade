@@ -547,6 +547,16 @@ class Config:
     # "15% de casino" que tenía Kelly sin techo en equity muy chico.
     HARD_CAP_PCT = _float("HARD_CAP_PCT", 15.0)
 
+    # NUEVO (28/09/2026, pedido del usuario): pérdida máxima por señal en
+    # múltiplos de R (Polymarket). HARD_CAP_PCT limita el stake (lo que se
+    # arriesga), pero no cuánto pierde una señal cuando el precio salta por
+    # encima del stop: la señal 2201 (entrada 0.73, stop 0.627) se resolvió
+    # en 0 y dio -7.09R, o sea ~30% del equity con un stake de $1. Se limita
+    # el R-múltiplo a -MAX_LOSS_R antes de aplicarlo (solo del lado de la
+    # pérdida; las ganancias no se tocan). Costo: la simulación subestima
+    # los saltos reales de Polymarket.
+    MAX_LOSS_R = _float("MAX_LOSS_R", 2.0)
+
     # AUDITORÍA (09/09/2026, pedido del usuario -- backtest de calibración
     # sobre 51 señales de MLB ya resueltas): el modelo de estimate_win_probability()
     # está BIEN calibrado en 30-60% de probabilidad (44.4% predicho -> 44.4%

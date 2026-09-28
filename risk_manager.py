@@ -154,6 +154,15 @@ def module_drawdown_mult(config, db, module, days=None):
     return drawdown_risk_multiplier(config, dd_pct)
 
 
+def clamp_r_multiple(r_multiple, max_loss_r):
+    """NUEVO (28/09/2026, pedido del usuario): limita la pérdida de una
+    señal a -max_loss_r (ver Config.MAX_LOSS_R en config.py para el
+    motivo). Solo recorta pérdidas: un R-múltiplo positivo pasa igual."""
+    if r_multiple is None:
+        return None
+    return max(r_multiple, -abs(max_loss_r))
+
+
 def calculate_stake(base_equity, risk_pct, min_stake_usd, hard_cap_pct):
     """
     DECISIÓN (27/09/2026, pedido del usuario): un solo lugar de la verdad
