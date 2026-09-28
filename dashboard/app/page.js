@@ -1193,17 +1193,21 @@ function WeatherResolvedTable({ rows }) {
 }
 
 function WeatherTab({ data }) {
+  const [selectedWindow, setSelectedWindow] = useState("historico");
+  const byWindow = data.weather_by_window || [];
+  const selectedWin = byWindow.find((w) => w.window === selectedWindow) || byWindow[0];
   return (
     <>
       <PlainSummary halted={false} stats={data.weather_stats} label="clima" />
-      <PerformanceCard title="Performance — Clima (señales resueltas)"
+      <WindowSelect byWindow={byWindow} value={selectedWindow} onChange={setSelectedWindow} />
+      <PerformanceCard title={`Performance — Clima (señales resueltas${selectedWin ? `, ${selectedWin.label}` : ""})`}
         subtitle={'Simulando comprar "SI" al precio de mercado del momento de la señal, $1 nocional por operación.'}
         emptyMessage="Sin señales de clima resueltas todavía — las métricas aparecen cuando el mercado cierre y se pueda comparar con el resultado real."
-        statCards={buildWeatherStatCards(data.weather_stats)} />
+        statCards={buildWeatherStatCards(selectedWin ? selectedWin.stats : data.weather_stats)} />
       <CalibrationCard title="Calibración — Clima"
         subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces resolvió 'sí' de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
         emptyMessage="Todavía no hay suficientes señales de clima con resultado real (sí/no) para calibrar — los stop-loss no cuentan acá porque no sabemos si el bucket elegido hubiera resuelto 'sí' o 'no' en la realidad."
-        calibration={data.weather_calibration} />
+        calibration={selectedWin ? selectedWin.calibration : data.weather_calibration} />
       <EquityCard title="Equity — Clima"
         subtitle="Evolución del capital simulado de este módulo a lo largo del tiempo (arranca en $20)."
         points={data.equity_weather} />
@@ -1409,6 +1413,9 @@ function MlbTab({ data }) {
   const hiddenCount = byVersion.length - visibleVersions.length;
 
   const [selectedVersion, setSelectedVersion] = useState("all");
+  const [selectedWindow, setSelectedWindow] = useState("historico");
+  const mlbByWindow = data.mlb_by_window || [];
+  const selectedWin = mlbByWindow.find((w) => w.window === selectedWindow) || mlbByWindow[0];
   useEffect(() => {
     if (selectedVersion !== "all" && !visibleVersions.some((v) => v.model_version === selectedVersion)) {
       setSelectedVersion("all");
@@ -1467,14 +1474,15 @@ function MlbTab({ data }) {
         </>
       ) : (
         <>
-          <PerformanceCard title="Performance — MLB (todas las señales resueltas, histórico)"
+          <WindowSelect byWindow={mlbByWindow} value={selectedWindow} onChange={setSelectedWindow} />
+          <PerformanceCard title={`Performance — MLB (todas las versiones${selectedWin ? `, ${selectedWin.label}` : ", histórico"})`}
             subtitle="Simulando apostar $1 nocional al equipo/lado que eligió el modelo, al precio de mercado del momento de la señal. Incluye todas las versiones del modelo — elegí una versión puntual arriba para desglosar."
             emptyMessage="Sin señales de MLB resueltas todavía — las métricas aparecen cuando el partido termine y se pueda comparar con el resultado real."
-            statCards={buildMlbStatCards(data.mlb_stats)} />
-          <CalibrationCard title="Calibración — MLB (todas las señales, histórico)"
+            statCards={buildMlbStatCards(selectedWin ? selectedWin.stats : data.mlb_stats)} />
+          <CalibrationCard title={`Calibración — MLB (todas las versiones${selectedWin ? `, ${selectedWin.label}` : ", histórico"})`}
             subtitle="Agrupa las señales por el % de probabilidad que les calculó el modelo, y compara contra cuántas veces ganó de verdad ese rango. Si el modelo estuviera bien calibrado, las dos columnas deberían quedar parecidas."
             emptyMessage="Todavía no hay suficientes señales de MLB con resultado real (ganó/perdió) para calibrar — los stop-loss y partidos cancelados no cuentan acá porque no sabemos si el lado elegido hubiera ganado."
-            calibration={data.mlb_calibration} />
+            calibration={selectedWin ? selectedWin.calibration : data.mlb_calibration} />
         </>
       )}
 
@@ -1534,6 +1542,9 @@ function IndicatorCarousel({ symbols, indicatorsBySymbol }) {
 }
 
 function CriptoTab({ data }) {
+  const [selectedWindow, setSelectedWindow] = useState("historico");
+  const byWindow = data.crypto_by_window || [];
+  const selectedWin = byWindow.find((w) => w.window === selectedWindow) || byWindow[0];
   const indicatorsBySymbol = Object.fromEntries((data.indicators || []).map((s) => [s.symbol, s]));
   // Símbolos a mostrar: unión de lo configurado (inferido de los snapshots
   // recibidos) y lo que aparece en la bitácora, así no queda un símbolo
@@ -1564,9 +1575,10 @@ function CriptoTab({ data }) {
           </p>
         )}
       </div>
-      <PerformanceCard title="Performance — Cripto (trades cerrados)"
-        emptyMessage="Sin trades cerrados todavía — las métricas aparecen cuando haya resultados reales."
-        statCards={buildCryptoStatCards(data.stats, true)} />
+      <WindowSelect byWindow={byWindow} value={selectedWindow} onChange={setSelectedWindow} />
+      <PerformanceCard title={`Performance — Cripto (trades cerrados${selectedWin ? `, ${selectedWin.label}` : ""})`}
+        emptyMessage="Sin trades cerrados todavía en esta ventana — las métricas aparecen cuando haya resultados reales."
+        statCards={buildCryptoStatCards(selectedWin ? selectedWin.stats : data.stats, true)} />
       <div className="card">
         <h2>Performance por confianza</h2>
         <p className="card-subtitle">No es una probabilidad calculada (Cripto no arma una) — es la confianza 1-5 que le puso el motor a cada trade, agrupada para ver si un número más alto de verdad predice mejor resultado. La columna "confidence" recién se empezó a guardar — va a tardar en llenarse.</p>
@@ -1611,6 +1623,27 @@ function CriptoTab({ data }) {
       </div>
       <Glossary />
     </>
+  );
+}
+
+// NUEVO (28/09/2026, pedido del usuario): mismo selector de ventana de
+// tiempo que usa PolymarketTab, reutilizado en Cripto, MLB y Clima
+// (ver computeByWindow en api/data/route.js).
+function WindowSelect({ byWindow, value, onChange }) {
+  if (!byWindow || byWindow.length === 0) return null;
+  return (
+    <div className="version-select-row">
+      <label className="version-select-label">
+        Ventana de tiempo
+        <select className="version-select" value={value} onChange={(e) => onChange(e.target.value)}>
+          {byWindow.map((w) => (
+            <option key={w.window} value={w.window}>
+              {w.label} — {w.n} {w.n === 1 ? "registro" : "registros"}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   );
 }
 
