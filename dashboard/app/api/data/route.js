@@ -392,6 +392,20 @@ function computePolymarketStatsByWindow(resolvedSignals, resolvedSignalsCore) {
   });
 }
 
+// NUEVO (28/09/2026, pedido del usuario): mismo selector de ventana de
+// tiempo que Polymarket (POLYMARKET_WINDOWS: total / 30d / 7d / 24h) para
+// Cripto, MLB y Clima. `buildStats(rows)` devuelve los campos que el front
+// necesita por ventana (ej. {stats}, o {stats, calibration}).
+function computeByWindow(rows, dateField, buildStats) {
+  const now = Date.now();
+  return POLYMARKET_WINDOWS.map(({ key, label, days }) => {
+    const cutoff = days !== null ? now - days * 86400000 : null;
+    const inWindow = (r) => cutoff === null || (r[dateField] && new Date(r[dateField]).getTime() >= cutoff);
+    const subset = (rows || []).filter(inWindow);
+    return { window: key, label, n: subset.length, ...buildStats(subset) };
+  });
+}
+
 function groupMlbByVersion(resolvedSignals) {
   const groups = {};
   for (const r of resolvedSignals || []) {
@@ -590,6 +604,12 @@ const OPEN_ROWS_LIMIT = 100;
 // más abajo) en vez de "las últimas N señales" -- con ~100/día esto cubre
 // más de 6 meses de historial antes de necesitar subirlo de nuevo.
 const POLYMARKET_HISTORY_LIMIT = 20000;
+// NUEVO (28/09/2026): antes cripto traía 500 trades y clima/MLB solo las
+// últimas 200 señales resueltas -- con MLB resolviendo ~12 señales por hora,
+// 200 son un par de días, así que ni "Total histórico" ni 30d/7d serían
+// reales. Solo se devuelven 20 filas al front (ver .slice(0, 20) abajo),
+// así que subir esto no agranda la respuesta.
+const SIGNAL_HISTORY_LIMIT = 5000;
 // FIX: antes pedía 200 filas de indicator_snapshots solo para quedarse con
 // la más reciente POR SÍMBOLO (ver latestIndicatorsBySymbol abajo) — con 2-3
 // símbolos y un snapshot cada ~10 min, 200 filas son ~33h de historial
@@ -690,7 +710,7 @@ export async function GET() {
       // completa para poder armar un "Historial reciente" de Cripto igual
       // al de los demás módulos (ver crypto_resolved más abajo), sin perder
       // las stats que ya se calculaban con esta misma query.
-      supabase.from("closed_trades").select("*").order("ts_closed", { ascending: false }).limit(500),
+      supabase.from("closed_trades").select("*").order("ts_closed", { ascending: false }).limit(SIGNAL_HISTORY_LIMIT),
       // Señales de Polymarket todavía sin resolver — "posiciones abiertas" de ese módulo.
       supabase.from("polymarket_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
       // Resueltas: para el historial reciente, las stats por categoría, y
@@ -704,10 +724,10 @@ export async function GET() {
       // desde hace rato, pero el dashboard nunca las consultaba (a
       // diferencia de Cripto y Polymarket, Clima no tenía ningún tab).
       supabase.from("weather_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
-      supabase.from("weather_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
+      supabase.from("weather_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(SIGNAL_HISTORY_LIMIT),
       // NUEVO: señales de MLB (ver mlb_signal_engine.py / run_mlb_cycle en app.py).
       supabase.from("mlb_signals").select("*").is("outcome", null).order("ts_signaled", { ascending: false }).limit(OPEN_ROWS_LIMIT),
-      supabase.from("mlb_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(200),
+      supabase.from("mlb_signals").select("*").not("outcome", "is", null).order("ts_resolved", { ascending: false }).limit(SIGNAL_HISTORY_LIMIT),
     ]);
 
     // FIX: antes un fallo puntual en cualquiera de estas 4 (equity_history,
@@ -863,6 +883,10 @@ export async function GET() {
       // un bloque de JSX por cada fix.
       mlb_by_version: mlbResolvedRes.error ? [] : groupMlbByVersion(mlbResolved),
       weather_calibration: weatherResolvedRes.error ? { n: 0, buckets: [] } : computeWeatherCalibration(weatherResolved),
+      // NUEVO (28/09/2026): ventanas de tiempo (ver computeByWindow).
+      crypto_by_window: closedTradesRes.error ? [] : computeByWindow(closedTradesRes.data, "ts_closed", (r) => ({ stats: computeStats(r) })),
+      mlb_by_window: mlbResolvedRes.error ? [] : computeByWindow(mlbResolved, "ts_resolved", (r) => ({ stats: computeMlbStats(r), calibration: computeMlbCalibration(r) })),
+      weather_by_window: weatherResolvedRes.error ? [] : computeByWindow(weatherResolved, "ts_resolved", (r) => ({ stats: computeWeatherStats(r), calibration: computeWeatherCalibration(r) })),
       crypto_stats_by_confidence: closedTradesRes.error ? {} : computeStatsByConfidence(closedTradesRes.data || []),
       polymarket_stats_by_confidence: polymarketResolvedRes.error ? {} : computePolymarketStatsByConfidence(resolvedSignalsCore),
     });
