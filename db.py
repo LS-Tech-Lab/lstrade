@@ -185,7 +185,9 @@ class Database:
         self.conn.commit()
 
     def peak_equity(self, module="crypto"):
-        row = self.conn.execute("SELECT MAX(equity) as peak FROM equity_history WHERE module = ?", (module,)).fetchone()
+        # NUEVO (28/09/2026): ver peak_equity en supabase_db.py -- no mira antes de EQUITY_RESET_TS.
+        reset_epoch = datetime.fromisoformat(Config.EQUITY_RESET_TS).timestamp()
+        row = self.conn.execute("SELECT MAX(equity) as peak FROM equity_history WHERE module = ? AND ts >= ?", (module, reset_epoch)).fetchone()
         return row["peak"] if row and row["peak"] is not None else None
 
     def peak_equity_window(self, module="crypto", days=7.0):

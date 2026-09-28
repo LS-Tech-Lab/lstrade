@@ -58,7 +58,12 @@ class SupabaseDatabase:
         _with_retry(lambda: self.client.table("equity_history").insert({"ts": _now_iso(), "equity": equity, "module": module}).execute())
 
     def peak_equity(self, module="crypto"):
-        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).order("equity", desc=True).limit(1).execute())
+        # NUEVO (28/09/2026, pedido del usuario): el "máximo histórico" ya
+        # no mira nada anterior a Config.EQUITY_RESET_TS. El kill switch de
+        # cripto (update_equity_and_check_kill_switch) usa este peak, y tras
+        # el reset a $20 el pico previo ($25.92) daba 22.85% de drawdown y
+        # frenaba el bot en el primer ciclo.
+        res = _with_retry(lambda: self.client.table("equity_history").select("equity").eq("module", module).gte("ts", Config.EQUITY_RESET_TS).order("equity", desc=True).limit(1).execute())
         return res.data[0]["equity"] if res.data else None
 
     def peak_equity_window(self, module="crypto", days=7.0):
