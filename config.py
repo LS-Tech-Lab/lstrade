@@ -545,7 +545,11 @@ class Config:
     # Se usa vía Config.equity_reset_ts(module) -- peak_equity() y
     # peak_equity_window() en supabase_db.py/db.py. route.js tiene el mismo
     # mapa (EQUITY_RESET_TS_BY_MODULE): actualizar ambos en cada reset.
-    EQUITY_RESET_TS_BY_MODULE = {"polymarket": "2026-09-28T03:14:35.781081+00:00"}
+    EQUITY_RESET_TS_BY_MODULE = {
+        "polymarket": "2026-09-28T03:14:35.781081+00:00",
+        # 03/10/2026: reset propio de cripto a $20 tras el freno por drawdown 15%.
+        "crypto": "2026-10-03T13:21:32.801784+00:00",
+    }
 
     @classmethod
     def equity_reset_ts(cls, module):

@@ -642,7 +642,10 @@ const EQUITY_RESET_TS = "2026-09-27T21:21:35.472496+00:00";
 // NUEVO (28/09/2026, pedido del usuario): reset propio de Polymarket a $20
 // (tras el fix de MAX_LOSS_R). Mismo mapa que Config.EQUITY_RESET_TS_BY_MODULE
 // en config.py -- actualizar ambos en cada reset.
-const EQUITY_RESET_TS_BY_MODULE = { polymarket: "2026-09-28T03:14:35.781081+00:00" };
+const EQUITY_RESET_TS_BY_MODULE = {
+  polymarket: "2026-09-28T03:14:35.781081+00:00",
+  crypto: "2026-10-03T13:21:32.801784+00:00", // reset 03/10/2026 tras freno por drawdown
+};
 const resetTsFor = (module) => EQUITY_RESET_TS_BY_MODULE[module] || EQUITY_RESET_TS;
 
 export async function GET() {
@@ -681,7 +684,7 @@ export async function GET() {
       // snapshots planos repetidos sin tocar el rango de tiempo. Con los
       // datos actuales esto reduce cripto de ~2476 filas a ~156, cubriendo
       // el historial completo desde el inicio real en vez de solo ~33h.
-      supabase.rpc("get_equity_history_changes", { p_module: "crypto", p_since: EQUITY_RESET_TS }),
+      supabase.rpc("get_equity_history_changes", { p_module: "crypto", p_since: resetTsFor("crypto") }),
       supabase.rpc("get_equity_history_changes", { p_module: "weather", p_since: EQUITY_RESET_TS }),
       supabase.rpc("get_equity_history_changes", { p_module: "polymarket", p_since: resetTsFor("polymarket") }),
       supabase.rpc("get_equity_history_changes", { p_module: "mlb", p_since: EQUITY_RESET_TS > MLB_EQUITY_RESET_TS ? EQUITY_RESET_TS : MLB_EQUITY_RESET_TS }),
@@ -692,7 +695,7 @@ export async function GET() {
       // para decidir cuánto reducir el tamaño de las posiciones nuevas.
       supabase.from("equity_history").select("equity")
         .eq("module", "crypto")
-        .gte("ts", new Date(Math.max(Date.now() - MAX_DRAWDOWN_WINDOW_DAYS * 86400000, new Date(EQUITY_RESET_TS).getTime())).toISOString())
+        .gte("ts", new Date(Math.max(Date.now() - MAX_DRAWDOWN_WINDOW_DAYS * 86400000, new Date(resetTsFor("crypto")).getTime())).toISOString())
         .order("equity", { ascending: false }).limit(1),
       supabase.from("decisions").select("*").order("ts", { ascending: false }).limit(30),
       supabase.from("bot_state").select("*"),
