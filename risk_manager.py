@@ -414,7 +414,8 @@ class RiskManager:
         # nunca bloqueó nada; ver el fix en app.py que ahora sí lo trae.)
         if ticker and "bid" in ticker and "ask" in ticker and ticker["bid"] > 0:
             spread_pct = ((ticker["ask"] - ticker["bid"]) / ticker["bid"]) * 100
-            checks.append({"label": f"Spread: {spread_pct:.2f}% < {self.config.MAX_SPREAD_PCT}%", "ok": spread_pct < self.config.MAX_SPREAD_PCT})
+            _max_spread = self.config.max_spread_for(symbol) if hasattr(self.config, "max_spread_for") else self.config.MAX_SPREAD_PCT
+            checks.append({"label": f"Spread: {spread_pct:.2f}% < {_max_spread}%", "ok": spread_pct < _max_spread})
         else:
             checks.append({"label": "Spread (datos no disponibles — bloqueado por seguridad)", "ok": False})
 

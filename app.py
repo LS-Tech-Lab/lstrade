@@ -317,9 +317,10 @@ def run_cycle():
                     btc_bias = {"direction": "NEUTRAL"}
         except Exception as e:
             errors.append(f"btc_bias: {e}")
-    for symbol in config.SYMBOLS:
+    scan_symbols = config.all_symbols()
+    for symbol in scan_symbols:
         if time_left() < 1.0:
-            errors.append(f"{symbol}: sin tiempo — se cortó el escaneo (quedaban {len(config.SYMBOLS) - config.SYMBOLS.index(symbol)} símbolo(s))")
+            errors.append(f"{symbol}: sin tiempo — se cortó el escaneo (quedaban {len(scan_symbols) - scan_symbols.index(symbol)} símbolo(s))")
             break
         try:
             candles = exchange_client.fetch_ohlcv(symbol)
@@ -344,7 +345,9 @@ def run_cycle():
         # AUDITORÍA (08/09/2026): antes se llamaba sin min_score, así que
         # corría siempre con el default hardcodeado en signal_engine.py
         # (0.03) sin ningún knob para subirlo -- ver config.CRYPTO_MIN_SCORE.
-        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias, min_score=config.CRYPTO_MIN_SCORE)
+        # Acciones: sin filtro de sesgo BTC salvo que STOCK_USE_BTC_BIAS=true.
+        _bias = btc_bias if (not config.is_stock(symbol) or config.STOCK_USE_BTC_BIAS) else None
+        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=_bias, min_score=config.CRYPTO_MIN_SCORE)
         # NUEVO (activación OKX live, 20/09/2026): generate_signal() no
         # distingue LONG/SHORT según lo que la cuenta puede operar --
         # una cuenta OKX spot-only no puede vender un activo que no

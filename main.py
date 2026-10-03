@@ -100,7 +100,7 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
     best_signal, best_symbol = None, None
 
     # 3. ESCANEAR SÍMBOLOS CON MTF Y SPREAD
-    for symbol in config.SYMBOLS:
+    for symbol in config.all_symbols():
         try:
             candles = exchange_client.fetch_ohlcv(symbol)
             # Obtener velas de 4H para el filtro MTF
@@ -113,7 +113,8 @@ def run_cycle(config, db, exchange_client, risk_manager, executor, notifier, pos
 
         # AUDITORÍA (08/09/2026): ver mismo cambio en app.py -- antes corría
         # con el default hardcodeado de signal_engine.py (0.03).
-        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=btc_bias, min_score=config.CRYPTO_MIN_SCORE)
+        _bias = btc_bias if (not config.is_stock(symbol) or config.STOCK_USE_BTC_BIAS) else None
+        signal = generate_signal(candles, higher_tf_candles=higher_tf_candles, btc_bias=_bias, min_score=config.CRYPTO_MIN_SCORE)
         # NUEVO (activación OKX live, 20/09/2026): ver mismo fix y motivo en
         # app.py -- se mantiene el mismo criterio en el modo VPS por
         # consistencia, aunque hoy este archivo no se despliega en Vercel.

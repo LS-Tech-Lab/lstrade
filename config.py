@@ -56,6 +56,32 @@ class Config:
     EXCHANGE_TIMEOUT_MS = _int("EXCHANGE_TIMEOUT_MS", 8000)
 
     SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT").split(",") if s.strip()]
+
+    # NUEVO (01/10/2026, pedido del usuario): acciones tokenizadas en spot
+    # (OKX "Acciones" > Spot, pares tipo xMU/USDT). Van en su propia lista
+    # para no mezclarlas con cripto: vacía por default = el bot se comporta
+    # exactamente igual que antes. Los nombres deben ser EXACTAMENTE como los
+    # lista ccxt (correr list_okx_stocks.py para verlos).
+    # - Spread: los libros de acciones tokenizadas son más finos que BTC/ETH,
+    #   por eso tienen su propio tope (STOCK_MAX_SPREAD_PCT).
+    # - Sesgo BTC: una acción no sigue a BTC, así que por default no se le
+    #   aplica el filtro btc_bias (STOCK_USE_BTC_BIAS=true para activarlo).
+    STOCK_SYMBOLS = [s.strip() for s in os.getenv("STOCK_SYMBOLS", "").split(",") if s.strip()]
+    STOCK_MAX_SPREAD_PCT = _float("STOCK_MAX_SPREAD_PCT", 1.0)
+    STOCK_USE_BTC_BIAS = _bool("STOCK_USE_BTC_BIAS", False)
+
+    @classmethod
+    def all_symbols(cls):
+        """Cripto + acciones, sin duplicados, en ese orden."""
+        return list(dict.fromkeys(list(cls.SYMBOLS) + list(cls.STOCK_SYMBOLS)))
+
+    @classmethod
+    def is_stock(cls, symbol):
+        return symbol.upper() in {s.upper() for s in cls.STOCK_SYMBOLS}
+
+    @classmethod
+    def max_spread_for(cls, symbol):
+        return cls.STOCK_MAX_SPREAD_PCT if cls.is_stock(symbol) else cls.MAX_SPREAD_PCT
     TIMEFRAME = os.getenv("TIMEFRAME", "1h")
     CANDLE_LIMIT = _int("CANDLE_LIMIT", 100)
 
