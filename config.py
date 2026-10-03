@@ -558,6 +558,17 @@ class Config:
     # MAX_DRAWDOWN_PCT). Evita que el piso mismo reproduzca el problema de
     # "15% de casino" que tenía Kelly sin techo en equity muy chico.
     HARD_CAP_PCT = _float("HARD_CAP_PCT", 15.0)
+    # NUEVO (03/10/2026, pedido del usuario): en CRIPTO el piso de MIN_STAKE_USD
+    # se aplicaba al RIESGO (lo que se pierde si salta el stop), pero el mínimo
+    # real del exchange es sobre el NOTIONAL (precio x cantidad), que ya valida
+    # executor.py. Con equity $20 eso convertía el 1% nominal ($0.20) en $1 de
+    # riesgo = 5% por operación: 3-4 stops seguidos llegaban al 15% y frenaban
+    # el bot (pasó el 30/09). Ahora cripto arriesga el % nominal y el piso se
+    # exige sobre el notional (CRYPTO_MIN_NOTIONAL_USD). Spot sin apalancamiento:
+    # el notional tampoco puede superar CRYPTO_MAX_NOTIONAL_PCT del equity.
+    CRYPTO_MIN_NOTIONAL_USD = _float("CRYPTO_MIN_NOTIONAL_USD", 2.0)
+    CRYPTO_MAX_NOTIONAL_PCT = _float("CRYPTO_MAX_NOTIONAL_PCT", 50.0)
+
 
     # NUEVO (28/09/2026, pedido del usuario): pérdida máxima por señal en
     # múltiplos de R (Polymarket). HARD_CAP_PCT limita el stake (lo que se
@@ -635,6 +646,13 @@ class Config:
     # según fuentes secundarias (julio 2026); verificar en la doc oficial.
     # Solo se usa para ESTIMAR y registrar est_fee_per_share/ev_at_ask_net
     # en cada señal -- no filtra ni opera nada.
+    # NUEVO (03/10/2026, pedido del usuario): filtro por EV NETO contra el
+    # ask real del book (ev_at_ask_net en app.py: my_prob / (ask + fee) - 1).
+    # La señal #423 salió con EV neto -1.3% -- o sea, ya perdía dinero
+    # esperado antes de jugarse. Si el book no responde (ev_at_ask_net=None)
+    # NO se bloquea (comportamiento anterior). 0.02 = exige al menos +2%
+    # después de comisión.
+    MLB_MIN_EV_NET = _float("MLB_MIN_EV_NET", 0.02)
     MLB_PREGAME_ONLY = _bool("MLB_PREGAME_ONLY", True)
     MLB_TAKER_FEE_RATE = _float("MLB_TAKER_FEE_RATE", 0.05)
 

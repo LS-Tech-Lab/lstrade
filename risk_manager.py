@@ -325,10 +325,24 @@ class RiskManager:
         # throttle y el régimen de volatilidad ya vienen aplicados en el
         # risk_pct efectivo que se le pasa acá.
         effective_risk_pct = self.config.RISK_PCT_PER_TRADE * drawdown_risk_mult * regime_size_mult
+        # CAMBIO (03/10/2026, pedido del usuario): para cripto el piso NO va
+        # sobre el riesgo sino sobre el notional -- ver CRYPTO_MIN_NOTIONAL_USD
+        # en config.py. min_stake_usd=0 deja el riesgo en el % nominal (con
+        # el techo HARD_CAP_PCT igual de vigente).
         risk_amount, stake_executable = calculate_stake(
-            equity, effective_risk_pct, self.config.MIN_STAKE_USD, self.config.HARD_CAP_PCT
+            equity, effective_risk_pct, 0.0, self.config.HARD_CAP_PCT
         )
         position_size = risk_amount / stop_distance if stop_distance > 0 and stake_executable else 0
+        # Spot sin apalancamiento: no se puede comprar más que un % del equity.
+        max_notional = equity * getattr(self.config, "CRYPTO_MAX_NOTIONAL_PCT", 50.0) / 100.0
+        if position_size > 0 and price > 0 and position_size * price > max_notional:
+            position_size = max_notional / price
+            risk_amount = position_size * stop_distance
+        min_notional = getattr(self.config, "CRYPTO_MIN_NOTIONAL_USD", 2.0)
+        if position_size > 0 and price > 0 and position_size * price < min_notional:
+            # Notional por debajo del mínimo operable: se salta la señal en vez de
+            # forzar un tamaño de riesgo mayor al configurado.
+            position_size = 0
 
         exposure_pct = self.db.current_exposure_pct(equity)
 

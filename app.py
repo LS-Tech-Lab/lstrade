@@ -1187,6 +1187,17 @@ def run_mlb_cycle():
                         fee_rate = getattr(config, "MLB_TAKER_FEE_RATE", 0.05)
                         est_fee = round(fee_rate * ask_at_signal * (1 - ask_at_signal), 5)
                         ev_at_ask_net = round(signal["my_prob"] / (ask_at_signal + est_fee) - 1, 4)
+            # NUEVO (03/10/2026, pedido del usuario): no operar si, contra el ask
+            # real y después de comisión, el EV esperado ya es menor al mínimo
+            # (ver MLB_MIN_EV_NET en config.py). Si no hay ask, no bloquea.
+            min_ev_net = getattr(config, "MLB_MIN_EV_NET", 0.02)
+            if ev_at_ask_net is not None and ev_at_ask_net < min_ev_net:
+                detail.append({
+                    "question": market["question"],
+                    "status": "descartada_ev_neto",
+                    "ev_at_ask_net": ev_at_ask_net,
+                })
+                continue
             db.record_mlb_signal(
                 signal["condition_id"], signal["game_pk"], signal["question"],
                 signal["home_team"], signal["away_team"], signal["direction"],
